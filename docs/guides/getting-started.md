@@ -1,26 +1,101 @@
 # Getting started with commandress
 
+> **Status**: M0 scaffold — `cmdrs` is not yet a usable prompt. This guide covers the build + run loop. Real usage examples land at M1 (v0.2.0).
+
 ## Build
 
 ```sh
-cyrius deps                              # resolve dependencies
-cyrius build src/main.cyr build/commandress    # compile
-cyrius test                              # run [build].test + tests/*.tcyr
+cyrius deps                                    # resolve stdlib deps
+cyrius build src/main.cyr build/cmdrs          # compile (binary: cmdrs)
+cyrius test                                    # run [build].test + tests/*.tcyr
+cyrius bench tests/commandress.bcyr            # benchmarks
 ```
+
+The output binary is `build/cmdrs`.
+
+## Conceptual model
+
+`cmdrs` is **stateless**: it takes shell context as input (env vars + CLI flags), reads its config, and prints one rendered prompt to stdout. The shell calls it once per prompt redraw.
+
+```
+shell ──exec("cmdrs")──> cmdrs ──read─→ env vars ($AGNOSHI_LAST_EXIT, $PWD, ...)
+                              ──read─→ ~/.commandress.cyml
+                              ──compose segments─→
+                              ──ANSI emit─→ stdout
+shell ──capture stdout─→ paint as prompt
+```
+
+Each **segment** is a pure function of the input context. Examples:
+
+- `cwd` — reads `$PWD`, renders `~/foo/bar` (home-shortened, truncated)
+- `exit` — reads last-exit env var, renders empty if 0 or a colored marker otherwise
+- `git` — probes git state, renders `branch ✗` (dirty) / `branch ✓` (clean)
+- `time` — reads wall clock, renders `HH:MM:SS`
+
+Segments are independent — no shared mutable state, no ordering dependencies. Order in the rendered prompt comes from config.
 
 ## Layout
 
 - `src/main.cyr` — entry point. Top-level `var r = main(); syscall(SYS_EXIT, r);`.
-- `src/test.cyr` — top-level test entry referenced by `cyrius.cyml [build].test`. Add unit cases here or in `tests/commandress.tcyr`.
+- `src/test.cyr` — top-level test entry referenced by `cyrius.cyml [build].test`.
 - `tests/commandress.tcyr` — primary test suite (`cyrius test` auto-discovers).
 - `tests/commandress.bcyr` — benchmarks (`cyrius bench`).
 - `tests/commandress.fcyr` — fuzz harness (`cyrius fuzz`).
 
-## Adding a feature
+## Config (planned for M1)
 
-1. Edit `src/main.cyr` (or add a new module and `include` it).
-2. Add a test case to `tests/commandress.tcyr`.
-3. Run `cyrius test`.
-4. Bump `VERSION` and add a CHANGELOG entry before tagging.
+`~/.commandress.cyml`:
 
-See [`../adr/template.md`](../adr/template.md) when a non-trivial design choice deserves an ADR.
+```cyml
+[prompt]
+order = ["cwd", "git", "exit"]
+separator = " · "
+
+[segments.cwd]
+home_shorten = true
+max_length = 40
+
+[segments.git]
+budget_ms = 80
+show_dirty = true
+show_ahead_behind = false
+
+[segments.exit]
+show_when_zero = false
+color_nonzero = "red"
+```
+
+Missing config file → baked-in defaults. Invalid config field → log to stderr, render with defaults.
+
+## Adding a segment (M1+)
+
+1. Create `src/segments/your_segment.cyr` exporting `render_your_segment(ctx) → str`
+2. Add a unit test in `tests/commandress.tcyr` — at least one happy path + one error path
+3. Add a benchmark in `tests/commandress.bcyr` measuring render time
+4. Register the segment in `src/render.cyr`'s dispatch table
+5. Add it to the default order in `src/config.cyr`'s defaults
+6. Bump `CHANGELOG.md` `[Unreleased] / Added`
+7. If the segment design is non-trivial, file an ADR (see [`../adr/template.md`](../adr/template.md))
+
+## Running standalone
+
+Once segments land:
+
+```sh
+AGNOSHI_LAST_EXIT=0 PWD=/tmp ./build/cmdrs               # default config
+AGNOSHI_LAST_EXIT=1 ./build/cmdrs --config /tmp/test.cyml # custom config
+./build/cmdrs --debug                                     # per-segment timing
+```
+
+## Integrating with agnoshi (M7+)
+
+```sh
+# In your agnoshi rc file:
+export AGNOSHI_PROMPT_CMD=cmdrs
+```
+
+agnoshi invokes `cmdrs` once per prompt redraw, captures stdout, paints it.
+
+## Next
+
+See [`../development/roadmap.md`](../development/roadmap.md) for the milestone plan and [`../adr/template.md`](../adr/template.md) for writing decision records.
