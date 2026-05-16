@@ -1,0 +1,16 @@
+[package]
+name = "commandress"
+version = "0.1.0"
+description = "commandress — TODO"
+license = "GPL-3.0-only"
+language = "cyrius"
+cyrius = "5.11.54"
+
+[build]
+entry = "src/main.cyr"
+test = "src/test.cyr"
+output = "commandress"
+
+[deps]
+stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert"]
+---
