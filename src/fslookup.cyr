@@ -1,23 +1,29 @@
-# fslookup.cyr — shared filesystem-ancestor walker.
+# fslookup.cyr — shared filesystem helpers for env-probe segments.
 #
-# `find_ancestor_with(start_dir, marker)` walks `start_dir` upward and
-# returns the nearest ancestor directory in which `<dir><marker>` exists
-# (per `access(F_OK)`), or 0 when the walk reaches "/" without a hit.
+# Two utilities used by cyrius_env / python_env / node_env:
 #
-# `marker` must start with "/" (e.g. "/cyrius.cyml", "/.python-version",
-# "/.nvmrc"). The leading slash is part of the marker so that the join
-# at the root case ("/" + marker) still produces a valid path; POSIX
-# collapses any leading "//" to "/".
+#   find_ancestor_with(start_dir, marker)
+#       Walks `start_dir` upward and returns the nearest ancestor
+#       directory in which `<dir><marker>` exists (per access(F_OK)),
+#       or 0 when the walk reaches "/" without a hit. `marker` must
+#       start with "/" (e.g. "/cyrius.cyml", "/.python-version",
+#       "/.nvmrc") so the root-case join "/" + marker still produces a
+#       valid path; POSIX collapses leading "//" to "/".
 #
-# Lifted from `src/segments/cyrius_env.cyr` in v0.5.0 once the M4
-# language-env segments showed two-plus consumers of the same walk
-# (cyrius_env's cyrius.cyml, python_env's .python-version, node_env's
-# .nvmrc / package.json). Each segment's project-detection now boils
-# down to a single call.
+#   read_trimmed_file_at(root, suffix)
+#       Reads `<root><suffix>` (e.g. "/VERSION", "/.python-version",
+#       "/.nvmrc") and returns its trimmed contents as a heap-alloc'd
+#       cstring, or 0 on missing / unreadable / whitespace-only files.
+#       Trim covers space / tab / \n / \r at both ends. 256-byte fixed
+#       read cap — pin files hold semver-shaped strings, not data.
 #
-# Allocation: returns a heap-alloc'd cstring of the matching directory
-# (no trailing slash, except "/" itself which keeps its one slash).
-# Caller owns; bump allocator reclaims at end of redraw.
+# Both lifted from `src/segments/cyrius_env.cyr` and `python_env.cyr`
+# in v0.5.0 once M4 produced three call sites apiece. Each segment's
+# project-detection + version-file read now boils down to two lines.
+#
+# Allocation: returns are heap-alloc'd cstrings (no trailing slash on
+# the dir form, except "/" itself which keeps its one slash). Caller
+# owns; bump allocator reclaims at end of redraw.
 
 fn find_ancestor_with(start_dir, marker): i64 {
     if (start_dir == 0) { return 0; }
@@ -75,4 +81,56 @@ fn find_ancestor_with(start_dir, marker): i64 {
         }
     }
     return hit;
+}
+
+fn read_trimmed_file_at(root, suffix): i64 {
+    if (root == 0) { return 0; }
+    if (suffix == 0) { return 0; }
+    var root_len = strlen(root);
+    var suffix_len = strlen(suffix);
+    var path = alloc(root_len + suffix_len + 1);
+    memcpy(path, root, root_len);
+    memcpy(path + root_len, suffix, suffix_len);
+    store8(path + root_len + suffix_len, 0);
+
+    var buf[256];
+    var n = file_read_all(path, &buf, 256);
+    if (n <= 0) { return 0; }
+
+    var start = 0;
+    var ltrim = 1;
+    while (ltrim == 1) {
+        if (start >= n) { ltrim = 0; }
+        else {
+            var c = load8(&buf + start);
+            if (c == 32) { start = start + 1; }
+            else { if (c == 9) { start = start + 1; }
+            else { if (c == 10) { start = start + 1; }
+            else { if (c == 13) { start = start + 1; }
+            else { ltrim = 0; }
+            }}}
+        }
+    }
+
+    var end = n;
+    var rtrim = 1;
+    while (rtrim == 1) {
+        if (end <= start) { rtrim = 0; }
+        else {
+            var c = load8(&buf + end - 1);
+            if (c == 32) { end = end - 1; }
+            else { if (c == 9) { end = end - 1; }
+            else { if (c == 10) { end = end - 1; }
+            else { if (c == 13) { end = end - 1; }
+            else { rtrim = 0; }
+            }}}
+        }
+    }
+
+    var content_len = end - start;
+    if (content_len == 0) { return 0; }
+    var out = alloc(content_len + 1);
+    memcpy(out, &buf + start, content_len);
+    store8(out + content_len, 0);
+    return out;
 }

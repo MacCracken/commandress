@@ -33,63 +33,11 @@ fn cyrius_env_find_root(start_dir): i64 {
     return find_ancestor_with(start_dir, "/cyrius.cyml");
 }
 
-# Read `<root>/VERSION` and return its trimmed contents as a heap-
-# alloc'd cstring, or 0 when the file is absent / unreadable / empty.
-#
-# Trim covers leading & trailing whitespace (space, tab, \n, \r) so a
-# file with `0.5.0\n` becomes `0.5.0`. 256-byte buffer is plenty:
-# semver + pre-release tags fit comfortably; pathological VERSION
-# files are not a real concern.
+# Thin delegate over read_trimmed_file_at — preserved as a named
+# helper so callers + tests read naturally. Build/trim policy lives in
+# `src/fslookup.cyr` (lifted v0.5.0 once python_env hit the same shape).
 fn cyrius_env_read_version(root): i64 {
-    if (root == 0) { return 0; }
-    var root_len = strlen(root);
-    var suffix = "/VERSION";
-    var suffix_len = strlen(suffix);
-    var path = alloc(root_len + suffix_len + 1);
-    memcpy(path, root, root_len);
-    memcpy(path + root_len, suffix, suffix_len);
-    store8(path + root_len + suffix_len, 0);
-
-    var buf[256];
-    var n = file_read_all(path, &buf, 256);
-    if (n <= 0) { return 0; }
-
-    var start = 0;
-    var ltrim = 1;
-    while (ltrim == 1) {
-        if (start >= n) { ltrim = 0; }
-        else {
-            var c = load8(&buf + start);
-            if (c == 32) { start = start + 1; }
-            else { if (c == 9) { start = start + 1; }
-            else { if (c == 10) { start = start + 1; }
-            else { if (c == 13) { start = start + 1; }
-            else { ltrim = 0; }
-            }}}
-        }
-    }
-
-    var end = n;
-    var rtrim = 1;
-    while (rtrim == 1) {
-        if (end <= start) { rtrim = 0; }
-        else {
-            var c = load8(&buf + end - 1);
-            if (c == 32) { end = end - 1; }
-            else { if (c == 9) { end = end - 1; }
-            else { if (c == 10) { end = end - 1; }
-            else { if (c == 13) { end = end - 1; }
-            else { rtrim = 0; }
-            }}}
-        }
-    }
-
-    var content_len = end - start;
-    if (content_len == 0) { return 0; }
-    var out = alloc(content_len + 1);
-    memcpy(out, &buf + start, content_len);
-    store8(out + content_len, 0);
-    return out;
+    return read_trimmed_file_at(root, "/VERSION");
 }
 
 # Pure parser for `cyrius --version` stdout. First line is
