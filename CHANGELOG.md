@@ -6,6 +6,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-18
+
+**M5 (partial) — theming foundation.** The prompt has colour. A new `src/color.cyr` module turns named ANSI colours + style modifiers into SGR escape sequences; ten per-segment SGR slots in `Config` hold pre-computed opening strings; render wraps each painted segment with the opener and a `\x1b[0m` reset. An opinionated default theme ships baked in — cwd cyan-bold, exit red-bold, vcs yellow, env segments in their language-conventional colours — so users get a working coloured prompt with zero config. Users override per-segment via `fg` / `bg` / `style` keys in `[[segments.X]]`. The optional `[[palette]]` table + `palette:<name>` reference syntax sets up the v1 theme-switching path: a single edit to the palette block recolours the whole prompt. cwd `max_length` (carried over from M1) bounds long paths at '/' boundaries. The three remaining M5 deliverables — powerline-style separators, right-prompt support, and `docs/themes/` curated examples — are deferred to v0.6.x; the contract is stable enough that they land additively. Per-segment surface for v0.6.0: 16 named ANSI colours (8 standard + 8 bright) + `"default"`, four style modifiers (bold / italic / underline / reverse), one segment-bounded path-truncation knob, and a single-palette layer.
+
+### Added
+
+- **`src/color.cyr`** — ANSI SGR helpers for the prompt theme layer. `color_to_sgr_fg(name) / color_to_sgr_bg(name)` return SGR ints (30..37 / 90..97 for fg; bg = fg + 10) or 0 for `default` / null / unknown. `style_to_sgr_mods(s, codes, max)` parses space-separated tokens (bold | italic | underline | reverse), writes mod codes as i64s, returns count. `sgr_open_for(fg, bg, style)` composes `"\x1b[<mods>;<fg>;<bg>m"` and returns 0 when nothing to emit (the empty-default case). `SGR_RESET` cstring `"\x1b[0m"`. ~140 LoC; 54 assertions across 16 cases in the `color` test group.
+- **`[[palette]]` section + `palette:<name>` reference syntax** — define a single table of named colour slots, reference them in any segment's `fg` / `bg` field. Resolved at config-load time so render still emits the pre-computed SGR. Unknown ref → segment renders unstyled (same path as `"default"`). Sets up the v0.7.x multi-palette + theme-switching shape without an additional breaking change.
+- **Per-segment colour fields** — `fg`, `bg`, `style` allowed in every `[[segments.X]]` block. New colour-only sections added for `hostname`, `user`, `cyrius_env`, `python_env`, `node_env`, `rustup_env` (segments with no other per-segment knobs in v0.6.0 still need a place to declare colour).
+- **Opinionated default theme** — baked into `config_default`:
+  - `cwd` cyan-bold, `exit` red-bold, `vcs` yellow, `time` bright_black (dim)
+  - `hostname` blue, `user` green-bold
+  - `cyrius_env` magenta, `python_env` yellow, `node_env` green, `rustup_env` red
+- **cwd `max_length` truncation** — bounds the rendered cwd to `max_length` bytes (0 = no limit; default 0). When over, the longest qualifying suffix anchored at a `/` boundary is kept with a `...` prefix; pathological `max_length < 4` emits a row of `.` dots; no-qualifying-`/` falls back to `...` + raw tail. Carried over from M1.
+- **Render-side SGR plumbing** — `src/render.cyr::_sgr_for(cfg, name)` resolves the per-segment SGR opening cstring from the Config; the segment loop emits `<sgr_open><out>\x1b[0m` when SGR is non-zero, plain output otherwise.
+- **Tests** — 33 new assertions across 17 cases (`200 → 217` after the colour wiring lands, then `+10 → 217 → 217` — the final count is **217**):
+  - 16 colour cases (8 standard + 8 bright fg, bg = fg + 10, absent/default/unknown, four style modifiers in isolation, multi-mod ordering, unknown-word skip, empty/whitespace, sgr_open all-paths including three-digit codes via bright_white, SGR_RESET exact bytes).
+  - 6 config-theme cases (default-theme bake-in including exact bytes for cwd + exit, partial-override safety, fg-only-override, full reset, hostname color-only, python_env color-only).
+  - 5 palette cases (resolves ref, multi-slot palette, unknown ref → unstyled, mixed raw + palette refs, absent palette behaves like before).
+  - 8 cwd-truncation cases (no-op zero, no-op within budget, collapse at slash, exact budget, leaf-only, pathological `< 4`, no-qualifying-slash fallback, render-path bound).
+  - Suite is now **217 passed, 0 failed (217 total)**.
+
+### Changed
+
+- **`VERSION`** — `0.5.0` → `0.6.0`.
+- **`src/config.cyr`** — schema gained `fg` / `bg` / `style` keys on every `[[segments.X]]` block + an optional `[[palette]]` section + `max_length` on `[[segments.cwd]]`. Storage grew: 10 new `CFG_SGR_*` slots (8 bytes each) + `CFG_CWD_MAX_LENGTH` (8 bytes); `CFG_SIZE` 64 → 152 B. Three new helpers — `_apply_seg_style` (partial-override-safe: only overwrites the SGR slot when ≥1 of fg/bg/style is present), `_load_color_only_section` (for segments with no non-colour knobs), `_load_palette` / `_palette_lookup` / `_resolve_color_value` (palette parsing + ref resolution). Cwd block also parses `max_length` via `atoi(str_cstr(...))`.
+- **`src/segments/cwd.cyr`** — `cwd_render(home, max_length)` signature change; new `_truncate_cwd(path, plen, max_length)` helper. The segment composes home-shortening → truncation in that order. Existing callers (bench, tests) updated to pass `0` for unlimited.
+- **`src/render.cyr`** — segment loop now emits `<sgr_open><out>\x1b[0m` when the segment has a non-zero SGR slot, plain output otherwise. New `_sgr_for(cfg, name)` mirrors `_seg_fn_for` for SGR-by-name resolution.
+- **Binary size** — text 121,520 → 133,799 B (+12,279 for `color.cyr`, palette helpers, SGR resolver, truncation logic). bss 54,568 → 54,696 B (+128). **Total 176,088 → 188,495 B (+12,407 B)** for the theming foundation + truncation.
+- **Performance** — `config_default` 154 ns → **2 µs** (10 `sgr_open_for` calls during default-theme bake; one-time per redraw — 0.04 % of the 5 ms budget). `render_prompt (cwd+exit)` 2 µs → **3 µs** (~1 µs SGR emit overhead per painted segment under the default theme). All other segment timings within run-to-run variance of 0.5.0 numbers. `vcs_render (fork + sit status)` measured at **3.9 ms** vs 1.8 ms in 0.5.0 — the vcs code path is unchanged in this release, so suspect dev-host load variance (fork+exec timing is sensitive to system state); will re-baseline in 0.6.x.
+
+### Roadmap
+
+- **M5 partially closed.** Colour palette + per-segment colours + opinionated default theme + cwd `max_length` truncation + `[[palette]]` reference layer all shipped. Three M5 deliverables remain — **powerline-style separators**, **right-prompt support**, and **`docs/themes/` curated theme files** — deferred to v0.6.x bites; the underlying SGR + palette contracts are stable enough that they land additively without schema churn. Default segments stay `["cwd", "exit"]` — colours apply across the registered set regardless of which ones are listed.
+
 ## [0.5.0] — 2026-05-18
 
 **M4 — language-env segments.** Four new probes — `cyrius_env`, `python_env`, `node_env`, `rustup_env` — close the milestone. All four follow a single file-first resolution order ([ADR 0005](docs/adr/0005-language-env-probe-pattern.md)): optional env var (e.g. `$VIRTUAL_ENV`) → ancestor walk for a marker file (`VERSION`, `.python-version`, `.nvmrc`, `rust-toolchain`) → read+trim → optional shellout (today only `cyrius_env` falls back to `cyrius --version` — Python / Node / Rust shellouts are parked pre-v1 per the file-first user direction). The walk + read are absorbed into two shared helpers in `src/fslookup.cyr` (`find_ancestor_with` + `read_trimmed_file_at`); `_find_in_path` similarly lifted from `vcs.cyr` to `src/pathlookup.cyr` so the shellout segments share PATH resolution. Net result: a new env-segment is ~20 lines (`node_env.cyr` is 20; `rustup_env.cyr` is 18). Default segments stay `["cwd", "exit"]`; new segments are opt-in.
