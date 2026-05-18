@@ -29,6 +29,7 @@ include "lib/bench.cyr"
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
+include "src/cache.cyr"
 include "src/shellout.cyr"
 include "src/render.cyr"
 
@@ -136,12 +137,17 @@ fn bench_vcs_parser(): i64 {
     return 0;
 }
 
-# Full-segment bench — includes the fork+exec round-trip. Run inside
-# the cyrius/commandress repo; if `sit` isn't on PATH or there's no
-# sit repo above cwd, the segment renders empty (segment-empty is its
-# own valid measurement — captures the find-on-path cost).
+# Full-segment bench. Run inside the commandress repo; if `sit` isn't
+# on PATH or there's no sit repo above cwd, the segment renders empty
+# (segment-empty is its own valid measurement — captures the find-on-
+# path cost).
+#
+# v0.7.0: vcs_render is now cache-wrapped. The first call pays the
+# full ~1.8 ms fork+exec; subsequent calls within the 1 s TTL read
+# the cached cstring (~7 µs). The `max` in the report below reflects
+# the cold call; `avg` is dominated by the hot path.
 fn bench_vcs_segment(): i64 {
-    var b = bench_new("vcs_render (fork+sit status)");
+    var b = bench_new("vcs_render (cached, 1s TTL)");
     _silence_stdout();
     var rounds = 20;
     var batch = 5;
@@ -322,6 +328,7 @@ fn bench_prompt(): i64 {
 
 fn main(): i64 {
     alloc_init();
+    cache_init();                                # so vcs_render can warm + hit the per-cwd cache
     println("=== commandress benchmarks ===");
     bench_cwd_segment();
     bench_exit_segment();

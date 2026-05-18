@@ -24,6 +24,7 @@ include "lib/assert.cyr"
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
+include "src/cache.cyr"
 include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
@@ -1157,6 +1158,49 @@ fn test_sgr_reset_constant(): i64 {
     return 0;
 }
 
+# ---- cache ----
+
+# Roundtrip: write a value, read it back within the TTL window.
+fn test_cache_roundtrip(): i64 {
+    cache_init();
+    cache_put("tst_rt", "/some/cwd", "hello", 5);
+    var v = cache_get("tst_rt", "/some/cwd", 1);
+    assert_neq(v, 0, "cache_get returns non-null after put");
+    _streq_or_dump(v, "hello", "cache roundtrip preserves bytes");
+    return 0;
+}
+
+# Distinct cwds → distinct cache files; one's writes don't leak.
+fn test_cache_per_cwd_isolation(): i64 {
+    cache_init();
+    cache_put("tst_iso", "/cwd/a", "AAA", 3);
+    cache_put("tst_iso", "/cwd/b", "BBB", 3);
+    var va = cache_get("tst_iso", "/cwd/a", 1);
+    var vb = cache_get("tst_iso", "/cwd/b", 1);
+    _streq_or_dump(va, "AAA", "cwd a returns AAA");
+    _streq_or_dump(vb, "BBB", "cwd b returns BBB");
+    return 0;
+}
+
+# Empty value caching: the "no sit repo here" case stashes "" so
+# subsequent redraws short-circuit the find_in_path + shellout.
+fn test_cache_empty_value(): i64 {
+    cache_init();
+    cache_put("tst_empty", "/cwd/none", "", 0);
+    var v = cache_get("tst_empty", "/cwd/none", 1);
+    assert_neq(v, 0, "cached empty returns non-null pointer");
+    assert_eq(strlen(v), 0, "cached empty content has length 0");
+    return 0;
+}
+
+# Cache miss when no entry exists.
+fn test_cache_miss_when_absent(): i64 {
+    cache_init();
+    var v = cache_get("tst_miss", "/cwd/never-written", 1);
+    assert_eq(v, 0, "missing cache entry returns 0");
+    return 0;
+}
+
 # ---- pathlookup ----
 
 # Find `sh` on PATH — present on every conceivable POSIX host. Skip
@@ -1383,6 +1427,12 @@ fn main(): i64 {
     test_sgr_open_three_digit_codes();
     test_sgr_open_multi_mod_plus_color();
     test_sgr_reset_constant();
+
+    test_group("cache");
+    test_cache_roundtrip();
+    test_cache_per_cwd_isolation();
+    test_cache_empty_value();
+    test_cache_miss_when_absent();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();

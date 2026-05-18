@@ -24,6 +24,7 @@ include "lib/args.cyr"
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
+include "src/cache.cyr"
 include "src/shellout.cyr"
 include "src/render.cyr"
 
@@ -68,6 +69,7 @@ fn _parse_side(): i64 {
 fn main(): i64 {
     alloc_init();
     args_init();
+    cache_init();
 
     var home = getenv("HOME");
     var last_exit_str = getenv("AGNOSHI_LAST_EXIT");

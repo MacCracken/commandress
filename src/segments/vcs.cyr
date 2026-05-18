@@ -78,23 +78,66 @@ fn vcs_parse_render(buf, n, dirty_marker): i64 {
     return out;
 }
 
+# Cache TTL (seconds). 1 s is the M6 sweet spot — fast enough that a
+# user touching files sees their dirty marker update on the next
+# prompt cycle; slow enough that rapid typing inside a single keystroke
+# burst pays the fork+exec at most once. Tuning lower would need
+# sub-second `sys_stat` mtime resolution we don't have today.
+enum VcsCacheTtl {
+    VCS_CACHE_TTL_SECS = 1;
+}
+
 # Shell-out path. Finds `sit` on PATH, runs `sit status` under the
 # watchdog, hands the captured bytes to the parser. Returns 0 on any
 # failure mode (not in PATH, timeout, system error, no output, parse
 # fail) — segment renders empty.
+#
+# v0.7.0: wrapped with a per-cwd 1-second TTL cache. First call in a
+# fresh shell pays the fork+exec; subsequent calls within 1 s read the
+# cached cstring from `/tmp/commandress-<uid>/vcs-<hash>`. An empty
+# cached value means "no sit repo / sit not on PATH for this cwd" —
+# we short-circuit the find_in_path + shellout in that case too.
 fn vcs_render(dirty_marker): i64 {
+    var cwd_buf[4096];
+    var cwd_n = syscall(SYS_GETCWD, &cwd_buf, 4096);
+    if (cwd_n > 0) {
+        cwd_n = cwd_n - 1;
+        var cwd = alloc(cwd_n + 1);
+        memcpy(cwd, &cwd_buf, cwd_n);
+        store8(cwd + cwd_n, 0);
+        var cached = cache_get("vcs", cwd, VCS_CACHE_TTL_SECS);
+        if (cached != 0) {
+            if (strlen(cached) == 0) { return 0; }
+            return cached;
+        }
+    }
+
+    var result = 0;
     var sit_path = find_in_path("sit");
-    if (sit_path == 0) { return 0; }
+    if (sit_path != 0) {
+        var argv = alloc(24);
+        store64(argv, sit_path);
+        store64(argv + 8, "status");
+        store64(argv + 16, 0);
+        var envp = alloc(8);
+        store64(envp, 0);
 
-    var argv = alloc(24);
-    store64(argv, sit_path);
-    store64(argv + 8, "status");
-    store64(argv + 16, 0);
-    var envp = alloc(8);
-    store64(envp, 0);
+        var buf[8192];
+        var n = shellout_capture(sit_path, argv, envp, VCS_BUDGET_MS, &buf, 8192);
+        if (n > 0) { result = vcs_parse_render(&buf, n, dirty_marker); }
+    }
 
-    var buf[8192];
-    var n = shellout_capture(sit_path, argv, envp, VCS_BUDGET_MS, &buf, 8192);
-    if (n <= 0) { return 0; }
-    return vcs_parse_render(&buf, n, dirty_marker);
+    # Cache the result keyed by current cwd. Empty result → cache ""
+    # so the next redraw skips find_in_path + shellout too.
+    if (cwd_n > 0) {
+        var cwd2 = alloc(cwd_n + 1);
+        memcpy(cwd2, &cwd_buf, cwd_n);
+        store8(cwd2 + cwd_n, 0);
+        if (result != 0) {
+            cache_put("vcs", cwd2, result, strlen(result));
+        } else {
+            cache_put("vcs", cwd2, "", 0);
+        }
+    }
+    return result;
 }

@@ -1,0 +1,130 @@
+# cache.cyr — per-cwd probe cache with mtime-based TTL.
+#
+# M6 piece that makes shellout-backed segments (vcs today; future
+# `python --version` / `rustup show` if those ever land) cheap enough
+# to keep on every redraw. Without it, vcs's ~1.8 ms fork+exec is
+# paid once per keystroke; with a 1 s TTL cache, a user typing quickly
+# inside a sit repo pays it once per second.
+#
+# Layout: `/tmp/commandress-<uid>/<segment>-<hash(cwd)>` — one file per
+# (segment, cwd) pair. Directory is 0o700 so other users can't peek;
+# files inherit umask via `file_write_all`. mtime is the TTL clock
+# (sys_stat → struct stat offset 88 on Linux x86_64).
+#
+# Cache values:
+#   - heap-alloc'd cstring (possibly empty) → cached value (caller
+#     decides how to interpret an empty cstring; vcs_render maps "" →
+#     "no sit repo here").
+#   - 0 → cache miss (file absent) OR expired (mtime + ttl < now).
+#
+# Public API:
+#   cache_init()                              — idempotent mkdir
+#   cache_get(seg, cwd, ttl_secs): i64        — cstring or 0
+#   cache_put(seg, cwd, value, value_len)     — write
+#
+# Out of scope (M6 follow-ups if needed):
+#   - LRU eviction (entries are tiny; one per cwd; for now we don't gc)
+#   - Cross-process locking (one prompt at a time per shell session;
+#     torn-write races give an empty/short read that expires anyway)
+#   - Sub-second TTLs (mtime resolution is 1 s in stat; finer would
+#     need stat_x's nsec field; not justified today)
+
+# Cached dir path, lazy-built once per invocation.
+var _cache_dir = 0;
+
+fn cache_dir(): i64 {
+    if (_cache_dir != 0) { return _cache_dir; }
+    var uid = syscall(SYS_GETUID);
+    var prefix = "/tmp/commandress-";
+    var prefix_len = strlen(prefix);
+    var uid_buf[32];
+    var uid_len = fmt_int_buf(uid, &uid_buf);
+    var dir = alloc(prefix_len + uid_len + 1);
+    memcpy(dir, prefix, prefix_len);
+    memcpy(dir + prefix_len, &uid_buf, uid_len);
+    store8(dir + prefix_len + uid_len, 0);
+    _cache_dir = dir;
+    return dir;
+}
+
+# 32-bit djb2 hash of `s` (length `slen`). Masked to 32 bits to keep
+# the result a positive i64; we then format as 8 hex digits. djb2 is
+# more than enough for a cache that holds tens of entries per host —
+# collision risk is negligible at this scale.
+fn _cache_hash(s, slen): i64 {
+    var h = 5381;
+    var i = 0;
+    while (i < slen) {
+        h = (h * 33 + load8(s + i)) & 0xffffffff;
+        i = i + 1;
+    }
+    return h;
+}
+
+# Build `<cache_dir>/<seg>-<8-hex>`. Caller owns the returned cstring.
+fn _cache_path(seg_name, cwd): i64 {
+    var dir = cache_dir();
+    var dir_len = strlen(dir);
+    var seg_len = strlen(seg_name);
+    var h = _cache_hash(cwd, strlen(cwd));
+
+    var total = dir_len + 1 + seg_len + 1 + 8 + 1;
+    var out = alloc(total);
+    memcpy(out, dir, dir_len);
+    store8(out + dir_len, 47);                                  # '/'
+    memcpy(out + dir_len + 1, seg_name, seg_len);
+    store8(out + dir_len + 1 + seg_len, 45);                    # '-'
+
+    var pos = dir_len + 1 + seg_len + 1;
+    var i = 7;
+    var done = 0;
+    while (done == 0) {
+        var nib = (h >> (i * 4)) & 15;
+        if (nib < 10) { store8(out + pos, 48 + nib); }
+        else { store8(out + pos, 87 + nib); }
+        pos = pos + 1;
+        if (i == 0) { done = 1; }
+        else { i = i - 1; }
+    }
+    store8(out + pos, 0);
+    return out;
+}
+
+# Idempotent mkdir of the cache directory. EEXIST is treated as
+# success; any other failure leaves the cache effectively disabled
+# (cache_put will silently fail on the missing dir; cache_get's stat
+# will return ENOENT → miss → fall through to the real probe).
+fn cache_init(): i64 {
+    var dir = cache_dir();
+    syscall(SYS_MKDIR, dir, 0x1c0);                             # 0o700
+    return 0;
+}
+
+# Return cached cstring (possibly empty) when the file exists and is
+# within `ttl_secs` of now, else 0. The "possibly empty" case is real
+# — vcs_render caches "" to remember "no sit repo here", short-
+# circuiting the fork+exec on the next redraw.
+fn cache_get(seg_name, cwd, ttl_secs): i64 {
+    var path = _cache_path(seg_name, cwd);
+    var stbuf[144];                                             # struct stat is 144 B on x86_64
+    if (sys_stat(path, &stbuf) != 0) { return 0; }
+    var mtime_sec = load64(&stbuf + 88);                        # offset of st_mtim.tv_sec
+    var now_sec = clock_epoch_secs();
+    if (now_sec - mtime_sec > ttl_secs) { return 0; }
+
+    var file_size = load64(&stbuf + 48);                        # offset of st_size
+    var fd = file_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var buf = alloc(file_size + 1);
+    var n = file_read(fd, buf, file_size);
+    file_close(fd);
+    if (n < 0) { return 0; }
+    store8(buf + n, 0);
+    return buf;
+}
+
+fn cache_put(seg_name, cwd, value, value_len): i64 {
+    var path = _cache_path(seg_name, cwd);
+    file_write_all(path, value, value_len);
+    return 0;
+}
