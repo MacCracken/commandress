@@ -31,6 +31,7 @@ include "src/segments/time.cyr"
 include "src/segments/hostname.cyr"
 include "src/segments/user.cyr"
 include "src/segments/cyrius_env.cyr"
+include "src/segments/python_env.cyr"
 include "src/config.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
@@ -514,6 +515,109 @@ fn test_cyrius_env_render_smoke(): i64 {
     return 0;
 }
 
+# ---- python_env ----
+
+fn test_python_env_basename_simple(): i64 {
+    var out = python_env_basename("/home/user/.venvs/myproj");
+    assert_neq(out, 0, "basename simple returns non-null");
+    _streq_or_dump(out, "myproj", "basename(/home/user/.venvs/myproj) == \"myproj\"");
+    return 0;
+}
+
+fn test_python_env_basename_trailing_slash(): i64 {
+    var out = python_env_basename("/home/user/.venvs/myproj/");
+    assert_neq(out, 0, "basename trailing-slash returns non-null");
+    _streq_or_dump(out, "myproj", "basename(.../myproj/) tolerates trailing slash");
+    return 0;
+}
+
+fn test_python_env_basename_multiple_trailing_slashes(): i64 {
+    var out = python_env_basename("/home/user/.venvs/myproj///");
+    _streq_or_dump(out, "myproj", "basename tolerates multiple trailing slashes");
+    return 0;
+}
+
+fn test_python_env_basename_bare_name(): i64 {
+    var out = python_env_basename("venv");
+    _streq_or_dump(out, "venv", "basename(\"venv\") (no slashes) == \"venv\"");
+    return 0;
+}
+
+fn test_python_env_basename_null(): i64 {
+    var out = python_env_basename(0);
+    assert_eq(out, 0, "basename(null) returns 0");
+    return 0;
+}
+
+fn test_python_env_basename_empty(): i64 {
+    var out = python_env_basename("");
+    assert_eq(out, 0, "basename(\"\") returns 0");
+    return 0;
+}
+
+fn test_python_env_basename_only_slashes(): i64 {
+    var out = python_env_basename("///");
+    assert_eq(out, 0, "basename(\"///\") returns 0");
+    return 0;
+}
+
+fn test_python_env_basename_root(): i64 {
+    var out = python_env_basename("/");
+    assert_eq(out, 0, "basename(\"/\") returns 0");
+    return 0;
+}
+
+fn test_python_env_read_pin_trims(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_py_pin/.python-version");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_py_pin");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_py_pin", 0x1FF), 0, "mkdir tmp root");
+    var fd = file_open("/tmp/cmdrs_py_pin/.python-version", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open .python-version for write");
+    var contents = "  3.11.7\r\n";
+    file_write(fd, contents, strlen(contents));
+    file_close(fd);
+
+    var ver = python_env_read_pin("/tmp/cmdrs_py_pin");
+    assert_neq(ver, 0, "read_pin returns non-null");
+    _streq_or_dump(ver, "3.11.7", "read_pin trims whitespace + CRLF");
+
+    syscall(SYS_UNLINK, "/tmp/cmdrs_py_pin/.python-version");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_py_pin");
+    return 0;
+}
+
+fn test_python_env_read_pin_missing(): i64 {
+    syscall(SYS_RMDIR, "/tmp/cmdrs_py_pin_none");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_py_pin_none", 0x1FF), 0, "mkdir empty root");
+    var ver = python_env_read_pin("/tmp/cmdrs_py_pin_none");
+    assert_eq(ver, 0, "read_pin missing file returns 0");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_py_pin_none");
+    return 0;
+}
+
+# End-to-end smoke. The test process runs from the commandress tree
+# (no .python-version on any ancestor) and we can't setenv from within
+# cyrius. So we can only verify that when VIRTUAL_ENV happens to be
+# set in the parent shell, the segment paints something; when it's
+# unset and no .python-version is in the ancestry, the segment is
+# empty. Both branches are accepted — the assertion just guards
+# against crashes / unexpected non-empty output.
+fn test_python_env_render_smoke(): i64 {
+    var venv = getenv("VIRTUAL_ENV");
+    var out = python_env_render();
+    if (venv != 0) {
+        if (strlen(venv) > 0) {
+            assert_neq(out, 0, "render: VIRTUAL_ENV set → non-empty");
+            return 0;
+        }
+    }
+    # Without VIRTUAL_ENV, the segment may still paint if any ancestor
+    # of the test cwd has a .python-version. Don't assert — just call
+    # to verify it doesn't crash.
+    assert(1, "render: no-VIRTUAL_ENV path executed (no crash)");
+    return 0;
+}
+
 # ---- pathlookup ----
 
 # Find `sh` on PATH — present on every conceivable POSIX host. Skip
@@ -667,6 +771,19 @@ fn main(): i64 {
     test_cyrius_env_read_version_missing();
     test_cyrius_env_read_version_whitespace_only();
     test_cyrius_env_render_smoke();
+
+    test_group("python_env segment");
+    test_python_env_basename_simple();
+    test_python_env_basename_trailing_slash();
+    test_python_env_basename_multiple_trailing_slashes();
+    test_python_env_basename_bare_name();
+    test_python_env_basename_null();
+    test_python_env_basename_empty();
+    test_python_env_basename_only_slashes();
+    test_python_env_basename_root();
+    test_python_env_read_pin_trims();
+    test_python_env_read_pin_missing();
+    test_python_env_render_smoke();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();

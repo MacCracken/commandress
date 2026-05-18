@@ -18,6 +18,7 @@ include "src/segments/time.cyr"
 include "src/segments/hostname.cyr"
 include "src/segments/user.cyr"
 include "src/segments/cyrius_env.cyr"
+include "src/segments/python_env.cyr"
 
 # Dispatcher for the `cwd` segment. Pulls HOME from ctx, gates the
 # home-shorten path on cfg.cwd_home_shorten.
@@ -78,6 +79,12 @@ fn _dispatch_cyrius_env(cfg, ctx): i64 {
     return cyrius_env_render();
 }
 
+# Dispatcher for the `python_env` segment. Pure passthrough —
+# $VIRTUAL_ENV basename vs .python-version walk is internal.
+fn _dispatch_python_env(cfg, ctx): i64 {
+    return python_env_render();
+}
+
 # Registry — name → dispatcher fn pointer. Returns 0 for unknown names
 # so the caller can emit a single targeted warning.
 fn _seg_fn_for(name): i64 {
@@ -88,6 +95,7 @@ fn _seg_fn_for(name): i64 {
     if (streq(name, "hostname") == 1) { return &_dispatch_hostname; }
     if (streq(name, "user") == 1)     { return &_dispatch_user; }
     if (streq(name, "cyrius_env") == 1) { return &_dispatch_cyrius_env; }
+    if (streq(name, "python_env") == 1) { return &_dispatch_python_env; }
     return 0;
 }
 

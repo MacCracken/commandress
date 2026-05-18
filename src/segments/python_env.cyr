@@ -1,0 +1,129 @@
+# python_env.cyr — Python project / virtualenv segment.
+#
+# Resolution order (file-first; no shellout in v0.5.0):
+#   1. $VIRTUAL_ENV set         → basename of the path
+#   2. <ancestor>/.python-version → trimmed contents
+#   3. empty
+#
+# The basename of $VIRTUAL_ENV is the canonical "which venv am I in"
+# signal — every shell-prompt tool surfaces it. `.python-version`
+# (pyenv) acts as the project-pin file: present in the project root,
+# tells us the python version this tree expects. Both are file-or-env
+# reads; no shellout to `python --version` until M6 caching makes
+# version probes cheap enough to default on.
+
+# Extract the basename of `path`. Returns a heap-alloc'd cstring or 0
+# when `path` is null, empty, or only slashes. Trailing slashes are
+# tolerated (`/foo/bar/` → `bar`). No '/' means the input is already
+# a basename (`venv` → `venv`).
+fn python_env_basename(path): i64 {
+    if (path == 0) { return 0; }
+    var len = strlen(path);
+    if (len == 0) { return 0; }
+
+    # Drop trailing slashes — but bail if the whole input is just '/'s.
+    var end = len;
+    var strip = 1;
+    while (strip == 1) {
+        if (end == 0) { strip = 0; }
+        else { if (load8(path + end - 1) == 47) { end = end - 1; } else { strip = 0; } }
+    }
+    if (end == 0) { return 0; }
+
+    # Walk left-to-right tracking the rightmost '/' before `end`.
+    var last = 0 - 1;
+    var i = 0;
+    while (i < end) {
+        if (load8(path + i) == 47) { last = i; }
+        i = i + 1;
+    }
+    var start = 0;
+    if (last >= 0) { start = last + 1; }
+    var name_len = end - start;
+    if (name_len == 0) { return 0; }
+
+    var out = alloc(name_len + 1);
+    memcpy(out, path + start, name_len);
+    store8(out + name_len, 0);
+    return out;
+}
+
+# Read `<root>/.python-version` and return its trimmed contents, or 0
+# on missing file / read error / whitespace-only contents. Same trim
+# semantics as cyrius_env_read_version (space / tab / \n / \r at both
+# ends). 256-byte buffer is plenty: pin files hold a semver-shaped
+# string at most.
+fn python_env_read_pin(root): i64 {
+    if (root == 0) { return 0; }
+    var root_len = strlen(root);
+    var suffix = "/.python-version";
+    var suffix_len = strlen(suffix);
+    var path = alloc(root_len + suffix_len + 1);
+    memcpy(path, root, root_len);
+    memcpy(path + root_len, suffix, suffix_len);
+    store8(path + root_len + suffix_len, 0);
+
+    var buf[256];
+    var n = file_read_all(path, &buf, 256);
+    if (n <= 0) { return 0; }
+
+    var start = 0;
+    var ltrim = 1;
+    while (ltrim == 1) {
+        if (start >= n) { ltrim = 0; }
+        else {
+            var c = load8(&buf + start);
+            if (c == 32) { start = start + 1; }
+            else { if (c == 9) { start = start + 1; }
+            else { if (c == 10) { start = start + 1; }
+            else { if (c == 13) { start = start + 1; }
+            else { ltrim = 0; }
+            }}}
+        }
+    }
+
+    var end = n;
+    var rtrim = 1;
+    while (rtrim == 1) {
+        if (end <= start) { rtrim = 0; }
+        else {
+            var c = load8(&buf + end - 1);
+            if (c == 32) { end = end - 1; }
+            else { if (c == 9) { end = end - 1; }
+            else { if (c == 10) { end = end - 1; }
+            else { if (c == 13) { end = end - 1; }
+            else { rtrim = 0; }
+            }}}
+        }
+    }
+
+    var content_len = end - start;
+    if (content_len == 0) { return 0; }
+    var out = alloc(content_len + 1);
+    memcpy(out, &buf + start, content_len);
+    store8(out + content_len, 0);
+    return out;
+}
+
+fn python_env_render(): i64 {
+    var venv = getenv("VIRTUAL_ENV");
+    if (venv != 0) {
+        if (strlen(venv) > 0) {
+            var name = python_env_basename(venv);
+            if (name != 0) { return name; }
+        }
+    }
+
+    var buf[4096];
+    var n = syscall(SYS_GETCWD, &buf, 4096);
+    if (n <= 0) { return 0; }
+    n = n - 1;
+
+    var cwd = alloc(n + 1);
+    memcpy(cwd, &buf, n);
+    store8(cwd + n, 0);
+
+    var root = find_ancestor_with(cwd, "/.python-version");
+    if (root == 0) { return 0; }
+    return python_env_read_pin(root);
+}

@@ -207,6 +207,50 @@ fn bench_cyrius_env_segment(): i64 {
     return 0;
 }
 
+# Pure basename bench — no IO. Tracks the trailing-slash strip + last-
+# slash scan over a realistic venv path.
+fn bench_python_env_basename(): i64 {
+    var b = bench_new("python_env_basename");
+    var rounds = 100;
+    var batch = 10000;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            python_env_basename("/home/user/.venvs/myproject");
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
+# Full-segment bench. Exercises both branches depending on the runner:
+# VIRTUAL_ENV set → basename path (cheap, no IO); unset → getcwd +
+# ancestor walk for .python-version (no hit in this tree → empty).
+# Either way captures the realistic redraw cost.
+fn bench_python_env_segment(): i64 {
+    var b = bench_new("python_env_render");
+    var rounds = 50;
+    var batch = 200;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            python_env_render();
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 # ---- full-prompt benchmark ----
 
 fn bench_prompt(): i64 {
@@ -242,6 +286,8 @@ fn main(): i64 {
     bench_vcs_segment();
     bench_cyrius_env_parser();
     bench_cyrius_env_segment();
+    bench_python_env_basename();
+    bench_python_env_segment();
     bench_prompt();
     return 0;
 }
