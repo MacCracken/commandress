@@ -29,6 +29,7 @@ include "src/segments/vcs.cyr"
 include "src/segments/time.cyr"
 include "src/segments/hostname.cyr"
 include "src/segments/user.cyr"
+include "src/segments/cyrius_env.cyr"
 include "src/config.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
@@ -380,6 +381,138 @@ fn test_user_renders_nonnull(): i64 {
 # Each test skips cleanly when the host binary isn't present, so the
 # suite stays green on stripped containers / non-coreutils systems.
 
+# ---- cyrius_env ----
+
+# `cyrius_env_parse_version` is a pure parser. Drive it with fabricated
+# `cyrius --version` outputs to verify shape handling without forking
+# a real cyrius process (same pattern as test_vcs_parse_*).
+fn test_cyrius_env_parse_basic(): i64 {
+    var input = "cyrius 5.11.63\nmanifest-pin: 5.11.63\n";
+    var out = cyrius_env_parse_version(input, strlen(input));
+    assert_neq(out, 0, "cyrius_env_parse_version basic returns non-null");
+    _streq_or_dump(out, "5.11.63", "parse \"cyrius 5.11.63\\n...\" → \"5.11.63\"");
+    return 0;
+}
+
+fn test_cyrius_env_parse_no_trailing_newline(): i64 {
+    var input = "cyrius 0.5.0";
+    var out = cyrius_env_parse_version(input, strlen(input));
+    assert_neq(out, 0, "parse without trailing newline returns non-null");
+    _streq_or_dump(out, "0.5.0", "parse \"cyrius 0.5.0\" → \"0.5.0\"");
+    return 0;
+}
+
+fn test_cyrius_env_parse_wrong_prefix(): i64 {
+    var input = "rustc 1.75.0\n";
+    var out = cyrius_env_parse_version(input, strlen(input));
+    assert_eq(out, 0, "parse non-cyrius output returns 0");
+    return 0;
+}
+
+fn test_cyrius_env_parse_empty_version(): i64 {
+    var input = "cyrius \n";
+    var out = cyrius_env_parse_version(input, strlen(input));
+    assert_eq(out, 0, "parse \"cyrius \\n\" (empty version) returns 0");
+    return 0;
+}
+
+# `cyrius_env_find_root` walks upward looking for cyrius.cyml. Drive it
+# with a temp tree under /tmp so the test is hermetic.
+fn test_cyrius_env_find_root_hit(): i64 {
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_dir/sub");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_env_tst_dir/cyrius.cyml");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_dir");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_env_tst_dir", 0x1FF), 0, "mkdir tmp project root");
+    var fd = file_open("/tmp/cmdrs_env_tst_dir/cyrius.cyml", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open tmp cyrius.cyml for write");
+    file_close(fd);
+
+    var root = cyrius_env_find_root("/tmp/cmdrs_env_tst_dir");
+    assert_neq(root, 0, "find_root from project root returns non-null");
+    _streq_or_dump(root, "/tmp/cmdrs_env_tst_dir", "find_root(project root) == itself");
+
+    # Subdir walk-up.
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_env_tst_dir/sub", 0x1FF), 0, "mkdir subdir");
+    var root2 = cyrius_env_find_root("/tmp/cmdrs_env_tst_dir/sub");
+    assert_neq(root2, 0, "find_root from subdir returns non-null");
+    _streq_or_dump(root2, "/tmp/cmdrs_env_tst_dir", "find_root(subdir) walks up to project root");
+
+    # Trailing slash on input shouldn't matter.
+    var root3 = cyrius_env_find_root("/tmp/cmdrs_env_tst_dir/sub/");
+    _streq_or_dump(root3, "/tmp/cmdrs_env_tst_dir", "find_root tolerates trailing slash");
+
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_dir/sub");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_env_tst_dir/cyrius.cyml");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_dir");
+    return 0;
+}
+
+fn test_cyrius_env_find_root_miss(): i64 {
+    # /tmp is unlikely to contain a cyrius.cyml. Skip if it somehow does
+    # so the suite stays green on dev-host weirdness.
+    if (syscall(SYS_ACCESS, "/tmp/cyrius.cyml", 0) == 0) {
+        assert(1, "find_root_miss skipped (/tmp/cyrius.cyml exists)");
+        return 0;
+    }
+    var root = cyrius_env_find_root("/tmp");
+    assert_eq(root, 0, "find_root(/tmp) returns 0 (no cyrius.cyml on the walk)");
+    return 0;
+}
+
+# `cyrius_env_read_version` reads + trims <root>/VERSION.
+fn test_cyrius_env_read_version_trims(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_env_tst_v/VERSION");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_v");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_env_tst_v", 0x1FF), 0, "mkdir tmp root");
+    var fd = file_open("/tmp/cmdrs_env_tst_v/VERSION", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open tmp VERSION for write");
+    var contents = "  0.5.0\n\n";
+    file_write(fd, contents, strlen(contents));
+    file_close(fd);
+
+    var ver = cyrius_env_read_version("/tmp/cmdrs_env_tst_v");
+    assert_neq(ver, 0, "read_version returns non-null");
+    _streq_or_dump(ver, "0.5.0", "read_version trims surrounding whitespace");
+
+    syscall(SYS_UNLINK, "/tmp/cmdrs_env_tst_v/VERSION");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_v");
+    return 0;
+}
+
+fn test_cyrius_env_read_version_missing(): i64 {
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_no_v");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_env_tst_no_v", 0x1FF), 0, "mkdir empty root");
+    var ver = cyrius_env_read_version("/tmp/cmdrs_env_tst_no_v");
+    assert_eq(ver, 0, "read_version on missing VERSION returns 0");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_no_v");
+    return 0;
+}
+
+fn test_cyrius_env_read_version_whitespace_only(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_env_tst_ws/VERSION");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_ws");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_env_tst_ws", 0x1FF), 0, "mkdir tmp root");
+    var fd = file_open("/tmp/cmdrs_env_tst_ws/VERSION", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open VERSION for write");
+    file_write(fd, "   \n\t\n", 6);
+    file_close(fd);
+
+    var ver = cyrius_env_read_version("/tmp/cmdrs_env_tst_ws");
+    assert_eq(ver, 0, "read_version on whitespace-only file returns 0 (falls through to shellout)");
+
+    syscall(SYS_UNLINK, "/tmp/cmdrs_env_tst_ws/VERSION");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_ws");
+    return 0;
+}
+
+# End-to-end: the test process runs from the commandress project root,
+# which has both cyrius.cyml and VERSION — the segment must paint.
+fn test_cyrius_env_render_smoke(): i64 {
+    var out = cyrius_env_render();
+    assert_neq(out, 0, "cyrius_env_render from project tree returns non-null");
+    return 0;
+}
+
 # ---- pathlookup ----
 
 # Find `sh` on PATH — present on every conceivable POSIX host. Skip
@@ -521,6 +654,18 @@ fn main(): i64 {
 
     test_group("user segment");
     test_user_renders_nonnull();
+
+    test_group("cyrius_env segment");
+    test_cyrius_env_parse_basic();
+    test_cyrius_env_parse_no_trailing_newline();
+    test_cyrius_env_parse_wrong_prefix();
+    test_cyrius_env_parse_empty_version();
+    test_cyrius_env_find_root_hit();
+    test_cyrius_env_find_root_miss();
+    test_cyrius_env_read_version_trims();
+    test_cyrius_env_read_version_missing();
+    test_cyrius_env_read_version_whitespace_only();
+    test_cyrius_env_render_smoke();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();

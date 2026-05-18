@@ -22,8 +22,12 @@ include "lib/cyml.cyr"
 include "lib/toml.cyr"
 include "lib/tagged.cyr"
 include "lib/process.cyr"
+include "lib/chrono.cyr"
+include "lib/pwd.cyr"
 include "lib/bench.cyr"
 
+include "src/pathlookup.cyr"
+include "src/shellout.cyr"
 include "src/render.cyr"
 
 var _saved_stdout = 0;
@@ -155,6 +159,53 @@ fn bench_vcs_segment(): i64 {
     return 0;
 }
 
+# Pure-parser bench for `cyrius --version` output. No fork, just the
+# prefix-match + newline scan — should sit near vcs_parse_render's
+# ~230 ns. Cheap baseline to catch parser regressions.
+fn bench_cyrius_env_parser(): i64 {
+    var b = bench_new("cyrius_env_parse_version");
+    var s = "cyrius 5.11.63\nmanifest-pin: 5.11.63\n";
+    var slen = strlen(s);
+    var rounds = 100;
+    var batch = 10000;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            cyrius_env_parse_version(s, slen);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
+# Full-segment bench. The cwd-walk + VERSION-file read path (no shellout)
+# — runs inside this project's tree so the segment always hits the file
+# branch; the shellout fallback never fires. Captures the cost of
+# getcwd + ancestor walk + open/read/trim on a real filesystem.
+fn bench_cyrius_env_segment(): i64 {
+    var b = bench_new("cyrius_env_render (file path)");
+    var rounds = 50;
+    var batch = 100;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            cyrius_env_render();
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 # ---- full-prompt benchmark ----
 
 fn bench_prompt(): i64 {
@@ -188,6 +239,8 @@ fn main(): i64 {
     bench_config_default();
     bench_vcs_parser();
     bench_vcs_segment();
+    bench_cyrius_env_parser();
+    bench_cyrius_env_segment();
     bench_prompt();
     return 0;
 }

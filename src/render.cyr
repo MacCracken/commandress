@@ -17,6 +17,7 @@ include "src/segments/vcs.cyr"
 include "src/segments/time.cyr"
 include "src/segments/hostname.cyr"
 include "src/segments/user.cyr"
+include "src/segments/cyrius_env.cyr"
 
 # Dispatcher for the `cwd` segment. Pulls HOME from ctx, gates the
 # home-shorten path on cfg.cwd_home_shorten.
@@ -70,6 +71,13 @@ fn _dispatch_user(cfg, ctx): i64 {
     return user_render();
 }
 
+# Dispatcher for the `cyrius_env` segment. Pure passthrough — project
+# detection (cyrius.cyml walk) + VERSION-file vs shellout fallback are
+# all internal to cyrius_env_render.
+fn _dispatch_cyrius_env(cfg, ctx): i64 {
+    return cyrius_env_render();
+}
+
 # Registry — name → dispatcher fn pointer. Returns 0 for unknown names
 # so the caller can emit a single targeted warning.
 fn _seg_fn_for(name): i64 {
@@ -79,6 +87,7 @@ fn _seg_fn_for(name): i64 {
     if (streq(name, "time") == 1)     { return &_dispatch_time; }
     if (streq(name, "hostname") == 1) { return &_dispatch_hostname; }
     if (streq(name, "user") == 1)     { return &_dispatch_user; }
+    if (streq(name, "cyrius_env") == 1) { return &_dispatch_cyrius_env; }
     return 0;
 }
 

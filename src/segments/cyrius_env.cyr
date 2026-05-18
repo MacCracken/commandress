@@ -1,0 +1,215 @@
+# cyrius_env.cyr — Cyrius project-version segment.
+#
+# Detects a Cyrius project by walking the current directory upward
+# looking for a `cyrius.cyml` marker. Inside a project, reads
+# `<root>/VERSION` (per CLAUDE.md "VERSION at the project root is the
+# source of truth") and emits the trimmed contents.
+#
+# Resolution order:
+#   1. <root>/VERSION             — file read, no shellout
+#   2. `cyrius --version`         — shellout via shellout_capture
+#   3. empty                      — no project / no version source
+#
+# The shellout fallback exists so that early-stage Cyrius projects
+# without a VERSION file still light up a useful segment. It uses the
+# shared `find_in_path` + `shellout_capture` watchdog — same 5 ms budget
+# as `vcs`, since `cyrius --version` is a stat+print and shouldn't
+# touch the disk for repo scanning the way `sit status` does.
+#
+# Output format: just the version string (`0.5.0`, `5.11.63`, etc.).
+# No "cyrius " label or glyph — those belong to the theming layer (M5).
+
+enum CyriusEnvBudget {
+    CYRIUS_ENV_BUDGET_MS = 5;
+}
+
+# Find the nearest ancestor of `start_dir` that contains `cyrius.cyml`.
+# Returns a heap-alloc'd cstring of the project root (no trailing
+# slash), or 0 when the walk hits "/" without finding the marker.
+#
+# Factored from `cyrius_env_render` so tests can drive it with a known
+# starting directory instead of relying on the test process's cwd.
+fn cyrius_env_find_root(start_dir): i64 {
+    if (start_dir == 0) { return 0; }
+    var len = strlen(start_dir);
+    if (len == 0) { return 0; }
+
+    # Mutable working buffer — we truncate in place as we walk upward.
+    # 4096 matches getcwd's typical PATH_MAX and what cwd.cyr uses.
+    var cur = alloc(4097);
+    memcpy(cur, start_dir, len);
+    store8(cur + len, 0);
+    var cl = len;
+
+    # Strip trailing '/'s from input (but never the root "/" itself).
+    var strip = 1;
+    while (strip == 1) {
+        if (cl <= 1) { strip = 0; }
+        else { if (load8(cur + cl - 1) == 47) { cl = cl - 1; store8(cur + cl, 0); }
+        else { strip = 0; }
+        }
+    }
+
+    var marker = "/cyrius.cyml";
+    var marker_len = strlen(marker);
+    var hit = 0;
+    var done = 0;
+    while (done == 0) {
+        # POSIX collapses leading "//" to "/", so even when cur == "/"
+        # the candidate "//cyrius.cyml" resolves correctly.
+        var candidate = alloc(cl + marker_len + 1);
+        memcpy(candidate, cur, cl);
+        memcpy(candidate + cl, marker, marker_len);
+        store8(candidate + cl + marker_len, 0);
+        if (syscall(SYS_ACCESS, candidate, 0) == 0) {           # F_OK
+            var out = alloc(cl + 1);
+            memcpy(out, cur, cl);
+            store8(out + cl, 0);
+            hit = out;
+            done = 1;
+        } else {
+            if (cl <= 1) { done = 1; }                          # already at "/"
+            else {
+                # Walk up: truncate at the last '/'. Scan left-to-right
+                # (cheap enough at PATH_MAX bounds) and keep the
+                # rightmost index.
+                var last = 0 - 1;
+                var i = 0;
+                while (i < cl) {
+                    if (load8(cur + i) == 47) { last = i; }
+                    i = i + 1;
+                }
+                if (last < 0) { done = 1; }
+                else {
+                    if (last == 0) { cl = 1; store8(cur + 1, 0); }    # "/foo" → "/"
+                    else { cl = last; store8(cur + cl, 0); }
+                }
+            }
+        }
+    }
+    return hit;
+}
+
+# Read `<root>/VERSION` and return its trimmed contents as a heap-
+# alloc'd cstring, or 0 when the file is absent / unreadable / empty.
+#
+# Trim covers leading & trailing whitespace (space, tab, \n, \r) so a
+# file with `0.5.0\n` becomes `0.5.0`. 256-byte buffer is plenty:
+# semver + pre-release tags fit comfortably; pathological VERSION
+# files are not a real concern.
+fn cyrius_env_read_version(root): i64 {
+    if (root == 0) { return 0; }
+    var root_len = strlen(root);
+    var suffix = "/VERSION";
+    var suffix_len = strlen(suffix);
+    var path = alloc(root_len + suffix_len + 1);
+    memcpy(path, root, root_len);
+    memcpy(path + root_len, suffix, suffix_len);
+    store8(path + root_len + suffix_len, 0);
+
+    var buf[256];
+    var n = file_read_all(path, &buf, 256);
+    if (n <= 0) { return 0; }
+
+    var start = 0;
+    var ltrim = 1;
+    while (ltrim == 1) {
+        if (start >= n) { ltrim = 0; }
+        else {
+            var c = load8(&buf + start);
+            if (c == 32) { start = start + 1; }
+            else { if (c == 9) { start = start + 1; }
+            else { if (c == 10) { start = start + 1; }
+            else { if (c == 13) { start = start + 1; }
+            else { ltrim = 0; }
+            }}}
+        }
+    }
+
+    var end = n;
+    var rtrim = 1;
+    while (rtrim == 1) {
+        if (end <= start) { rtrim = 0; }
+        else {
+            var c = load8(&buf + end - 1);
+            if (c == 32) { end = end - 1; }
+            else { if (c == 9) { end = end - 1; }
+            else { if (c == 10) { end = end - 1; }
+            else { if (c == 13) { end = end - 1; }
+            else { rtrim = 0; }
+            }}}
+        }
+    }
+
+    var content_len = end - start;
+    if (content_len == 0) { return 0; }
+    var out = alloc(content_len + 1);
+    memcpy(out, &buf + start, content_len);
+    store8(out + content_len, 0);
+    return out;
+}
+
+# Pure parser for `cyrius --version` stdout. First line is
+# `cyrius X.Y.Z`; extracts the bytes after "cyrius " up to '\n' (or
+# buffer end), returns a heap-alloc'd cstring or 0 on shape mismatch.
+# Factored out so tests can drive it with fabricated bytes without
+# forking a real cyrius process.
+fn cyrius_env_parse_version(buf, n): i64 {
+    var prefix = "cyrius ";
+    var prefix_len = strlen(prefix);
+    if (n < prefix_len) { return 0; }
+    if (memeq(buf, prefix, prefix_len) == 0) { return 0; }
+
+    var start = prefix_len;
+    var end = start;
+    var seek = 1;
+    while (seek == 1) {
+        if (end >= n) { seek = 0; }
+        else { if (load8(buf + end) == 10) { seek = 0; } else { end = end + 1; } }
+    }
+    var ver_len = end - start;
+    if (ver_len == 0) { return 0; }
+
+    var out = alloc(ver_len + 1);
+    memcpy(out, buf + start, ver_len);
+    store8(out + ver_len, 0);
+    return out;
+}
+
+# Shellout fallback: `cyrius --version` via the shared watchdog. Empty
+# render on missing-from-PATH, timeout, or parse failure.
+fn _cyrius_env_shellout(): i64 {
+    var cyrius_path = find_in_path("cyrius");
+    if (cyrius_path == 0) { return 0; }
+
+    var argv = alloc(24);
+    store64(argv, cyrius_path);
+    store64(argv + 8, "--version");
+    store64(argv + 16, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+
+    var buf[256];
+    var n = shellout_capture(cyrius_path, argv, envp, CYRIUS_ENV_BUDGET_MS, &buf, 256);
+    if (n <= 0) { return 0; }
+    return cyrius_env_parse_version(&buf, n);
+}
+
+fn cyrius_env_render(): i64 {
+    var buf[4096];
+    var n = syscall(SYS_GETCWD, &buf, 4096);
+    if (n <= 0) { return 0; }
+    n = n - 1;                                                  # strip trailing NUL count
+
+    var cwd = alloc(n + 1);
+    memcpy(cwd, &buf, n);
+    store8(cwd + n, 0);
+
+    var root = cyrius_env_find_root(cwd);
+    if (root == 0) { return 0; }
+
+    var ver = cyrius_env_read_version(root);
+    if (ver != 0) { return ver; }
+
+    return _cyrius_env_shellout();
+}
