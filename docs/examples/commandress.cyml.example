@@ -1,0 +1,38 @@
+[[prompt]]
+# Segment order — left-to-right. Names must match registered segments
+# (see render.cyr::_seg_fn_for). Unknown names warn to stderr; they
+# don't abort the prompt.
+segments = ["cwd", "exit"]
+
+# Inserted between adjacent painted segments.
+separator = " "
+
+# Painted unconditionally at the end of the line. Include any leading
+# whitespace you want before the prompt-character.
+trailer = " $ "
+
+[[segments.cwd]]
+# When true and the cwd is exactly $HOME or under it, the HOME prefix
+# is rewritten as "~". Strict prefix only — /home/macroX won't match
+# /home/macro.
+home_shorten = true
+
+[[segments.exit]]
+# When true (default), exit code 0 paints nothing — a clean prompt for
+# the common case. Set false to always show "[N]" including "[0]".
+hide_zero = true
+
+---
+
+# Notes zone
+
+Everything below the `---` is ignored by the loader. Use it for theme
+references, segment recipes, links — anything you want to keep next to
+the config it documents.
+
+## Available segments (v0.2.0)
+
+- `cwd` — current working directory.
+- `exit` — last-command exit code.
+
+More segments land in M2+ (git, time, hostname, user, language env).

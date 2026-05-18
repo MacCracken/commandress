@@ -1,22 +1,26 @@
-# commandress test suite — M1 segments.
+# commandress test suite — M1 segments + config loader.
 #
-# Unit tests for the cwd + exit segments. Each segment is a pure fn of
-# its inputs (per ADR 0002), so the harness fabricates inputs and
-# inspects the returned cstring directly — no fork, no syscall trace,
-# no IO capture.
+# Unit tests for the cwd + exit segments and the CYML config loader.
+# Each segment is a pure fn of its inputs (per ADR 0002), so the
+# harness fabricates inputs and inspects the returned cstring directly.
+# Config-loader tests write a temp config file under /tmp, load it, and
+# inspect the resulting Config struct.
 
 include "lib/syscalls.cyr"
 include "lib/alloc.cyr"
 include "lib/string.cyr"
 include "lib/fmt.cyr"
 include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/cyml.cyr"
+include "lib/toml.cyr"
 include "lib/assert.cyr"
 
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
+include "src/config.cyr"
 
-# Helper — returns 1 if cstring `a` equals literal `b`. assert_streq
-# isn't in lib/assert.cyr, so streq + assert wrap it.
 fn _streq_or_dump(got, want, name): i64 {
     if (streq(got, want) == 1) {
         assert(1, name);
@@ -54,34 +58,24 @@ fn test_exit_negative(): i64 {
 }
 
 # ---- cwd segment ----
-# These tests use the real getcwd syscall + a fabricated HOME so we can
-# exercise both the home-shortened path and the absolute-path fallback
-# without changing the process's actual cwd.
 
 fn test_cwd_no_home(): i64 {
     var out = cwd_render(0);
     assert_neq(out, 0, "cwd_render(home=0) returns a path");
-    # First byte must be '/' — any cwd Cyrius can see is absolute.
     assert_eq(load8(out), 47, "cwd_render(home=0) starts with '/'");
     return 0;
 }
 
 fn test_cwd_home_mismatch(): i64 {
-    # A HOME the cwd cannot possibly start with → absolute fallback.
     var out = cwd_render("/nonexistent/never/matches/this");
     assert_neq(out, 0, "cwd_render(bad-home) returns a path");
-    assert_eq(load8(out), 47, "cwd_render(bad-home) keeps absolute path (no false-shorten)");
+    assert_eq(load8(out), 47, "cwd_render(bad-home) keeps absolute path");
     return 0;
 }
 
 fn test_cwd_home_prefix_exact(): i64 {
-    # Allocate a fake HOME equal to the first N bytes of the current cwd
-    # (terminated). cwd_render must recognize the exact prefix and emit
-    # just "~". We can only safely test this if cwd has at least one
-    # '/' beyond the root — Cyrius's repo cwd at test time does.
     var buf[4096];
     var n = syscall(SYS_GETCWD, &buf, 4096);
-    # n includes trailing NUL.
     if (n <= 2) { assert(1, "cwd_home_prefix_exact skipped (cwd too short)"); return 0; }
     n = n - 1;
     var fake = alloc(n + 1);
@@ -93,12 +87,10 @@ fn test_cwd_home_prefix_exact(): i64 {
 }
 
 fn test_cwd_home_strict_prefix(): i64 {
-    # Fabricate a HOME = parent dir of cwd. Expect "~/<basename>".
     var buf[4096];
     var n = syscall(SYS_GETCWD, &buf, 4096);
-    if (n <= 2) { assert(1, "cwd_home_strict_prefix skipped (cwd too short)"); return 0; }
+    if (n <= 2) { assert(1, "cwd_home_strict_prefix skipped"); return 0; }
     n = n - 1;
-    # Find last '/' — that's the boundary between parent and basename.
     var sep = 0 - 1;
     var si = 0;
     while (si < n) {
@@ -110,10 +102,83 @@ fn test_cwd_home_strict_prefix(): i64 {
     memcpy(fake, &buf, sep);
     store8(fake + sep, 0);
     var out = cwd_render(fake);
-    # Expect "~" + cwd-from-sep ("/foo"). First two chars are "~/".
     assert_neq(out, 0, "cwd_render(home==parent) not empty");
     assert_eq(load8(out), 126, "cwd_render(home==parent) starts '~'");
     assert_eq(load8(out + 1), 47, "cwd_render(home==parent) byte 1 == '/'");
+    return 0;
+}
+
+# ---- config loader ----
+
+fn test_config_defaults(): i64 {
+    var c = config_default();
+    assert_neq(c, 0, "config_default() returns non-null");
+    _streq_or_dump(cfg_separator(c), " ", "default separator == \" \"");
+    _streq_or_dump(cfg_trailer(c), " $ ", "default trailer == \" $ \"");
+    assert_eq(cfg_cwd_home_shorten(c), 1, "default cwd_home_shorten == 1");
+    assert_eq(cfg_exit_hide_zero(c), 1, "default exit_hide_zero == 1");
+    var segs = cfg_segments(c);
+    assert_eq(vec_len(segs), 2, "default segments length == 2");
+    _streq_or_dump(vec_get(segs, 0), "cwd", "default segments[0] == \"cwd\"");
+    _streq_or_dump(vec_get(segs, 1), "exit", "default segments[1] == \"exit\"");
+    return 0;
+}
+
+fn test_config_load_missing_returns_defaults(): i64 {
+    var c = config_load("/nonexistent/path/.commandress.cyml");
+    assert_neq(c, 0, "config_load(missing) returns non-null");
+    _streq_or_dump(cfg_separator(c), " ", "config_load(missing) separator == default");
+    assert_eq(cfg_cwd_home_shorten(c), 1, "config_load(missing) cwd_home_shorten == default");
+    return 0;
+}
+
+fn test_config_load_null_path_returns_defaults(): i64 {
+    var c = config_load(0);
+    assert_neq(c, 0, "config_load(0) returns non-null");
+    _streq_or_dump(cfg_trailer(c), " $ ", "config_load(0) trailer == default");
+    return 0;
+}
+
+# Write `content` to /tmp/cmdrs-test-<name>.cyml and return the path
+# (heap-allocated). Tests use unique names so they can run in any order
+# without interfering.
+fn _write_test_config(name, content): i64 {
+    var path = alloc(64);
+    memcpy(path, "/tmp/cmdrs-test-", 16);
+    var nlen = strlen(name);
+    memcpy(path + 16, name, nlen);
+    memcpy(path + 16 + nlen, ".cyml", 5);
+    store8(path + 16 + nlen + 5, 0);
+    var clen = strlen(content);
+    file_write_all(path, content, clen);
+    return path;
+}
+
+fn test_config_load_full_override(): i64 {
+    var content = "[[prompt]]\nsegments = [\"exit\", \"cwd\"]\nseparator = \" | \"\ntrailer = \" > \"\n\n[[segments.cwd]]\nhome_shorten = false\n\n[[segments.exit]]\nhide_zero = false\n";
+    var path = _write_test_config("full", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_separator(c), " | ", "override separator");
+    _streq_or_dump(cfg_trailer(c), " > ", "override trailer");
+    assert_eq(cfg_cwd_home_shorten(c), 0, "override cwd_home_shorten == 0");
+    assert_eq(cfg_exit_hide_zero(c), 0, "override exit_hide_zero == 0");
+    var segs = cfg_segments(c);
+    assert_eq(vec_len(segs), 2, "override segments length == 2");
+    _streq_or_dump(vec_get(segs, 0), "exit", "override segments[0] == \"exit\"");
+    _streq_or_dump(vec_get(segs, 1), "cwd", "override segments[1] == \"cwd\"");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_partial_override(): i64 {
+    # Only separator set — everything else must fall back to defaults.
+    var content = "[[prompt]]\nseparator = \"::\"\n";
+    var path = _write_test_config("partial", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_separator(c), "::", "partial override separator");
+    _streq_or_dump(cfg_trailer(c), " $ ", "partial override trailer == default");
+    assert_eq(cfg_cwd_home_shorten(c), 1, "partial override cwd_home_shorten == default");
+    syscall(SYS_UNLINK, path);
     return 0;
 }
 
@@ -132,6 +197,13 @@ fn main(): i64 {
     test_cwd_home_mismatch();
     test_cwd_home_prefix_exact();
     test_cwd_home_strict_prefix();
+
+    test_group("config loader");
+    test_config_defaults();
+    test_config_load_missing_returns_defaults();
+    test_config_load_null_path_returns_defaults();
+    test_config_load_full_override();
+    test_config_load_partial_override();
 
     return assert_summary();
 }

@@ -1,0 +1,19 @@
+# context.cyr — per-invocation context handed to every segment.
+#
+# Built once in main.cyr at startup from env vars; passed read-only to
+# segment dispatchers. Keeps segments pure fns of (cfg, ctx) per ADR
+# 0002 — they never touch globals.
+
+var CTX_HOME = 0;
+var CTX_LAST_EXIT = 8;
+var CTX_SIZE = 16;
+
+fn ctx_home(c): i64 { return load64(c + CTX_HOME); }
+fn ctx_last_exit(c): i64 { return load64(c + CTX_LAST_EXIT); }
+
+fn context_new(home, last_exit): i64 {
+    var c = alloc(CTX_SIZE);
+    store64(c + CTX_HOME, home);
+    store64(c + CTX_LAST_EXIT, last_exit);
+    return c;
+}

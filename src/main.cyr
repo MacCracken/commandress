@@ -1,16 +1,36 @@
 # commandress — main entry point.
 #
-# Builds the prompt context (env vars, last exit code) and hands it to
-# the render pipeline. One redraw per invocation; the shell invokes
-# `cmdrs` fresh each prompt.
+# Loads ~/.commandress.cyml (defaults baked in if absent), builds the
+# per-invocation Context from env vars, and hands both to the render
+# pipeline. One redraw per invocation; the shell invokes `cmdrs` fresh
+# each prompt.
 
 include "lib/syscalls.cyr"
 include "lib/alloc.cyr"
 include "lib/string.cyr"
 include "lib/fmt.cyr"
 include "lib/io.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/fnptr.cyr"
+include "lib/cyml.cyr"
+include "lib/toml.cyr"
 
 include "src/render.cyr"
+
+# Build the default config-file path: `$HOME/.commandress.cyml`. Returns
+# 0 when HOME is unset (caller falls back to baked-in defaults).
+fn _default_config_path(home): i64 {
+    if (home == 0) { return 0; }
+    var hlen = strlen(home);
+    var suffix = "/.commandress.cyml";
+    var suflen = strlen(suffix);
+    var path = alloc(hlen + suflen + 1);
+    memcpy(path, home, hlen);
+    memcpy(path + hlen, suffix, suflen);
+    store8(path + hlen + suflen, 0);
+    return path;
+}
 
 fn main(): i64 {
     alloc_init();
@@ -20,7 +40,10 @@ fn main(): i64 {
     var last_exit = 0;
     if (last_exit_str != 0) { last_exit = atoi(last_exit_str); }
 
-    render_prompt(home, last_exit);
+    var cfg = config_load(_default_config_path(home));
+    var ctx = context_new(home, last_exit);
+
+    render_prompt(cfg, ctx);
     return 0;
 }
 

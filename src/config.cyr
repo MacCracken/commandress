@@ -1,0 +1,203 @@
+# config.cyr — CYML config loader for ~/.commandress.cyml.
+#
+# Schema (TOML in the header zone of a CYML file — sub-tables use the
+# `[[name]]` form because the stdlib's `toml_parse` recognises array-of-
+# tables but not single-bracket `[name]`. Treat `[[X]]` as our spelling
+# of `[X]` for now; single-bracket support is a stdlib follow-up):
+#
+#   [[prompt]]
+#   segments  = ["cwd", "exit"]
+#   separator = " "
+#   trailer   = "$ "
+#
+#   [[segments.cwd]]
+#   home_shorten = true
+#
+#   [[segments.exit]]
+#   hide_zero = true
+#
+#   ---
+#   The body zone (after `---`) is ignored; reserved for user notes.
+#
+# Missing file → all defaults. Missing field → that field's default.
+# Unknown fields warn to stderr but don't fail (allow-list is the
+# validation gate; see _warn_unknown_pairs).
+
+var CFG_SEGMENTS = 0;
+var CFG_SEPARATOR = 8;
+var CFG_TRAILER = 16;
+var CFG_CWD_HOME_SHORTEN = 24;
+var CFG_EXIT_HIDE_ZERO = 32;
+var CFG_SIZE = 40;
+
+fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
+fn cfg_separator(c): i64          { return load64(c + CFG_SEPARATOR); }
+fn cfg_trailer(c): i64            { return load64(c + CFG_TRAILER); }
+fn cfg_cwd_home_shorten(c): i64   { return load64(c + CFG_CWD_HOME_SHORTEN); }
+fn cfg_exit_hide_zero(c): i64     { return load64(c + CFG_EXIT_HIDE_ZERO); }
+
+# Build the default Config. Used when no file is present, and as the
+# base for partial overrides — a config that sets only `separator`
+# inherits every other default.
+fn config_default(): i64 {
+    var c = alloc(CFG_SIZE);
+    var segs = vec_new();
+    vec_push(segs, "cwd");
+    vec_push(segs, "exit");
+    store64(c + CFG_SEGMENTS, segs);
+    store64(c + CFG_SEPARATOR, " ");
+    # Leading space in the trailer matches the v0.1.0 output shape
+    # (`<segments> $ `). Users overriding the trailer in their config
+    # are responsible for any surrounding spacing they want.
+    store64(c + CFG_TRAILER, " $ ");
+    store64(c + CFG_CWD_HOME_SHORTEN, 1);
+    store64(c + CFG_EXIT_HIDE_ZERO, 1);
+    return c;
+}
+
+# Parse a TOML-style bool ("true"/"false") or numeric flag ("1"/"0").
+# Returns `dflt` on null or any other value (don't fail loud over
+# typos — the per-field allow-list catches genuine mistakes elsewhere).
+fn _parse_bool(s, dflt): i64 {
+    if (s == 0) { return dflt; }
+    if (str_eq_cstr(s, "true") == 1) { return 1; }
+    if (str_eq_cstr(s, "false") == 1) { return 0; }
+    if (str_eq_cstr(s, "1") == 1) { return 1; }
+    if (str_eq_cstr(s, "0") == 1) { return 0; }
+    return dflt;
+}
+
+# Parse a TOML array literal — `["a", "b"]` — into a vec of heap-
+# allocated NUL-terminated cstrings. Empty / malformed input returns
+# an empty vec.
+fn _parse_str_array(s): i64 {
+    var out = vec_new();
+    if (s == 0) { return out; }
+    var data = str_data(s);
+    var slen = str_len(s);
+    var i = 0;
+    while (i < slen) {
+        var c = load8(data + i);
+        if (c == 34) {
+            i = i + 1;
+            var start = i;
+            var seek = 1;
+            while (seek == 1) {
+                if (i >= slen) { seek = 0; }
+                else { if (load8(data + i) == 34) { seek = 0; } else { i = i + 1; } }
+            }
+            var slen2 = i - start;
+            var cstr = alloc(slen2 + 1);
+            if (slen2 > 0) { memcpy(cstr, data + start, slen2); }
+            store8(cstr + slen2, 0);
+            vec_push(out, cstr);
+            i = i + 1;
+        } else {
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+# Emit a stderr warning for any key in `pairs` not on `allowed`.
+# `allowed` is a NUL-terminated vec-of-cstrings; section_name is the
+# `[[name]]` we're scoped to.
+fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
+    var pn = vec_len(pairs);
+    var pi = 0;
+    while (pi < pn) {
+        var p = vec_get(pairs, pi);
+        var key = toml_pair_key(p);
+        var known = 0;
+        var ai = 0;
+        var an = vec_len(allowed);
+        while (ai < an) {
+            if (str_eq_cstr(key, vec_get(allowed, ai)) == 1) { known = 1; }
+            ai = ai + 1;
+        }
+        if (known == 0) {
+            syscall(SYS_WRITE, STDERR, "warning: unknown config field '", 31);
+            syscall(SYS_WRITE, STDERR, str_data(key), str_len(key));
+            syscall(SYS_WRITE, STDERR, "' in [[", 7);
+            syscall(SYS_WRITE, STDERR, section_name, strlen(section_name));
+            syscall(SYS_WRITE, STDERR, "]] (ignored)\n", 13);
+        }
+        pi = pi + 1;
+    }
+    return 0;
+}
+
+# Load config from `path`. On read failure (file missing / unreadable)
+# returns defaults silently — a missing config file is the normal case,
+# not an error. Parse failures fall back to defaults for the offending
+# section but keep already-applied overrides.
+fn config_load(path): i64 {
+    var c = config_default();
+    if (path == 0) { return c; }
+
+    var buf = alloc(65536);
+    var n = file_read_all(path, buf, 65536);
+    if (n <= 0) { return c; }
+
+    var doc = cyml_parse(buf, n);
+    var hdr = cyml_doc_header(doc);
+    var hlen = cyml_doc_header_len(doc);
+    if (hlen == 0) { return c; }
+
+    var sections = toml_parse(str_new(hdr, hlen));
+
+    # [[prompt]] — segment order + separator + trailer.
+    var prompt_secs = toml_get_sections(sections, "prompt");
+    if (vec_len(prompt_secs) > 0) {
+        var prompt = vec_get(prompt_secs, 0);
+        var prompt_pairs = toml_section_pairs(prompt);
+
+        var prompt_allowed = vec_new();
+        vec_push(prompt_allowed, "segments");
+        vec_push(prompt_allowed, "separator");
+        vec_push(prompt_allowed, "trailer");
+        _warn_unknown_pairs(prompt_pairs, prompt_allowed, "prompt");
+
+        var sep_v = toml_get(prompt_pairs, "separator");
+        if (sep_v != 0) { store64(c + CFG_SEPARATOR, str_cstr(sep_v)); }
+
+        var trail_v = toml_get(prompt_pairs, "trailer");
+        if (trail_v != 0) { store64(c + CFG_TRAILER, str_cstr(trail_v)); }
+
+        var segs_v = toml_get(prompt_pairs, "segments");
+        if (segs_v != 0) {
+            var parsed = _parse_str_array(segs_v);
+            if (vec_len(parsed) > 0) { store64(c + CFG_SEGMENTS, parsed); }
+        }
+    }
+
+    # [[segments.cwd]] — cwd-segment options.
+    var cwd_secs = toml_get_sections(sections, "segments.cwd");
+    if (vec_len(cwd_secs) > 0) {
+        var cwd = vec_get(cwd_secs, 0);
+        var cwd_pairs = toml_section_pairs(cwd);
+
+        var cwd_allowed = vec_new();
+        vec_push(cwd_allowed, "home_shorten");
+        _warn_unknown_pairs(cwd_pairs, cwd_allowed, "segments.cwd");
+
+        var hs_v = toml_get(cwd_pairs, "home_shorten");
+        store64(c + CFG_CWD_HOME_SHORTEN, _parse_bool(hs_v, cfg_cwd_home_shorten(c)));
+    }
+
+    # [[segments.exit]] — exit-segment options.
+    var exit_secs = toml_get_sections(sections, "segments.exit");
+    if (vec_len(exit_secs) > 0) {
+        var exit = vec_get(exit_secs, 0);
+        var exit_pairs = toml_section_pairs(exit);
+
+        var exit_allowed = vec_new();
+        vec_push(exit_allowed, "hide_zero");
+        _warn_unknown_pairs(exit_pairs, exit_allowed, "segments.exit");
+
+        var hz_v = toml_get(exit_pairs, "hide_zero");
+        store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
+    }
+
+    return c;
+}

@@ -24,30 +24,32 @@
 - ADR / architecture / guides / examples folders ready
 - Binary output renamed `commandress` → `cmdrs` in `cyrius.cyml`
 
-### M1 — Minimum viable prompt (v0.2.0)
+### M1 — Minimum viable prompt (v0.2.0) — ✅ feature-complete on `main`, awaiting tag
 
-The first build that produces a usable prompt for agnoshi. Three segments + config loader + render pipeline.
+Three segments + config loader + render pipeline.
 
-- [ ] **ADR 0002**: rendering model (segment pipeline shape — pure-function-of-context, no shared state). *ADR 0001 is reserved for the repo-split decision, already accepted.*
-- [ ] **ADR 0003**: config format — CYML (Cyrius-native) vs TOML (broader convention). Capture the trade
-- [ ] **Architecture note 001**: prompt render budget — total budget, per-segment slice, what happens on overrun
-- [ ] `src/config.cyr` — CYML loader for `~/.commandress.cyml`. Validate every field. Fallback to baked-in defaults if file missing.
-- [ ] `src/segments/cwd.cyr` — render current working directory, optionally home-shortened (`~/foo`) and length-truncated
-- [ ] `src/segments/exit.cyr` — last-exit-code segment (reads `$AGNOSHI_LAST_EXIT` or arg)
-- [ ] `src/render.cyr` — compose segments left-to-right with separator, emit ANSI
-- [ ] `src/main.cyr` — wire config → segments → render → stdout
-- [ ] Tests: one happy path + one error path per segment
-- [ ] Benchmark: full-prompt render time, captured in CSV history
+- [x] **ADR 0002**: rendering model — segment pipeline is pure-function-of-context, no shared state.
+- [x] **ADR 0003**: config format — CYML wins over TOML (sovereign-stack consistency + markdown body for user notes).
+- [x] **Architecture note 001**: prompt render budget — 5 ms total, 500 µs per-segment default, slow segments degrade to empty.
+- [x] `src/config.cyr` — CYML loader for `~/.commandress.cyml`. Defaults baked in; missing file → defaults; unknown fields warn to stderr (per-section allow-list).
+- [x] `src/segments/cwd.cyr` — getcwd + optional `$HOME → ~` strict-prefix shortening. (Length-truncation deferred to M5 with the rest of theming.)
+- [x] `src/segments/exit.cyr` — `[N]` non-zero, empty on 0 by default; `hide_zero = false` paints `[0]` too.
+- [x] `src/render.cyr` — table-driven registry, `fncall2` dispatch, joins with `cfg.separator`, paints `cfg.trailer`. (ANSI/color comes at M5.)
+- [x] `src/context.cyr` — per-invocation Context struct (HOME + last_exit). Earned its own file once render became table-driven.
+- [x] `src/main.cyr` — `getenv` → `config_load` → `context_new` → `render_prompt`.
+- [x] Tests: cwd + exit + config_default + config_load (missing/null/full-override/partial-override). 36 assertions green.
+- [x] Benchmark: per-segment + full-prompt timings (CSV history deferred to M6).
 
-**Acceptance**: `AGNOSHI_LAST_EXIT=0 cd /tmp && cmdrs` prints a recognizable prompt with cwd + exit segments.
+**Acceptance hit**: `AGNOSHI_LAST_EXIT=0 cd /tmp && cmdrs` prints `/tmp $ `. With `AGNOSHI_LAST_EXIT=42` prints `/tmp [42] $ `. With a `~/.commandress.cyml` overriding segment order/separator/trailer the prompt picks up the changes per redraw.
 
-### M2 — Git context (v0.3.0)
+### M2 — VCS context (v0.3.0)
 
-- [ ] **ADR 0003**: git probe strategy — shell out to `git` vs reimplement git-state read. Trade-off: dep on git binary vs additional Cyrius surface. Recommendation: shell out via `exec_vec()` for MVP.
-- [ ] `src/segments/git.cyr` — branch name, dirty/clean state, ahead/behind counts
-- [ ] Per-segment timeout enforcement (kill the git probe at budget, render empty)
+- [ ] **ADR 0004**: VCS probe strategy — shell out to [`sit`](https://github.com/MacCracken/sit) (AGNOS-native VCS), **not** external `git`. Sovereign-stack alignment — commandress already commits to zero non-stdlib deps, and adding a hard dep on `git` would re-introduce one in spirit. `sit` is a first-party Cyrius binary, on the same toolchain/version cadence, and exposes the plumbing we need (branch, status, log). Capture the trade vs reimplementing VCS-state read in-tree (rejected: more code, every storage-format bump becomes our problem).
+- [ ] `src/segments/vcs.cyr` (filename hedges so a future fossil/jj/etc. probe can land alongside without renaming) — branch name, dirty/clean state, ahead/behind counts. Probe via `exec_vec("sit", ...)` with explicit argv (no shell, no command injection surface).
+- [ ] Per-segment timeout enforcement — kill the `sit` probe at the per-segment budget and render empty (per [`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)).
+- [ ] Graceful fallback when no `sit` repo is detected (`sit status` non-zero exit / no `.sit/` walked-up) — render empty, not noisy.
 
-**Acceptance**: prompt shows current git branch + dirty indicator on a repo, blank elsewhere.
+**Acceptance**: prompt shows current `sit` branch + dirty indicator inside a `sit` repo, blank elsewhere. Probe stays under the per-segment 500 µs budget on a small repo; larger repos respect the watchdog.
 
 ### M3 — Time + hostname + user (v0.4.0)
 
