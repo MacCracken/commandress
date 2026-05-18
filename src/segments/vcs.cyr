@@ -1,33 +1,37 @@
 # vcs.cyr — VCS context segment (sit-based).
 #
-# Shells out to `sit status` directly via fork+pipe+execve, parses the
-# captured stdout for branch name + dirty/clean flag, and emits
-# `<branch>` (clean) or `<branch><dirty_marker>` (dirty).
+# Shells out to `sit status` via `shellout_capture` (src/shellout.cyr),
+# parses the captured stdout for branch name + dirty/clean flag, and
+# emits `<branch>` (clean) or `<branch><dirty_marker>` (dirty).
 #
 # Returns 0 (renders empty) when sit isn't on PATH, when sit exits
-# non-zero, when stdout is empty, or when the output doesn't start
-# with the expected `On branch ` prefix. The empty render covers:
-# not a sit repo, sit not installed, sit errored, detached HEAD (no
-# `On branch <name>` line). Per ADR 0004.
+# without output, when the watchdog times sit out, or when the output
+# doesn't start with the expected `On branch ` prefix. The empty render
+# covers: not a sit repo, sit not installed, sit errored, sit hung,
+# detached HEAD (no `On branch <name>` line). Per ADR 0004.
 #
-# Per-segment timeout enforcement is deferred to v0.4.0 (out of scope
-# for M2 ship; tracked in roadmap). For v0.3.0 we trust `sit status`
-# to return quickly on healthy repos.
-#
-# This file does not use `lib/process.cyr::run_capture` because that
-# wraps `_exec3` whose `var argv[4]` stack buffer is sized as 4 BYTES
-# but stores 5 pointers (40 B) into it — silent stack overflow that
-# corrupts argv before execve sees it. Filed upstream alongside the
-# missing-stderr-redirect in the vec-based `exec_capture` family.
-# Both make `lib/process.cyr` unusable as-is for our case; an inline
-# fork+pipe is ~30 LoC and avoids the trap entirely.
+# Pre-v0.4.0 history: this file used to inline its own fork+pipe+
+# execve (`_vcs_capture`) to avoid lib/process.cyr::_exec3's byte-
+# contract bug + missing stderr dup2 — both fixed upstream in Cyrius
+# 5.11.60. The watchdog (shellout.cyr) replaced the inline path in
+# v0.4.0 alongside the per-segment timeout work carried forward from
+# M2 / M3. `_find_in_path` stays inline pending Cyrius v6.x Item 8.
+
+# Per-redraw budget for the `sit status` shellout. The healthy-host
+# measurement was ~1.8 ms (CHANGELOG [0.3.0]); 5 ms gives ~2.5× safety
+# margin while keeping the segment well inside the 5 ms total prompt
+# budget. Config-overridable via [[segments.vcs]] budget_ms = N lands
+# in a follow-up slot — for v0.4.0 the budget is fixed in code.
+enum VcsBudget {
+    VCS_BUDGET_MS = 5;
+}
 
 # Find `name` (a cstring like "sit") on $PATH. Returns a heap-alloc'd
 # absolute-path cstring or 0 when not found. Walks the colon-separated
 # $PATH, building `<dir>/<name>` candidates and probing each with
 # access(X_OK). Needed because Linux `execve(2)` does NOT do PATH
 # lookup — that's a libc-`execvp` thing — and no stdlib helper exposes
-# the equivalent today.
+# the equivalent today (Cyrius papercut Item 8, deferred to v6.x).
 fn _find_in_path(name): i64 {
     var path = getenv("PATH");
     if (path == 0) { return 0; }
@@ -61,58 +65,6 @@ fn _find_in_path(name): i64 {
         }
     }
     return hit;
-}
-
-# fork+pipe+execve, capturing stdout, redirecting stderr to /dev/null.
-# `cmd_path` is an absolute path; `arg1` is the sole argv[1] (we only
-# need one for `sit status`). Heap-allocates argv to avoid the
-# `var argv[N]` byte-vs-entry trap in `lib/process.cyr::_exec3`.
-# Returns the number of stdout bytes captured into `buf` (truncated to
-# buflen). Returns -1 on syscall failure.
-fn _vcs_capture(cmd_path, arg1, buf, buflen): i64 {
-    var argv = alloc(24);
-    store64(argv, cmd_path);
-    store64(argv + 8, arg1);
-    store64(argv + 16, 0);
-    var envp = alloc(8);
-    store64(envp, 0);
-
-    var pipefd[16];
-    var pr = sys_pipe(&pipefd);
-    if (pr < 0) { return 0 - 1; }
-    var rfd = load32(&pipefd);
-    var wfd = load32(&pipefd + 4);
-
-    var pid = sys_fork();
-    if (pid < 0) { sys_close(rfd); sys_close(wfd); return 0 - 1; }
-    if (pid == 0) {
-        sys_close(rfd);
-        sys_dup2(wfd, 1);
-        sys_close(wfd);
-        # O_WRONLY = 1 (literal, matches lib/process.cyr's run_capture
-        # comment about the io.cyr-dependency footgun).
-        var devnull = sys_open("/dev/null", 1, 0);
-        if (devnull >= 0) { sys_dup2(devnull, 2); sys_close(devnull); }
-        sys_execve(cmd_path, argv, envp);
-        sys_exit(127);
-    }
-
-    sys_close(wfd);
-    var total = 0;
-    var rgo = 1;
-    while (rgo == 1) {
-        var n = sys_read(rfd, buf + total, buflen - total);
-        if (n <= 0) { rgo = 0; }
-        else {
-            total = total + n;
-            if (total >= buflen) { rgo = 0; }
-        }
-    }
-    sys_close(rfd);
-    # 8-byte status buffer (kernel writes 4 bytes; pad for alignment).
-    var stbuf[8];
-    sys_waitpid(pid, &stbuf, 0);
-    return total;
 }
 
 # Pure parser. Given the raw stdout bytes from `sit status` and a
@@ -165,14 +117,23 @@ fn vcs_parse_render(buf, n, dirty_marker): i64 {
     return out;
 }
 
-# Shell-out path. Finds `sit` on PATH, forks `sit status`, reads
-# stdout, hands the bytes to the parser. Returns 0 on any failure
-# mode for an empty segment.
+# Shell-out path. Finds `sit` on PATH, runs `sit status` under the
+# watchdog, hands the captured bytes to the parser. Returns 0 on any
+# failure mode (not in PATH, timeout, system error, no output, parse
+# fail) — segment renders empty.
 fn vcs_render(dirty_marker): i64 {
     var sit_path = _find_in_path("sit");
     if (sit_path == 0) { return 0; }
+
+    var argv = alloc(24);
+    store64(argv, sit_path);
+    store64(argv + 8, "status");
+    store64(argv + 16, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+
     var buf[8192];
-    var n = _vcs_capture(sit_path, "status", &buf, 8192);
+    var n = shellout_capture(sit_path, argv, envp, VCS_BUDGET_MS, &buf, 8192);
     if (n <= 0) { return 0; }
     return vcs_parse_render(&buf, n, dirty_marker);
 }

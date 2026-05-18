@@ -6,6 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+**Cyrius pin → 5.11.63; per-segment timeout watchdog.** Bumped `cyrius.cyml [package].cyrius` from `5.11.59` → `5.11.63` and refreshed `lib/` via `cyrius lib sync` to absorb the Cyrius .60–.63 commandress papercut band (Items 1, 2, 5, 6, 7 closed; Items 3, 4, 8 still deferred to Cyrius v6.x). Then landed the per-segment timeout enforcement that was carried over from M2 → M3: a generic `shellout_capture` watchdog that wraps `fork` + `pipe` + `epoll_wait` + `kill` + `waitpid` around any external command, with a millisecond-resolution deadline. `src/segments/vcs.cyr` switched from its inline `_vcs_capture` workaround to the watchdog. Binary size dropped **395,115 B → 140,155 B** — the .61 heap-alloc of `lib/toml.cyr::toml_parse_file` reclaimed 256 KB of bss that DCE couldn't drop.
+
+### Added
+
+- **`src/shellout.cyr`** — `shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64`. Forks the child, dup2's stdout to a pipe + stderr to `/dev/null`, polls the read end with an epoll deadline, kills the child on overrun, reaps via `waitpid`. Returns bytes captured (`>= 0`), `-1` on system error, or `-2` on timeout. Architecture model in [`docs/architecture/002-shellout-watchdog.md`](docs/architecture/002-shellout-watchdog.md).
+- **`docs/architecture/002-shellout-watchdog.md`** — mechanism + caller contract + scope limits (no retry, no partial-output, no CPU-bound enforcement).
+- **Tests** — 4 new assertions across 2 tests: `test_shellout_happy_path` (`/bin/echo hello` returns 6 bytes verbatim) and `test_shellout_timeout_kills_child` (`/bin/sleep 1` with 10 ms budget returns -2 in well under 1 s — proving the kill fired rather than the parent blocking on waitpid). Each skips cleanly when the host binary is absent. Suite is now **51 passed, 0 failed (51 total)**.
+
+### Changed
+
+- **`cyrius.cyml [package].cyrius`** — `5.11.59` → `5.11.63`.
+- **`lib/` refresh** — `cyrius lib sync` pulled the .60 / .61 fixes for `lib/process.cyr` (`_exec3` byte-contract; vec-exec family stderr dup2) and `lib/toml.cyr` (`toml_parse_file` heap-alloc).
+- **`src/segments/vcs.cyr`** — `_vcs_capture` deleted; `vcs_render` now calls `shellout_capture(sit_path, argv, envp, VCS_BUDGET_MS = 5, &buf, 8192)` and treats any negative return as the empty-render path. Hardcoded 5 ms budget is the seam where config-overridable `[[segments.vcs]] budget_ms = N` plumbing will hook in later. `_find_in_path` stays inline pending Cyrius v6.x Item 8.
+- **`src/main.cyr`** — added `include "lib/chrono.cyr"` (for `clock_now_ms`) and `include "src/shellout.cyr"` ahead of `src/render.cyr`.
+- **`tests/commandress.tcyr`** — same two includes added.
+- **Binary size** — text 84,050 → 104,091 B (+20,041 for the watchdog + chrono surface that gets DCE'd in commandress's slice). bss 298,064 → 36,064 B (−262,000 — toml heap-alloc).
+
+### Roadmap
+
+- **M2 carry-over (per-segment timeout enforcement)** — done. The remaining M3 deliverables (time, hostname, user segments) ship on their own slots.
+
 ## [0.3.0] — 2026-05-17
 
 **M2 — VCS context segment (sit-based).** commandress now reads the current branch + dirty/clean state from [`sit`](https://github.com/MacCracken/sit) (the AGNOS-native VCS, per ADR 0004) and renders it as a segment. Opt-in via `segments = ["cwd", "vcs", "exit"]` in `~/.commandress.cyml`. Inside a sit repo on branch `main` with a clean tree → `<cwd> main $ `; with edits → `<cwd> main* $ `; outside any sit repo or without `sit` on PATH → vcs segment is empty. Per-segment timeout enforcement is the only M2 deliverable not in this release — `sit status` is fast in practice (~1.8 ms fork+exec+parse on the dev host) and the watchdog earns its own slot in v0.4.0.

@@ -1,0 +1,113 @@
+# shellout.cyr — generic fork+exec helper with a per-call time budget.
+#
+# Used by segments that shell out and need to respect the render-time
+# budget (vcs today, language-env in M4). Forks the child, captures
+# stdout into the caller's buffer, redirects stderr to /dev/null,
+# enforces a millisecond-resolution deadline via epoll_wait, and
+# kills the child on overrun.
+#
+# Contract:
+#   shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen)
+# returns:
+#   >= 0   — bytes captured into `buf` (may be 0 if the child wrote
+#            nothing before exiting cleanly)
+#   -1     — system error during setup (pipe / fork / epoll failed);
+#            caller should treat as empty render
+#   -2     — child exceeded `budget_ms`; SIGKILL'd and reaped; caller
+#            should treat as empty render
+#
+# `argv` and `envp` are caller-owned NULL-terminated arrays of cstring
+# pointers — this fn never allocates them. `budget_ms` is clamped to a
+# 1 ms minimum because epoll_wait timeout is ms-resolution; sub-ms
+# budgets land in M6 alongside parallel segment evaluation.
+
+fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
+    var budget = budget_ms;
+    if (budget < 1) { budget = 1; }
+
+    var pipefd[16];
+    if (sys_pipe(&pipefd) < 0) { return 0 - 1; }
+    var rfd = load32(&pipefd);
+    var wfd = load32(&pipefd + 4);
+
+    var pid = sys_fork();
+    if (pid < 0) {
+        sys_close(rfd);
+        sys_close(wfd);
+        return 0 - 1;
+    }
+    if (pid == 0) {
+        sys_close(rfd);
+        sys_dup2(wfd, 1);
+        sys_close(wfd);
+        # O_WRONLY = 1 (mirrors lib/process.cyr::run_capture's literal;
+        # io.cyr's constants are a different dependency footgun).
+        var devnull = sys_open("/dev/null", 1, 0);
+        if (devnull >= 0) {
+            sys_dup2(devnull, 2);
+            sys_close(devnull);
+        }
+        sys_execve(cmd_path, argv, envp);
+        sys_exit(127);
+    }
+
+    # Parent: arm an epoll watch on the read end + a clock_now_ms
+    # deadline. Each iteration: poll for budget remaining, read on
+    # readiness, exit when the child closes the pipe (n == 0) or the
+    # deadline expires.
+    sys_close(wfd);
+
+    var ep = sys_epoll_create();
+    if (ep < 0) {
+        sys_kill(pid, SIGKILL);
+        sys_close(rfd);
+        var stbuf_err[8];
+        sys_waitpid(pid, &stbuf_err, 0);
+        return 0 - 1;
+    }
+    var ev = epoll_event_new(EPOLLIN, rfd);
+    sys_epoll_ctl(ep, EPOLL_CTL_ADD, rfd, ev);
+
+    var deadline_ms = clock_now_ms() + budget;
+    var events_buf = alloc(16);
+    var total = 0;
+    var timed_out = 0;
+    var sys_err = 0;
+    var done = 0;
+    while (done == 0) {
+        var remaining = deadline_ms - clock_now_ms();
+        if (remaining <= 0) {
+            timed_out = 1;
+            done = 1;
+        } else {
+            var nev = sys_epoll_wait(ep, events_buf, 1, remaining);
+            if (nev < 0) {
+                sys_err = 1;
+                done = 1;
+            } else {
+                if (nev == 0) {
+                    timed_out = 1;
+                    done = 1;
+                } else {
+                    var space = buflen - total;
+                    if (space <= 0) { done = 1; }
+                    else {
+                        var n = sys_read(rfd, buf + total, space);
+                        if (n <= 0) { done = 1; }
+                        else { total = total + n; }
+                    }
+                }
+            }
+        }
+    }
+
+    sys_close(ep);
+    if (timed_out == 1) { sys_kill(pid, SIGKILL); }
+    sys_close(rfd);
+    var stbuf[8];
+    sys_waitpid(pid, &stbuf, 0);
+
+    if (sys_err == 1) { return 0 - 1; }
+    if (timed_out == 1) { return 0 - 2; }
+    return total;
+}

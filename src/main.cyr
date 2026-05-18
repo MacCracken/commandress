@@ -16,8 +16,10 @@ include "lib/fnptr.cyr"
 include "lib/cyml.cyr"
 include "lib/toml.cyr"
 include "lib/tagged.cyr"
+include "lib/chrono.cyr"
 include "lib/process.cyr"
 
+include "src/shellout.cyr"
 include "src/render.cyr"
 
 # Build the default config-file path: `$HOME/.commandress.cyml`. Returns

@@ -16,9 +16,11 @@ include "lib/str.cyr"
 include "lib/cyml.cyr"
 include "lib/toml.cyr"
 include "lib/tagged.cyr"
+include "lib/chrono.cyr"
 include "lib/process.cyr"
 include "lib/assert.cyr"
 
+include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
 include "src/segments/vcs.cyr"
@@ -256,6 +258,59 @@ fn test_vcs_parse_short_buffer_returns_empty(): i64 {
     return 0;
 }
 
+# ---- shellout watchdog ----
+# Each test skips cleanly when the host binary isn't present, so the
+# suite stays green on stripped containers / non-coreutils systems.
+
+fn test_shellout_happy_path(): i64 {
+    if (syscall(SYS_ACCESS, "/bin/echo", 1) != 0) {
+        assert(1, "shellout_happy_path skipped (no /bin/echo)");
+        return 0;
+    }
+    var argv = alloc(24);
+    store64(argv, "/bin/echo");
+    store64(argv + 8, "hello");
+    store64(argv + 16, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+    var buf[64];
+    var n = shellout_capture("/bin/echo", argv, envp, 1000, &buf, 64);
+    assert_eq(n, 6, "echo hello → 6 bytes (h e l l o \\n)");
+    if (n == 6) {
+        var ok = 1;
+        if (load8(&buf) != 104)  { ok = 0; }  # h
+        if (load8(&buf + 1) != 101) { ok = 0; } # e
+        if (load8(&buf + 2) != 108) { ok = 0; } # l
+        if (load8(&buf + 3) != 108) { ok = 0; } # l
+        if (load8(&buf + 4) != 111) { ok = 0; } # o
+        if (load8(&buf + 5) != 10)  { ok = 0; } # \n
+        assert(ok, "echo hello → buf == \"hello\\n\"");
+    }
+    return 0;
+}
+
+fn test_shellout_timeout_kills_child(): i64 {
+    if (syscall(SYS_ACCESS, "/bin/sleep", 1) != 0) {
+        assert(1, "shellout_timeout_kills_child skipped (no /bin/sleep)");
+        return 0;
+    }
+    var argv = alloc(24);
+    store64(argv, "/bin/sleep");
+    store64(argv + 8, "1");                 # 1 second
+    store64(argv + 16, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+    var buf[64];
+    var start_ms = clock_now_ms();
+    var n = shellout_capture("/bin/sleep", argv, envp, 10, &buf, 64);
+    var elapsed_ms = clock_now_ms() - start_ms;
+    assert_eq(n, 0 - 2, "sleep 1 with 10ms budget → -2 (timeout)");
+    var fast_enough = 0;
+    if (elapsed_ms < 200) { fast_enough = 1; }
+    assert(fast_enough, "sleep 1 returned in well under 1s (child was killed, not waited out)");
+    return 0;
+}
+
 # ---- harness ----
 
 fn main(): i64 {
@@ -289,6 +344,10 @@ fn main(): i64 {
     test_vcs_parse_no_marker_when_disabled();
     test_vcs_parse_wrong_prefix_returns_empty();
     test_vcs_parse_short_buffer_returns_empty();
+
+    test_group("shellout watchdog");
+    test_shellout_happy_path();
+    test_shellout_timeout_kills_child();
 
     return assert_summary();
 }

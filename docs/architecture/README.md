@@ -9,3 +9,4 @@ Not decisions (those live in [`../adr/`](../adr/)) and not guides (those live in
 | # | Title |
 |---|---|
 | [001](001-prompt-render-budget.md) | Prompt render budget — total / per-segment / overrun behavior |
+| [002](002-shellout-watchdog.md) | Shellout watchdog — fork + epoll + kill enforcement for per-segment budgets |
