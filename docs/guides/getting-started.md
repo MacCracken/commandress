@@ -19,7 +19,7 @@ The output binary is `build/cmdrs`.
 
 ```
 shell ──exec("cmdrs")──> cmdrs ──read─→ env vars ($AGNOSHI_LAST_EXIT, $PWD, ...)
-                              ──read─→ ~/.commandress.cyml
+                              ──read─→ ~/.commandress
                               ──compose segments─→
                               ──ANSI emit─→ stdout
 shell ──capture stdout─→ paint as prompt
@@ -44,7 +44,7 @@ Segments are independent — no shared mutable state, no ordering dependencies. 
 
 ## Config (planned for M1)
 
-`~/.commandress.cyml`:
+`~/.commandress`:
 
 ```cyml
 [prompt]

@@ -8,7 +8,7 @@ The full-prompt render-time budget that `cmdrs` lives inside, the per-segment sl
 
 - Process exec — ~1 ms on Linux for a static binary of `cmdrs`'s class.
 - `Context` initialization — env-var slurp, `getcwd`, parse last-exit. Target: ≤ 250 µs.
-- Config load + parse — read `~/.commandress.cyml`, walk it. Target: ≤ 500 µs (memory-mapped; CYML parser is zero-copy).
+- Config load + parse — read `~/.commandress`, walk it. Target: ≤ 500 µs (memory-mapped; CYML parser is zero-copy).
 - All segments combined — ≤ 2.5 ms.
 - Render + final write — ≤ 250 µs.
 

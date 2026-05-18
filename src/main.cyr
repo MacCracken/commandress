@@ -1,6 +1,6 @@
 # commandress — main entry point.
 #
-# Loads ~/.commandress.cyml (defaults baked in if absent), builds the
+# Loads ~/.commandress (defaults baked in if absent), builds the
 # per-invocation Context from env vars, and hands both to the render
 # pipeline. One redraw per invocation; the shell invokes `cmdrs` fresh
 # each prompt.
@@ -26,12 +26,14 @@ include "src/color.cyr"
 include "src/shellout.cyr"
 include "src/render.cyr"
 
-# Build the default config-file path: `$HOME/.commandress.cyml`. Returns
-# 0 when HOME is unset (caller falls back to baked-in defaults).
+# Build the default config-file path: `$HOME/.commandress`. Returns
+# 0 when HOME is unset (caller falls back to baked-in defaults). The
+# canonical name drops the `.cyml` extension to match the dotfile
+# convention (`.bashrc`, `.zshrc`, `.gitconfig`, ...) — see ADR 0006.
 fn _default_config_path(home): i64 {
     if (home == 0) { return 0; }
     var hlen = strlen(home);
-    var suffix = "/.commandress.cyml";
+    var suffix = "/.commandress";
     var suflen = strlen(suffix);
     var path = alloc(hlen + suflen + 1);
     memcpy(path, home, hlen);

@@ -48,7 +48,7 @@ cyrius bench tests/commandress.bcyr            # benchmarks
 - **Correctness over cleverness** — if the prompt is wrong, the bugs own you
 - **Render time is a feature** — every segment runs on a budget; slow segments lose
 - **Independent segments** — each segment is a pure function of input context; no shared mutable state, no cross-segment ordering dependencies
-- **Config over code** — appearance, segment order, segment toggles live in `~/.commandress.cyml`. Code change required only for new segment types
+- **Config over code** — appearance, segment order, segment toggles live in `~/.commandress` (CYML format, no extension; see ADR 0006). Code change required only for new segment types
 - **Static binary** — zero non-stdlib deps. Cold start under 5ms target on Cyrius-current hardware
 - **agnoshi-first, shell-agnostic interface** — the binary takes context via env vars + flags; agnoshi-specific helpers live outside the binary (in agnoshi)
 - ONE change at a time — never bundle unrelated segment additions

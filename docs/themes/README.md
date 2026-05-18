@@ -1,6 +1,6 @@
 # Themes
 
-Curated `~/.commandress.cyml` configurations that exercise the v0.6.0 [palette layer](../adr/) and per-segment color contract. Each theme is a single CYML snippet — append it to your `~/.commandress.cyml` (or replace the file outright) and your next prompt redraw picks it up.
+Curated `~/.commandress` configurations that exercise the v0.6.0 [palette layer](../adr/) and per-segment color contract. Each theme is a single CYML snippet — append it to your `~/.commandress` (or replace the file outright) and your next prompt redraw picks it up.
 
 ## Available themes
 
@@ -27,10 +27,10 @@ Each theme file is **self-contained** — it ships its own `[[prompt]]` block al
 ### Fresh install / full replace
 
 ```sh
-cp docs/themes/commandress.cyml ~/.commandress.cyml
+cp docs/themes/commandress.cyml ~/.commandress
 ```
 
-This overwrites anything currently in `~/.commandress.cyml`. Use when you don't have a config yet — or when you don't mind starting fresh.
+This overwrites anything currently in `~/.commandress`. Use when you don't have a config yet — or when you don't mind starting fresh.
 
 ### Existing config you want to keep
 
@@ -38,7 +38,7 @@ Don't `cat >>` blindly. The config loader treats duplicate section names ("array
 
 Edit by hand instead:
 
-1. Open `~/.commandress.cyml` and the theme file side by side.
+1. Open `~/.commandress` and the theme file side by side.
 2. Replace your `[[palette]]` block with the theme's (or add one if you don't have one).
 3. Replace each `[[segments.X]]` block with the theme's matching block. Leave alone the ones the theme doesn't ship.
 4. Optionally update your `[[prompt]]` segment list — themes ship a maximalist set; trim to taste.

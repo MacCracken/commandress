@@ -1,6 +1,6 @@
 # Prompt tour — what `cmdrs` paints, by example
 
-A reference gallery of `cmdrs` output for the v0.3.0 surface (cwd / exit / vcs). Each block shows the config that produced it, the shell context, and the literal line `cmdrs` prints to stdout. Use it to pick a config shape that matches the prompt you want; copy into `~/.commandress.cyml` and adjust.
+A reference gallery of `cmdrs` output for the v0.3.0 surface (cwd / exit / vcs). Each block shows the config that produced it, the shell context, and the literal line `cmdrs` prints to stdout. Use it to pick a config shape that matches the prompt you want; copy into `~/.commandress` and adjust.
 
 The annotated all-knobs config is the sibling file [`commandress.cyml.example`](commandress.cyml.example).
 
@@ -34,7 +34,7 @@ Notes:
 
 `vcs` is opt-in for v0.3.0 — you have to list it in `segments`. It probes `sit status`; outside a `sit` repo (or with `sit` not on PATH) it renders empty, never noisy.
 
-`~/.commandress.cyml`:
+`~/.commandress`:
 
 ```cyml
 [[prompt]]

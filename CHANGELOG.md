@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking
+
+- **Config file renamed: `~/.commandress.cyml` → `~/.commandress`.** No fall-back; the old path is no longer read. Migration is one `mv`: `mv ~/.commandress.cyml ~/.commandress`. Rationale + alternatives in [ADR 0006](docs/adr/0006-config-path-rename.md). Pre-emptive to the v1 schema freeze — the path is part of the public contract M8 locks down.
+
+### Changed
+
+- **`src/main.cyr::_default_config_path`** — suffix `/.commandress.cyml` → `/.commandress`. One-string change; parse path, schema, validation all unchanged. The file is still CYML.
+- **Docs refresh** — README, CLAUDE.md, `docs/guides/{getting-started,zsh-testing}.md`, `docs/themes/README.md`, `docs/examples/prompt-tour.md`, `docs/architecture/001-prompt-render-budget.md`, `docs/development/state.md`, and the schema-comment header in `src/config.cyr` all updated to reference the new path.
+
+### Added
+
+- **ADR 0006** — `~/.commandress` rename rationale, including the three alternatives considered (fall-back support, defer-to-v1, keep-as-is) and the dotfile-convention argument.
+
 ## [0.6.0] — 2026-05-18
 
 **M5 (partial) — theming foundation.** The prompt has colour. A new `src/color.cyr` module turns named ANSI colours + style modifiers into SGR escape sequences; ten per-segment SGR slots in `Config` hold pre-computed opening strings; render wraps each painted segment with the opener and a `\x1b[0m` reset. An opinionated default theme ships baked in — cwd cyan-bold, exit red-bold, vcs yellow, env segments in their language-conventional colours — so users get a working coloured prompt with zero config. Users override per-segment via `fg` / `bg` / `style` keys in `[[segments.X]]`. The optional `[[palette]]` table + `palette:<name>` reference syntax sets up the v1 theme-switching path: a single edit to the palette block recolours the whole prompt. cwd `max_length` (carried over from M1) bounds long paths at '/' boundaries. The three remaining M5 deliverables — powerline-style separators, right-prompt support, and `docs/themes/` curated examples — are deferred to v0.6.x; the contract is stable enough that they land additively. Per-segment surface for v0.6.0: 16 named ANSI colours (8 standard + 8 bright) + `"default"`, four style modifiers (bold / italic / underline / reverse), one segment-bounded path-truncation knob, and a single-palette layer.

@@ -10,7 +10,7 @@ A small, self-contained binary that takes shell context as input (`$CWD`, last e
 
 - **Zero deps** beyond the Cyrius stdlib — single static binary, fast cold start
 - **Segment model** — independent producers (cwd, vcs, exit; time/hostname/user/lang-env land in M3+) each rendering into a slot
-- **Config-driven** — appearance, segment order, and per-segment toggles live in a CYML file (`~/.commandress.cyml`)
+- **Config-driven** — appearance, segment order, and per-segment toggles live in a CYML file (`~/.commandress` — no extension; format is implicit, see [ADR 0006](docs/adr/0006-config-path-rename.md))
 - **Sovereign stack** — VCS state comes from [`sit`](https://github.com/MacCracken/sit), not external `git` ([ADR 0004](docs/adr/0004-vcs-probe-via-sit.md))
 - **agnoshi-first** — the shell that ships with AGNOS is the primary integration target; bash/zsh adapters follow at M7
 
@@ -51,7 +51,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 ~/repos/commandress [42] $
 ```
 
-Configure via `~/.commandress.cyml` — full annotated example at [`docs/examples/commandress.cyml.example`](docs/examples/commandress.cyml.example). Minimum to enable the `vcs` segment:
+Configure via `~/.commandress` — full annotated example at [`docs/examples/commandress.cyml.example`](docs/examples/commandress.cyml.example). Minimum to enable the `vcs` segment:
 
 ```cyml
 [[prompt]]

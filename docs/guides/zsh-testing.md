@@ -6,7 +6,7 @@
 
 ## What you'll see
 
-After the swap, your zsh prompt is whatever `cmdrs` renders given the current `~/.commandress.cyml`. With no config file, you get the v0.5.0 default: `<cwd> $ ` (cwd home-shortened, trailing space-`$`-space).
+After the swap, your zsh prompt is whatever `cmdrs` renders given the current `~/.commandress`. With no config file, you get the v0.5.0 default: `<cwd> $ ` (cwd home-shortened, trailing space-`$`-space).
 
 ```
 ~/Repos/commandress $ █
@@ -51,7 +51,7 @@ Open a new shell — or `exec zsh` — to pick up the change.
 
 ## Example config
 
-`~/.commandress.cyml` lights up the full M4 segment set:
+`~/.commandress` lights up the full M4 segment set:
 
 ```cyml
 [[prompt]]

@@ -1,4 +1,4 @@
-# config.cyr — CYML config loader for ~/.commandress.cyml.
+# config.cyr — CYML config loader for ~/.commandress.
 #
 # Schema (TOML in the header zone of a CYML file — sub-tables use the
 # `[[name]]` form because the stdlib's `toml_parse` recognises array-of-
@@ -113,7 +113,7 @@ fn config_default(): i64 {
     # it represents" — directory cyan-bold, errors red-bold, time dim,
     # env segments in their language's conventional colour. Users opt
     # back to plain via `fg = "default"` (or any color override) in
-    # their `~/.commandress.cyml`. Out-of-box look beats "make it
+    # their `~/.commandress`. Out-of-box look beats "make it
     # bearable" — starship-equivalent themability lands later (palette
     # layer in v0.6.x, theme files in v0.8.0).
     store64(c + CFG_SGR_CWD,        sgr_open_for("cyan",         0, "bold"));
