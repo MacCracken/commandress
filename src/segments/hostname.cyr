@@ -1,0 +1,32 @@
+# hostname.cyr — hostname segment.
+#
+# Calls `uname(2)` and emits the `nodename` field. One syscall, no
+# config knobs — the M3 cut is intentionally minimal. Short-host
+# rendering (strip the first dot onward) and length truncation are
+# future config fields when a user asks for them.
+#
+# Returns 0 on uname failure or empty nodename — segment renders
+# empty. nodename on Linux is up to 64 bytes + NUL; the struct is
+# `utsname` = 6 fixed-65-byte fields (sysname, nodename, release,
+# version, machine, domainname).
+
+# nodename starts at offset 65 inside the utsname struct.
+enum UtsLayout {
+    UTSNAME_BYTES = 390;
+    UTSNAME_NODENAME_OFFSET = 65;
+}
+
+fn hostname_render(): i64 {
+    var uts[390];
+    var r = syscall(SYS_UNAME, &uts);
+    if (r != 0) { return 0; }
+
+    var nodename = &uts + UTSNAME_NODENAME_OFFSET;
+    var nlen = strlen(nodename);
+    if (nlen == 0) { return 0; }
+
+    var out = alloc(nlen + 1);
+    memcpy(out, nodename, nlen);
+    store8(out + nlen, 0);
+    return out;
+}

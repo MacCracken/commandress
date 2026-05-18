@@ -17,6 +17,7 @@ include "lib/cyml.cyr"
 include "lib/toml.cyr"
 include "lib/tagged.cyr"
 include "lib/chrono.cyr"
+include "lib/pwd.cyr"
 include "lib/process.cyr"
 
 include "src/shellout.cyr"

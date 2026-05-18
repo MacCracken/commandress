@@ -28,6 +28,7 @@
 
 ### M4 — Language env segments (v0.5.0)
 
+- [ ] `src/segments/cyrius_env.cyr` — `cyrius.cyml [package].cyrius` pin parse (sovereign-stack first-party; in-tree Cyrius project detection)
 - [ ] `src/segments/python_env.cyr` — `$VIRTUAL_ENV` parse, version probe
 - [ ] `src/segments/node_env.cyr` — `.nvmrc` / `package.json` parse
 - [ ] `src/segments/rustup_env.cyr` — `rustup show` (or AGNOS-native equivalent)

@@ -14,6 +14,9 @@ include "src/config.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
 include "src/segments/vcs.cyr"
+include "src/segments/time.cyr"
+include "src/segments/hostname.cyr"
+include "src/segments/user.cyr"
 
 # Dispatcher for the `cwd` segment. Pulls HOME from ctx, gates the
 # home-shorten path on cfg.cwd_home_shorten.
@@ -48,12 +51,34 @@ fn _dispatch_vcs(cfg, ctx): i64 {
     return vcs_render(marker);
 }
 
+# Dispatcher for the `time` segment. Forwards the configured strftime-
+# subset format to `time_render`. Renders empty when format is null/
+# empty (won't happen with defaults, but the user can clear it).
+fn _dispatch_time(cfg, ctx): i64 {
+    return time_render(cfg_time_format(cfg));
+}
+
+# Dispatcher for the `hostname` segment. Pure passthrough — the
+# segment has no config knobs in M3.
+fn _dispatch_hostname(cfg, ctx): i64 {
+    return hostname_render();
+}
+
+# Dispatcher for the `user` segment. Pure passthrough — pwd lookup +
+# $USER fallback are policy decisions baked into user_render itself.
+fn _dispatch_user(cfg, ctx): i64 {
+    return user_render();
+}
+
 # Registry — name → dispatcher fn pointer. Returns 0 for unknown names
 # so the caller can emit a single targeted warning.
 fn _seg_fn_for(name): i64 {
-    if (streq(name, "cwd") == 1)  { return &_dispatch_cwd; }
-    if (streq(name, "exit") == 1) { return &_dispatch_exit; }
-    if (streq(name, "vcs") == 1)  { return &_dispatch_vcs; }
+    if (streq(name, "cwd") == 1)      { return &_dispatch_cwd; }
+    if (streq(name, "exit") == 1)     { return &_dispatch_exit; }
+    if (streq(name, "vcs") == 1)      { return &_dispatch_vcs; }
+    if (streq(name, "time") == 1)     { return &_dispatch_time; }
+    if (streq(name, "hostname") == 1) { return &_dispatch_hostname; }
+    if (streq(name, "user") == 1)     { return &_dispatch_user; }
     return 0;
 }
 

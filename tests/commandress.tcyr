@@ -17,6 +17,7 @@ include "lib/cyml.cyr"
 include "lib/toml.cyr"
 include "lib/tagged.cyr"
 include "lib/chrono.cyr"
+include "lib/pwd.cyr"
 include "lib/process.cyr"
 include "lib/assert.cyr"
 
@@ -24,6 +25,9 @@ include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
 include "src/segments/vcs.cyr"
+include "src/segments/time.cyr"
+include "src/segments/hostname.cyr"
+include "src/segments/user.cyr"
 include "src/config.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
@@ -258,6 +262,119 @@ fn test_vcs_parse_short_buffer_returns_empty(): i64 {
     return 0;
 }
 
+# ---- time segment ----
+
+fn test_time_format_hh_mm(): i64 {
+    # epoch 3725 = 01:02:05 on 1970-01-01.
+    var out = time_format(3725, "%H:%M");
+    _streq_or_dump(out, "01:02", "time_format(3725, %H:%M) == \"01:02\"");
+    return 0;
+}
+
+fn test_time_format_hh_mm_ss(): i64 {
+    var out = time_format(3725, "%H:%M:%S");
+    _streq_or_dump(out, "01:02:05", "time_format(3725, %H:%M:%S) == \"01:02:05\"");
+    return 0;
+}
+
+fn test_time_format_date(): i64 {
+    # epoch 0 = 1970-01-01 00:00:00 UTC.
+    var out = time_format(0, "%Y-%m-%d");
+    _streq_or_dump(out, "1970-01-01", "time_format(0, %Y-%m-%d) == \"1970-01-01\"");
+    return 0;
+}
+
+fn test_time_format_two_digit_year(): i64 {
+    # epoch 1767225600 = 2026-01-01 00:00:00 UTC.
+    var out = time_format(1767225600, "%y");
+    _streq_or_dump(out, "26", "time_format(2026-..., %y) == \"26\"");
+    return 0;
+}
+
+fn test_time_format_literal_percent(): i64 {
+    var out = time_format(0, "%%");
+    _streq_or_dump(out, "%", "time_format(_, %%) == \"%\"");
+    return 0;
+}
+
+fn test_time_format_unknown_spec(): i64 {
+    # Unsupported specs pass through verbatim.
+    var out = time_format(0, "%Q");
+    _streq_or_dump(out, "%Q", "time_format(_, %Q) passes through");
+    return 0;
+}
+
+fn test_time_format_mixed_literals(): i64 {
+    var out = time_format(3725, "at %H:%M");
+    _streq_or_dump(out, "at 01:02", "time_format mixes literals + specs");
+    return 0;
+}
+
+fn test_time_format_null_returns_empty(): i64 {
+    var out = time_format(3725, 0);
+    assert_eq(out, 0, "time_format(_, 0) → 0");
+    return 0;
+}
+
+fn test_time_format_empty_returns_empty(): i64 {
+    var out = time_format(3725, "");
+    assert_eq(out, 0, "time_format(_, \"\") → 0");
+    return 0;
+}
+
+# ---- hostname segment ----
+
+fn test_hostname_renders_nonnull(): i64 {
+    var out = hostname_render();
+    assert_neq(out, 0, "hostname_render() returns non-null on Linux");
+    if (out != 0) {
+        var len = strlen(out);
+        var nonzero_len = 0;
+        if (len > 0) { nonzero_len = 1; }
+        assert(nonzero_len, "hostname_render() returns nonempty cstring");
+    }
+    return 0;
+}
+
+fn test_hostname_matches_uname_nodename(): i64 {
+    var uts[390];
+    var r = syscall(SYS_UNAME, &uts);
+    if (r != 0) {
+        assert(1, "hostname_matches_uname_nodename skipped (uname failed)");
+        return 0;
+    }
+    var nodename = &uts + 65;
+    var out = hostname_render();
+    _streq_or_dump(out, nodename, "hostname_render() == uname.nodename");
+    return 0;
+}
+
+# ---- user segment ----
+
+fn test_user_renders_nonnull(): i64 {
+    var out = user_render();
+    # On any Linux dev/test host either /etc/passwd or $USER will
+    # resolve. Skipped only on the (theoretical) box where both are
+    # missing — there's no useful render in that case.
+    var skip = 0;
+    if (out == 0) {
+        if (getenv("USER") == 0) {
+            skip = 1;
+            assert(1, "user_renders_nonnull skipped (no /etc/passwd, no $USER)");
+        }
+    }
+    if (skip == 0) {
+        assert_neq(out, 0, "user_render() returns non-null when uid resolvable or $USER set");
+        if (out != 0) {
+            var len = strlen(out);
+            var nonzero_len = 0;
+            if (len > 0) { nonzero_len = 1; }
+            assert(nonzero_len, "user_render() returns nonempty cstring");
+        }
+    }
+    return 0;
+}
+
 # ---- shellout watchdog ----
 # Each test skips cleanly when the host binary isn't present, so the
 # suite stays green on stripped containers / non-coreutils systems.
@@ -344,6 +461,24 @@ fn main(): i64 {
     test_vcs_parse_no_marker_when_disabled();
     test_vcs_parse_wrong_prefix_returns_empty();
     test_vcs_parse_short_buffer_returns_empty();
+
+    test_group("time segment");
+    test_time_format_hh_mm();
+    test_time_format_hh_mm_ss();
+    test_time_format_date();
+    test_time_format_two_digit_year();
+    test_time_format_literal_percent();
+    test_time_format_unknown_spec();
+    test_time_format_mixed_literals();
+    test_time_format_null_returns_empty();
+    test_time_format_empty_returns_empty();
+
+    test_group("hostname segment");
+    test_hostname_renders_nonnull();
+    test_hostname_matches_uname_nodename();
+
+    test_group("user segment");
+    test_user_renders_nonnull();
 
     test_group("shellout watchdog");
     test_shellout_happy_path();

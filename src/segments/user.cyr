@@ -1,0 +1,48 @@
+# user.cyr — user-name segment.
+#
+# Returns the current process's login name. Prefers `lib/pwd.cyr`'s
+# direct /etc/passwd reader keyed on `getuid()` — the musl-style
+# bypass that doesn't touch glibc NSS. Falls back to `$USER` from the
+# environment when the passwd lookup fails (file missing, UID not in
+# /etc/passwd, strbuf too small, etc.) and finally renders empty if
+# even that's unset.
+#
+# Why the fallback? Containers and minimal images sometimes ship
+# without /etc/passwd; `$USER` is set by login + shell startup and
+# is the practical source-of-truth in those environments. The two-
+# source pattern matches how starship/PS1 conventions resolve user.
+
+# Stack-resident pwrec (56 B) + strbuf (1024 B) per pwd.cyr's contract.
+enum UserBuf {
+    USER_STRBUF_BYTES = 1024;
+}
+
+fn user_render(): i64 {
+    var pwrec[56];
+    var strbuf[1024];
+    var uid = sys_getuid();
+    var r = pwd_getpwuid(uid, &pwrec, &strbuf, USER_STRBUF_BYTES);
+
+    if (r == 1) {
+        var name = pwd_name(&pwrec);
+        if (name != 0) {
+            var nlen = strlen(name);
+            if (nlen > 0) {
+                var out = alloc(nlen + 1);
+                memcpy(out, name, nlen);
+                store8(out + nlen, 0);
+                return out;
+            }
+        }
+    }
+
+    # Fallback: $USER. getenv returns 0 when unset.
+    var env_user = getenv("USER");
+    if (env_user == 0) { return 0; }
+    var elen = strlen(env_user);
+    if (elen == 0) { return 0; }
+    var out2 = alloc(elen + 1);
+    memcpy(out2, env_user, elen);
+    store8(out2 + elen, 0);
+    return out2;
+}
