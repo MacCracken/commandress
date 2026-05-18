@@ -21,6 +21,7 @@ include "lib/pwd.cyr"
 include "lib/process.cyr"
 include "lib/assert.cyr"
 
+include "src/pathlookup.cyr"
 include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
@@ -379,6 +380,47 @@ fn test_user_renders_nonnull(): i64 {
 # Each test skips cleanly when the host binary isn't present, so the
 # suite stays green on stripped containers / non-coreutils systems.
 
+# ---- pathlookup ----
+
+# Find `sh` on PATH — present on every conceivable POSIX host. Skip
+# when PATH itself is unset (stripped-container case) so the suite
+# stays green outside a normal shell environment.
+fn test_pathlookup_finds_sh(): i64 {
+    if (getenv("PATH") == 0) {
+        assert(1, "pathlookup_finds_sh skipped (PATH unset)");
+        return 0;
+    }
+    var hit = find_in_path("sh");
+    assert_neq(hit, 0, "find_in_path(\"sh\") returns non-null");
+    if (hit != 0) {
+        var n = strlen(hit);
+        var ok = 0;
+        if (n >= 3) {
+            if (load8(hit + n - 3) == 47) {                  # '/'
+                if (load8(hit + n - 2) == 115) {             # 's'
+                    if (load8(hit + n - 1) == 104) {         # 'h'
+                        ok = 1;
+                    }
+                }
+            }
+        }
+        assert(ok, "find_in_path(\"sh\") result ends in \"/sh\"");
+        assert_eq(syscall(SYS_ACCESS, hit, 1), 0, "find_in_path(\"sh\") result passes access(X_OK)");
+    }
+    return 0;
+}
+
+# Garbage name that nobody would ship: returns 0, no crash.
+fn test_pathlookup_misses_unknown(): i64 {
+    if (getenv("PATH") == 0) {
+        assert(1, "pathlookup_misses_unknown skipped (PATH unset)");
+        return 0;
+    }
+    var hit = find_in_path("__cmdrs_does_not_exist_xyz__");
+    assert_eq(hit, 0, "find_in_path(garbage) returns 0");
+    return 0;
+}
+
 fn test_shellout_happy_path(): i64 {
     if (syscall(SYS_ACCESS, "/bin/echo", 1) != 0) {
         assert(1, "shellout_happy_path skipped (no /bin/echo)");
@@ -479,6 +521,10 @@ fn main(): i64 {
 
     test_group("user segment");
     test_user_renders_nonnull();
+
+    test_group("pathlookup");
+    test_pathlookup_finds_sh();
+    test_pathlookup_misses_unknown();
 
     test_group("shellout watchdog");
     test_shellout_happy_path();

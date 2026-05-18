@@ -20,6 +20,7 @@ include "lib/chrono.cyr"
 include "lib/pwd.cyr"
 include "lib/process.cyr"
 
+include "src/pathlookup.cyr"
 include "src/shellout.cyr"
 include "src/render.cyr"
 

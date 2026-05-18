@@ -15,7 +15,9 @@
 # contract bug + missing stderr dup2 — both fixed upstream in Cyrius
 # 5.11.60. The watchdog (shellout.cyr) replaced the inline path in
 # v0.4.0 alongside the per-segment timeout work carried forward from
-# M2 / M3. `_find_in_path` stays inline pending Cyrius v6.x Item 8.
+# M2 / M3. The inline `_find_in_path` helper moved to
+# `src/pathlookup.cyr` in v0.5.0 so the M4 language-env probes share
+# one implementation (still pending Cyrius v6.x Item 8 upstream).
 
 # Per-redraw budget for the `sit status` shellout. The healthy-host
 # measurement was ~1.8 ms (CHANGELOG [0.3.0]); 5 ms gives ~2.5× safety
@@ -24,47 +26,6 @@
 # in a follow-up slot — for v0.4.0 the budget is fixed in code.
 enum VcsBudget {
     VCS_BUDGET_MS = 5;
-}
-
-# Find `name` (a cstring like "sit") on $PATH. Returns a heap-alloc'd
-# absolute-path cstring or 0 when not found. Walks the colon-separated
-# $PATH, building `<dir>/<name>` candidates and probing each with
-# access(X_OK). Needed because Linux `execve(2)` does NOT do PATH
-# lookup — that's a libc-`execvp` thing — and no stdlib helper exposes
-# the equivalent today (Cyrius papercut Item 8, deferred to v6.x).
-fn _find_in_path(name): i64 {
-    var path = getenv("PATH");
-    if (path == 0) { return 0; }
-    var nlen = strlen(name);
-    var plen = strlen(path);
-    var pi = 0;
-    var hit = 0;
-    var done = 0;
-    while (done == 0) {
-        if (pi >= plen) { done = 1; }
-        else {
-            var end = pi;
-            var seek = 1;
-            while (seek == 1) {
-                if (end >= plen) { seek = 0; }
-                else { if (load8(path + end) == 58) { seek = 0; } else { end = end + 1; } }
-            }
-            var dir_len = end - pi;
-            if (dir_len > 0) {
-                var candidate = alloc(dir_len + 1 + nlen + 1);
-                memcpy(candidate, path + pi, dir_len);
-                store8(candidate + dir_len, 47);              # '/'
-                memcpy(candidate + dir_len + 1, name, nlen);
-                store8(candidate + dir_len + 1 + nlen, 0);
-                if (syscall(SYS_ACCESS, candidate, 1) == 0) {
-                    hit = candidate;
-                    done = 1;
-                }
-            }
-            pi = end + 1;
-        }
-    }
-    return hit;
 }
 
 # Pure parser. Given the raw stdout bytes from `sit status` and a
@@ -122,7 +83,7 @@ fn vcs_parse_render(buf, n, dirty_marker): i64 {
 # failure mode (not in PATH, timeout, system error, no output, parse
 # fail) — segment renders empty.
 fn vcs_render(dirty_marker): i64 {
-    var sit_path = _find_in_path("sit");
+    var sit_path = find_in_path("sit");
     if (sit_path == 0) { return 0; }
 
     var argv = alloc(24);
