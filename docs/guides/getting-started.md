@@ -1,6 +1,6 @@
 # Getting started with commandress
 
-> **Status**: M0 scaffold — `cmdrs` is not yet a usable prompt. This guide covers the build + run loop. Real usage examples land at M1 (v0.2.0).
+> **Status**: v0.5.0 — `cmdrs` is a working prompt. The first-party shell adapters (agnoshi M7 → v0.8.0; bash + zsh same milestone) aren't shipped yet, but the binary is usable today via a `precmd` hook. For zsh in particular, see [`zsh-testing.md`](zsh-testing.md).
 
 ## Build
 
@@ -95,6 +95,10 @@ export AGNOSHI_PROMPT_CMD=cmdrs
 ```
 
 agnoshi invokes `cmdrs` once per prompt redraw, captures stdout, paints it.
+
+## Testing today in zsh (pre-M7)
+
+The first-party zsh adapter is M7 (v0.8.0). Until then, a four-line `precmd` hook in `~/.zshrc` is enough to drive `cmdrs` from current zsh — see [`zsh-testing.md`](zsh-testing.md) for the recipe + caveats.
 
 ## Next
 
