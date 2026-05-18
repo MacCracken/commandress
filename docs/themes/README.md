@@ -48,3 +48,40 @@ Open a new prompt — the precmd hook re-runs `cmdrs` on the next redraw, no she
 ## Writing your own
 
 Each theme is a `[[palette]]` block (named slots) plus `[[segments.X]]` blocks that reference the slots via `fg = "palette:<name>"`. Copy any existing theme as a starting point and tweak the palette values. See [`../adr/0005-language-env-probe-pattern.md`](../adr/0005-language-env-probe-pattern.md) for the env-segment shape and the [v0.6.0 CHANGELOG](../../CHANGELOG.md) for the full color contract.
+
+## Powerline mode
+
+Set `separator_style = "powerline"` plus a `separator_glyph` (and optionally `right_separator_glyph` for the right-prompt side) and `bg` on every segment you want to render as a colored block:
+
+```cyml
+[[prompt]]
+segments              = ["cwd", "vcs", "cyrius_env", "exit"]
+separator_style       = "powerline"
+separator_glyph       = ""                 # U+E0B0; needs a nerd-patched font
+right_separator_glyph = ""                 # U+E0B2; for right-prompt
+trailer               = " $ "
+
+[[segments.cwd]]
+fg = "white"
+bg = "blue"
+style = "bold"
+
+[[segments.vcs]]
+fg = "black"
+bg = "yellow"
+
+[[segments.cyrius_env]]
+fg = "white"
+bg = "magenta"
+
+[[segments.exit]]
+fg = "white"
+bg = "red"
+style = "bold"
+```
+
+Render emits a `fg=prev_bg, bg=next_bg` SGR + the glyph between adjacent blocks, plus a trailing `fg=last_bg, bg=default` glyph to close the chain. Segments without a `bg` set still render their content but don't form a block — the transition into / out of them uses the terminal default for the missing side.
+
+**Font requirement**: The default glyphs (`` / ``) live in the powerline private-use area (U+E0B0+) and need a nerd-patched font (NerdFonts, Powerline, Hack Nerd, etc.) installed and configured in your terminal. Without one, the glyph renders as a tofu box. Any single-byte ASCII character (`>`, `|`, `/`) works as a fallback if you don't want to install a font.
+
+**Themes & powerline**: the five theme files in this directory are fg-only out of the box. Add `bg = "..."` to each `[[segments.X]]` block you want as a powerline block. A dedicated powerline-ready theme variant is planned for a follow-up release.

@@ -6,10 +6,13 @@
 # of `[X]` for now; single-bracket support is a stdlib follow-up):
 #
 #   [[prompt]]
-#   segments       = ["cwd", "exit"]
-#   right_segments = ["time"]                  # optional; renders when `cmdrs --side=right` is invoked
-#   separator      = " "
-#   trailer        = "$ "                      # left-side only; right-prompt never emits the trailer
+#   segments              = ["cwd", "exit"]
+#   right_segments        = ["time"]            # optional; renders when `cmdrs --side=right` is invoked
+#   separator             = " "                 # used in plain mode
+#   trailer               = "$ "                # left-side only; right-prompt never emits the trailer
+#   separator_style       = "plain"             # or "powerline" — opt-in to bg-block + transition glyphs
+#   separator_glyph       = ""                 # left-side transition glyph (powerline mode)
+#   right_separator_glyph = ""                 # right-side transition glyph (powerline mode)
 #
 #   [[segments.cwd]]
 #   home_shorten = true
@@ -68,7 +71,20 @@ var CFG_SGR_NODE_ENV = 128;
 var CFG_SGR_RUSTUP_ENV = 136;
 var CFG_CWD_MAX_LENGTH = 144;
 var CFG_RIGHT_SEGMENTS = 152;
-var CFG_SIZE = 160;
+var CFG_BG_CWD = 160;
+var CFG_BG_EXIT = 168;
+var CFG_BG_VCS = 176;
+var CFG_BG_TIME = 184;
+var CFG_BG_HOSTNAME = 192;
+var CFG_BG_USER = 200;
+var CFG_BG_CYRIUS_ENV = 208;
+var CFG_BG_PYTHON_ENV = 216;
+var CFG_BG_NODE_ENV = 224;
+var CFG_BG_RUSTUP_ENV = 232;
+var CFG_SEPARATOR_STYLE = 240;
+var CFG_SEPARATOR_GLYPH = 248;
+var CFG_RIGHT_SEPARATOR_GLYPH = 256;
+var CFG_SIZE = 264;
 
 fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
 fn cfg_separator(c): i64          { return load64(c + CFG_SEPARATOR); }
@@ -90,6 +106,19 @@ fn cfg_sgr_node_env(c): i64       { return load64(c + CFG_SGR_NODE_ENV); }
 fn cfg_sgr_rustup_env(c): i64     { return load64(c + CFG_SGR_RUSTUP_ENV); }
 fn cfg_cwd_max_length(c): i64     { return load64(c + CFG_CWD_MAX_LENGTH); }
 fn cfg_right_segments(c): i64     { return load64(c + CFG_RIGHT_SEGMENTS); }
+fn cfg_bg_cwd(c): i64                  { return load64(c + CFG_BG_CWD); }
+fn cfg_bg_exit(c): i64                 { return load64(c + CFG_BG_EXIT); }
+fn cfg_bg_vcs(c): i64                  { return load64(c + CFG_BG_VCS); }
+fn cfg_bg_time(c): i64                 { return load64(c + CFG_BG_TIME); }
+fn cfg_bg_hostname(c): i64             { return load64(c + CFG_BG_HOSTNAME); }
+fn cfg_bg_user(c): i64                 { return load64(c + CFG_BG_USER); }
+fn cfg_bg_cyrius_env(c): i64           { return load64(c + CFG_BG_CYRIUS_ENV); }
+fn cfg_bg_python_env(c): i64           { return load64(c + CFG_BG_PYTHON_ENV); }
+fn cfg_bg_node_env(c): i64             { return load64(c + CFG_BG_NODE_ENV); }
+fn cfg_bg_rustup_env(c): i64           { return load64(c + CFG_BG_RUSTUP_ENV); }
+fn cfg_separator_style(c): i64         { return load64(c + CFG_SEPARATOR_STYLE); }
+fn cfg_separator_glyph(c): i64         { return load64(c + CFG_SEPARATOR_GLYPH); }
+fn cfg_right_separator_glyph(c): i64   { return load64(c + CFG_RIGHT_SEPARATOR_GLYPH); }
 
 # Build the default Config. Used when no file is present, and as the
 # base for partial overrides — a config that sets only `separator`
@@ -136,6 +165,31 @@ fn config_default(): i64 {
     # `RPROMPT="$(cmdrs --side=right)"` evaluates to "", which zsh treats
     # as no right prompt).
     store64(c + CFG_RIGHT_SEGMENTS, vec_new());
+
+    # Raw bg cstrings — populated only when a [[segments.X]] block sets
+    # `bg`. 0 means "no bg set" (segment renders without a block in
+    # powerline mode). The default theme is fg-only, so all bg slots
+    # start at 0; users who enable powerline are responsible for adding
+    # `bg = "..."` to the segments they want blocks for.
+    store64(c + CFG_BG_CWD, 0);
+    store64(c + CFG_BG_EXIT, 0);
+    store64(c + CFG_BG_VCS, 0);
+    store64(c + CFG_BG_TIME, 0);
+    store64(c + CFG_BG_HOSTNAME, 0);
+    store64(c + CFG_BG_USER, 0);
+    store64(c + CFG_BG_CYRIUS_ENV, 0);
+    store64(c + CFG_BG_PYTHON_ENV, 0);
+    store64(c + CFG_BG_NODE_ENV, 0);
+    store64(c + CFG_BG_RUSTUP_ENV, 0);
+
+    # 0 = plain (existing behavior). 1 = powerline. Users opt in via
+    # `[[prompt]] separator_style = "powerline"`. Glyphs default to
+    # empty strings — canonical powerline arrows ("" / "")
+    # require a nerd-patched font, which we don't assume; users supply
+    # whichever glyph their font has.
+    store64(c + CFG_SEPARATOR_STYLE, 0);
+    store64(c + CFG_SEPARATOR_GLYPH, "");
+    store64(c + CFG_RIGHT_SEPARATOR_GLYPH, "");
     return c;
 }
 
@@ -216,13 +270,16 @@ fn _resolve_color_value(value, palette): i64 {
     return _palette_lookup(palette, value + prefix_len);
 }
 
-# Overwrite the SGR slot at `c + offset` from this section's `fg` / `bg`
-# / `style` pairs, but ONLY if at least one of those keys is present.
-# Sections with no color fields leave the default-theme SGR intact —
-# important so boolean-only overrides (e.g. `home_shorten = false`)
-# don't accidentally strip the cwd's default cyan-bold. `palette` is
-# the table parsed from the optional [[palette]] section (or 0).
-fn _apply_seg_style(c, offset, pairs, palette): i64 {
+# Overwrite the SGR slot at `c + sgr_offset` from this section's `fg`
+# / `bg` / `style` pairs, but ONLY if at least one of those keys is
+# present. Also stashes the raw bg cstring at `c + bg_offset` so the
+# powerline render path can build transition SGRs at redraw time.
+# Sections with no color fields leave the default-theme SGR + bg
+# intact — important so boolean-only overrides (e.g. `home_shorten =
+# false`) don't accidentally strip the cwd's default cyan-bold or
+# its (lack of) bg. `palette` is the table parsed from the optional
+# [[palette]] section (or 0).
+fn _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette): i64 {
     var fg_v = toml_get(pairs, "fg");
     var bg_v = toml_get(pairs, "bg");
     var style_v = toml_get(pairs, "style");
@@ -237,7 +294,8 @@ fn _apply_seg_style(c, offset, pairs, palette): i64 {
     if (fg_v != 0)    { fg = _resolve_color_value(str_cstr(fg_v), palette); }
     if (bg_v != 0)    { bg = _resolve_color_value(str_cstr(bg_v), palette); }
     if (style_v != 0) { style = str_cstr(style_v); }
-    store64(c + offset, sgr_open_for(fg, bg, style));
+    store64(c + sgr_offset, sgr_open_for(fg, bg, style));
+    store64(c + bg_offset, bg);
     return 0;
 }
 
@@ -273,7 +331,7 @@ fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
 # knobs (no booleans / strings of its own). Loads, allow-lists fg/bg/
 # style, applies. Used by hostname / user / the four env segments —
 # all introduced as configurable-only-for-color sections in v0.6.0.
-fn _load_color_only_section(c, sgr_offset, sections, name, palette): i64 {
+fn _load_color_only_section(c, sgr_offset, bg_offset, sections, name, palette): i64 {
     var secs = toml_get_sections(sections, name);
     if (vec_len(secs) == 0) { return 0; }
     var sec = vec_get(secs, 0);
@@ -283,7 +341,7 @@ fn _load_color_only_section(c, sgr_offset, sections, name, palette): i64 {
     vec_push(allowed, "bg");
     vec_push(allowed, "style");
     _warn_unknown_pairs(pairs, allowed, name);
-    _apply_seg_style(c, sgr_offset, pairs, palette);
+    _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette);
     return 0;
 }
 
@@ -352,6 +410,9 @@ fn config_load(path): i64 {
         vec_push(prompt_allowed, "right_segments");
         vec_push(prompt_allowed, "separator");
         vec_push(prompt_allowed, "trailer");
+        vec_push(prompt_allowed, "separator_style");
+        vec_push(prompt_allowed, "separator_glyph");
+        vec_push(prompt_allowed, "right_separator_glyph");
         _warn_unknown_pairs(prompt_pairs, prompt_allowed, "prompt");
 
         var sep_v = toml_get(prompt_pairs, "separator");
@@ -371,6 +432,19 @@ fn config_load(path): i64 {
         # `segments` we don't require len > 0 to overwrite.
         var rsegs_v = toml_get(prompt_pairs, "right_segments");
         if (rsegs_v != 0) { store64(c + CFG_RIGHT_SEGMENTS, _parse_str_array(rsegs_v)); }
+
+        # `separator_style` is parsed as a string and mapped to an int:
+        # "powerline" → 1, anything else (including "plain") → 0. Storing
+        # an int avoids a runtime streq per redraw.
+        var ssty_v = toml_get(prompt_pairs, "separator_style");
+        if (ssty_v != 0) {
+            if (str_eq_cstr(ssty_v, "powerline") == 1) { store64(c + CFG_SEPARATOR_STYLE, 1); }
+            else { store64(c + CFG_SEPARATOR_STYLE, 0); }
+        }
+        var sg_v = toml_get(prompt_pairs, "separator_glyph");
+        if (sg_v != 0) { store64(c + CFG_SEPARATOR_GLYPH, str_cstr(sg_v)); }
+        var rsg_v = toml_get(prompt_pairs, "right_separator_glyph");
+        if (rsg_v != 0) { store64(c + CFG_RIGHT_SEPARATOR_GLYPH, str_cstr(rsg_v)); }
     }
 
     # [[segments.cwd]] — cwd-segment options.
@@ -392,7 +466,7 @@ fn config_load(path): i64 {
 
         var ml_v = toml_get(cwd_pairs, "max_length");
         if (ml_v != 0) { store64(c + CFG_CWD_MAX_LENGTH, atoi(str_cstr(ml_v))); }
-        _apply_seg_style(c, CFG_SGR_CWD, cwd_pairs, palette);
+        _apply_seg_style(c, CFG_SGR_CWD, CFG_BG_CWD, cwd_pairs, palette);
     }
 
     # [[segments.exit]] — exit-segment options.
@@ -410,7 +484,7 @@ fn config_load(path): i64 {
 
         var hz_v = toml_get(exit_pairs, "hide_zero");
         store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
-        _apply_seg_style(c, CFG_SGR_EXIT, exit_pairs, palette);
+        _apply_seg_style(c, CFG_SGR_EXIT, CFG_BG_EXIT, exit_pairs, palette);
     }
 
     # [[segments.vcs]] — vcs-segment options.
@@ -432,7 +506,7 @@ fn config_load(path): i64 {
 
         var dm_v = toml_get(vcs_pairs, "dirty_marker");
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
-        _apply_seg_style(c, CFG_SGR_VCS, vcs_pairs, palette);
+        _apply_seg_style(c, CFG_SGR_VCS, CFG_BG_VCS, vcs_pairs, palette);
     }
 
     # [[segments.time]] — time-segment options.
@@ -450,18 +524,18 @@ fn config_load(path): i64 {
 
         var fmt_v = toml_get(time_pairs, "format");
         if (fmt_v != 0) { store64(c + CFG_TIME_FORMAT, str_cstr(fmt_v)); }
-        _apply_seg_style(c, CFG_SGR_TIME, time_pairs, palette);
+        _apply_seg_style(c, CFG_SGR_TIME, CFG_BG_TIME, time_pairs, palette);
     }
 
     # Color-only sections — segments with no non-color knobs of their
     # own. Each gets its [[segments.X]] block in v0.6.0 so users can
     # recolor without having to touch the dispatcher in code.
-    _load_color_only_section(c, CFG_SGR_HOSTNAME,   sections, "segments.hostname",   palette);
-    _load_color_only_section(c, CFG_SGR_USER,       sections, "segments.user",       palette);
-    _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, sections, "segments.cyrius_env", palette);
-    _load_color_only_section(c, CFG_SGR_PYTHON_ENV, sections, "segments.python_env", palette);
-    _load_color_only_section(c, CFG_SGR_NODE_ENV,   sections, "segments.node_env",   palette);
-    _load_color_only_section(c, CFG_SGR_RUSTUP_ENV, sections, "segments.rustup_env", palette);
+    _load_color_only_section(c, CFG_SGR_HOSTNAME,   CFG_BG_HOSTNAME,   sections, "segments.hostname",   palette);
+    _load_color_only_section(c, CFG_SGR_USER,       CFG_BG_USER,       sections, "segments.user",       palette);
+    _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, CFG_BG_CYRIUS_ENV, sections, "segments.cyrius_env", palette);
+    _load_color_only_section(c, CFG_SGR_PYTHON_ENV, CFG_BG_PYTHON_ENV, sections, "segments.python_env", palette);
+    _load_color_only_section(c, CFG_SGR_NODE_ENV,   CFG_BG_NODE_ENV,   sections, "segments.node_env",   palette);
+    _load_color_only_section(c, CFG_SGR_RUSTUP_ENV, CFG_BG_RUSTUP_ENV, sections, "segments.rustup_env", palette);
 
     return c;
 }

@@ -456,6 +456,72 @@ fn test_config_load_right_segments_empty_array(): i64 {
     return 0;
 }
 
+# ---- config: powerline ----
+
+fn test_config_default_separator_style_plain(): i64 {
+    var c = config_default();
+    assert_eq(cfg_separator_style(c), 0, "default separator_style == 0 (plain)");
+    _streq_or_dump(cfg_separator_glyph(c),       "", "default separator_glyph == \"\"");
+    _streq_or_dump(cfg_right_separator_glyph(c), "", "default right_separator_glyph == \"\"");
+    return 0;
+}
+
+fn test_config_default_bg_slots_unset(): i64 {
+    # Default theme is fg-only; raw bg slots are all 0 so powerline mode
+    # without per-segment bg overrides produces no transitions.
+    var c = config_default();
+    assert_eq(cfg_bg_cwd(c),        0, "default bg_cwd == 0");
+    assert_eq(cfg_bg_exit(c),       0, "default bg_exit == 0");
+    assert_eq(cfg_bg_vcs(c),        0, "default bg_vcs == 0");
+    assert_eq(cfg_bg_cyrius_env(c), 0, "default bg_cyrius_env == 0");
+    return 0;
+}
+
+fn test_config_load_powerline_enable(): i64 {
+    var content = "[[prompt]]\nseparator_style = \"powerline\"\nseparator_glyph = \">\"\nright_separator_glyph = \"<\"\n";
+    var path = _write_test_config("powerline-on", content);
+    var c = config_load(path);
+    assert_eq(cfg_separator_style(c), 1, "separator_style = \"powerline\" → 1");
+    _streq_or_dump(cfg_separator_glyph(c),       ">", "separator_glyph parsed");
+    _streq_or_dump(cfg_right_separator_glyph(c), "<", "right_separator_glyph parsed");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_powerline_plain_explicit(): i64 {
+    # Anything other than "powerline" → 0. Verifies the int mapping
+    # doesn't accidentally treat unknown values as powerline.
+    var content = "[[prompt]]\nseparator_style = \"plain\"\n";
+    var path = _write_test_config("powerline-plain", content);
+    var c = config_load(path);
+    assert_eq(cfg_separator_style(c), 0, "separator_style = \"plain\" → 0");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_bg_stored_raw(): i64 {
+    # Raw bg is stashed for use by the powerline render path. Verify
+    # the parser fills the slot (and doesn't try to bake it into SGR
+    # only).
+    var content = "[[segments.cwd]]\nfg = \"white\"\nbg = \"blue\"\n";
+    var path = _write_test_config("bg-raw", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_bg_cwd(c), "blue", "bg=blue stored raw for powerline transitions");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[37;44m", "fg+bg also baked into SGR");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_bg_via_palette(): i64 {
+    # bg can reference the palette too.
+    var content = "[[palette]]\nbase = \"green\"\n\n[[segments.cwd]]\nbg = \"palette:base\"\n";
+    var path = _write_test_config("bg-palette", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_bg_cwd(c), "green", "bg resolves through palette");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 # ---- vcs parser ----
 # We don't fork `sit` in tests — vcs_parse_render is the pure-fn target.
 # Fabricated `sit status` outputs cover the four cases: clean, dirty
@@ -1231,6 +1297,14 @@ fn main(): i64 {
     test_config_default_right_segments_empty();
     test_config_load_right_segments();
     test_config_load_right_segments_empty_array();
+
+    test_group("config powerline");
+    test_config_default_separator_style_plain();
+    test_config_default_bg_slots_unset();
+    test_config_load_powerline_enable();
+    test_config_load_powerline_plain_explicit();
+    test_config_load_bg_stored_raw();
+    test_config_load_bg_via_palette();
 
     test_group("vcs parser");
     test_vcs_parse_clean();

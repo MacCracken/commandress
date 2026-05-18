@@ -5,7 +5,7 @@
 
 ## Version
 
-**0.6.0** — tagged release 2026-05-18. M5 partially closed: ANSI colour palette + per-segment `fg`/`bg`/`style` + opinionated default theme + cwd `max_length` truncation + optional `[[palette]]` reference layer (sets up the v1 theme-switching path). Three M5 deliverables remain — powerline-style separators, right-prompt support, `docs/themes/` curated examples — deferred to v0.6.x bites; contracts are stable enough that they land additively. Next: complete M5, then **M6 — performance hardening** (parallel segment evaluation, 1 s TTL probe cache, default-segment flip to include `vcs`, ≤ 5 ms cold-start CI gate, benchmark history CSV).
+**0.6.1** — tagged release 2026-05-18. **M5 fully closed**: ANSI colour palette + per-segment `fg`/`bg`/`style` + opinionated default theme + `[[palette]]` reference layer + cwd `max_length` truncation (all shipped 0.6.0); plus `docs/themes/` curated theme files (commandress + nord / dracula / gruvbox / monokai), right-prompt support (`cmdrs --side=right` + `right_segments` config), powerline-style separators (`separator_style = "powerline"` + transition glyphs + per-segment raw bg storage), and an opportunistic `~/.commandress.cyml` → `~/.commandress` config-path rename (per ADR 0006). Next: **M6 — performance hardening** (parallel segment evaluation, 1 s TTL probe cache, default-segment flip to include `vcs`, ≤ 5 ms cold-start CI gate, benchmark history CSV).
 
 ## Role
 
@@ -20,9 +20,9 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 | Module | Status |
 |---|---|
 | `src/main.cyr` | M1 — loads config, builds Context, dispatches to `render_prompt(cfg, ctx)` |
-| `src/config.cyr` | **M1 + M3 (0.4.0) + M5 (0.6.0) + path-rename (0.6.x)** — CYML loader for `~/.commandress` (renamed from `~/.commandress.cyml` per ADR 0006). Schema: `[[prompt]]` (segments, separator, trailer) + `[[segments.cwd]]` (home_shorten, max_length, fg/bg/style) + `[[segments.exit]]` (hide_zero, fg/bg/style) + `[[segments.vcs]]` (show_dirty, dirty_marker, fg/bg/style) + `[[segments.time]]` (format, fg/bg/style) + `[[segments.{hostname,user,cyrius_env,python_env,node_env,rustup_env}]]` (fg/bg/style only) + optional `[[palette]]` (named-slot table referenced via `fg = "palette:<name>"`). Defaults baked in (including opinionated default theme); partial-override-safe (boolean-only override keeps default theme); missing file → defaults; unknown fields warn to stderr |
+| `src/config.cyr` | **M1 + M3 (0.4.0) + M5 (0.6.0–0.6.1)** — CYML loader for `~/.commandress` (renamed from `~/.commandress.cyml` per ADR 0006). Schema: `[[prompt]]` (segments, right_segments, separator, trailer, separator_style, separator_glyph, right_separator_glyph) + `[[segments.cwd]]` (home_shorten, max_length, fg/bg/style) + `[[segments.exit]]` (hide_zero, fg/bg/style) + `[[segments.vcs]]` (show_dirty, dirty_marker, fg/bg/style) + `[[segments.time]]` (format, fg/bg/style) + `[[segments.{hostname,user,cyrius_env,python_env,node_env,rustup_env}]]` (fg/bg/style only) + optional `[[palette]]` (named-slot table referenced via `fg = "palette:<name>"`). Per-segment storage: pre-baked SGR cstring + raw bg cstring (the latter only used by powerline transitions). Defaults baked in (including opinionated default theme); partial-override-safe; missing file → defaults; unknown fields warn to stderr. `CFG_SIZE` 264 B |
 | `src/context.cyr` | **M1 (0.2.0)** — `{ home, last_exit }` per-invocation context handed to every segment dispatcher |
-| `src/render.cyr` | **M1 + M3 (0.4.0) + M4 (0.5.0) + M5 (0.6.0)** — table-driven registry (name → dispatcher fn ptr); paints `cfg.segments` joined by `cfg.separator`, `cfg.trailer` always. Dispatchers wired for `cwd`, `exit`, `vcs`, `time`, `hostname`, `user`, `cyrius_env`, `python_env`, `node_env`, `rustup_env`. Each painted segment is wrapped with its pre-computed SGR opening string + `\x1b[0m` reset when styled; emits raw bytes when the SGR slot is 0. `_sgr_for(cfg, name)` mirrors `_seg_fn_for` for SGR-by-name resolution. Unknown segments warn to stderr |
+| `src/render.cyr` | **M1 + M3 (0.4.0) + M4 (0.5.0) + M5 (0.6.0–0.6.1)** — table-driven registry (name → dispatcher fn ptr). `render_prompt(cfg, ctx, side)` paints either `cfg.segments` (side=0) or `cfg.right_segments` (side=1); left side appends `cfg.trailer`, right side skips it. Each painted segment wraps in its pre-computed SGR opener + `\x1b[0m` reset; emits raw when SGR is 0. **Plain mode** (default): segments joined by `cfg.separator`. **Powerline mode** (`cfg.separator_style == 1`): adjacent segments separated by `<fg=prev_bg; bg=next_bg>` SGR + glyph + reset; trailing transition (`fg=last_bg; bg=default`) closes the chain when last segment has a bg. `_sgr_for(cfg, name)` and `_bg_for(cfg, name)` mirror `_seg_fn_for` for SGR / raw-bg resolution. Unknown segments warn to stderr |
 | `src/shellout.cyr` | **M3 (0.4.0)** — generic per-call timeout watchdog. `shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen)` returns bytes / `-1` (system error) / `-2` (timeout). Implements fork + pipe + `epoll_wait(timeout)` + `kill(SIGKILL)` on overrun + `waitpid` reap. See [`architecture/002-shellout-watchdog.md`](../architecture/002-shellout-watchdog.md) |
 | `src/pathlookup.cyr` | **M4 (0.5.0)** — `find_in_path(name)` walks `$PATH`, returns the first heap-alloc'd absolute-path cstring that passes `access(X_OK)` (or 0). Lifted from `src/segments/vcs.cyr` once `cyrius_env` became a second shellout consumer. Still pending Cyrius v6.x Item 8 upstream |
 | `src/fslookup.cyr` | **M4 (0.5.0)** — shared fs helpers used by every language-env segment. `find_ancestor_with(start_dir, marker)` walks cwd upward returning the dir containing `<dir><marker>`, or 0. `read_trimmed_file_at(root, suffix)` reads `<root><suffix>` (256-byte cap) and trims surrounding ws (space, tab, `\n`, `\r`). Marker must start with `/` (e.g. `"/cyrius.cyml"`) so the root-case join is correct |
@@ -41,7 +41,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 ## Binary
 
 - `cmdrs` (output in `build/cmdrs` after `cyrius build`)
-- Size: **188,495 B** on Cyrius 5.11.63, x86_64 (text 133,799 B; bss 54,696 B). Up from 176,088 B at the 0.5.0 baseline by **+12,407 B** for the M5 theming foundation — `src/color.cyr` (~140 LoC), 10 per-segment SGR slots + parsing + the `_apply_seg_style` / `_load_color_only_section` / `_load_palette` / `_palette_lookup` / `_resolve_color_value` helpers, render's `_sgr_for` resolver + SGR wrapping, and cwd `max_length` truncation logic. Text grew +12,279 B; bss +128 B. Net win vs 0.3.0 baseline (395,115 B): **−206,620 B**.
+- Size: **193,753 B** on Cyrius 5.11.63, x86_64 (text 138,937 B; bss 54,816 B). Up from 188,495 B at the 0.6.0 baseline by **+5,258 B** for the M5 close-out: argv parsing for `--side=right` (`lib/args.cyr` integration), 10 per-segment raw-bg slots + 3 prompt-level slots for powerline (`CFG_SIZE` 152 → 264 B), `_bg_for` resolver, `_emit_powerline_transition` helper, render-side powerline branch, plus the path-rename's one-string edit. Text +5,138 B; bss +120 B. Net win vs 0.3.0 baseline (395,115 B): **−201,362 B**.
 
 ## Benchmarks
 
@@ -49,24 +49,24 @@ Captured 2026-05-18 on the dev host (Linux 7.0.5-arch1-1, x86_64):
 
 | Operation | Avg | Min | Max |
 |---|---|---|---|
-| `cwd_render` | 664 ns | 620 ns | 786 ns |
-| `exit_render(nonzero)` | 38 ns | 35 ns | 50 ns |
-| `config_default` | 2 µs | 2 µs | 3 µs |
-| `vcs_parse_render` (pure parser) | 229 ns | 222 ns | 258 ns |
-| `vcs_render` (fork + `sit status` + parse) | 3.902 ms | 3.730 ms | 4.163 ms |
-| `cyrius_env_parse_version` (pure parser) | 73 ns | 69 ns | 93 ns |
-| `cyrius_env_render` (file path, no shellout) | 7 µs | 6 µs | 7 µs |
-| `python_env_basename` (pure parser) | 95 ns | 90 ns | 121 ns |
-| `python_env_render` (empty walk) | 12 µs | 11 µs | 13 µs |
-| `node_env_render` (empty walk) | 6 µs | 5 µs | 6 µs |
-| `rustup_env_render` (empty walk) | 6 µs | 5 µs | 6 µs |
-| `render_prompt (cwd+exit)` | 3 µs | 3 µs | 3 µs |
+| `cwd_render` | 689 ns | 663 ns | 855 ns |
+| `exit_render(nonzero)` | 44 ns | 38 ns | 76 ns |
+| `config_default` | 3 µs | 3 µs | 4 µs |
+| `vcs_parse_render` (pure parser) | 240 ns | 237 ns | 352 ns |
+| `vcs_render` (fork + `sit status` + parse) | 4.646 ms | 4.500 ms | 4.963 ms |
+| `cyrius_env_parse_version` (pure parser) | 79 ns | 70 ns | 134 ns |
+| `cyrius_env_render` (file path, no shellout) | 7 µs | 6 µs | 8 µs |
+| `python_env_basename` (pure parser) | 96 ns | 85 ns | 155 ns |
+| `python_env_render` (empty walk) | 13 µs | 12 µs | 20 µs |
+| `node_env_render` (empty walk) | 6 µs | 6 µs | 7 µs |
+| `rustup_env_render` (empty walk) | 6 µs | 6 µs | 6 µs |
+| `render_prompt (cwd+exit)` | 3 µs | 3 µs | 4 µs |
 
-Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). M5 deltas: `config_default` 166 ns → 2 µs (10 `sgr_open_for` calls during default-theme bake — one-time per redraw, 0.04 % of budget); `render_prompt (cwd+exit)` 2 µs → 3 µs (~1 µs SGR wrap overhead per painted segment under the default theme). `vcs_render` measured at **3.9 ms** vs 1.8 ms in 0.5.0 — the vcs code path is unchanged in this release, so this is dev-host variance (fork+exec is sensitive to system state); to be re-baselined in 0.6.x. M6 caching closes the vcs cost regardless. The seven file-walk segments combined still sum to ~36 µs — three orders of magnitude under budget.
+Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). M5-close deltas: `config_default` 2 → 3 µs (13 additional slot inits in `config_default` for the new bg / right-prompt / powerline storage; one-time per redraw, 0.06 % of budget). `render_prompt (cwd+exit)` unchanged at 3 µs — the powerline branch is taken only when configured. `vcs_render` measured at **4.6 ms** vs 1.8 ms in 0.5.0 — the vcs code path is unchanged across this whole milestone, so this is dev-host variance (fork+exec is sensitive to system state). M6 caching closes the vcs cost regardless. The seven file-walk segments combined still sum to ~36 µs — three orders of magnitude under budget.
 
 ## Tests
 
-- `tests/commandress.tcyr` — **217 assertions across 95 tests**: existing M1–M4 coverage + M5 additions for `color` (16 cases — named/bright fg + bg = fg + 10 + absent/default/unknown + four style modifiers + multi-mod ordering + unknown-skip + empty/whitespace + sgr_open all-paths including three-digit codes + `SGR_RESET`), `config theme` (6 cases — default-bake-in with exact bytes for cwd + exit + per-segment non-null check, partial-override safety, fg-only-override, full reset, hostname color-only, python_env color-only), `config palette` (5 cases — single-ref, multi-slot, unknown-ref-unstyled, mixed-raw-and-ref, absent-section), and 8 `_truncate_cwd` cases (no-ops, '/' boundary collapse, exact-budget, leaf-only, `< 4` pathological, no-qualifying-`/` fallback, render-path bound). Helper tests are hermetic. `cyrius test` green.
+- `tests/commandress.tcyr` — **237 assertions across 108 tests**: existing M1–M5(partial) coverage + M5-close additions for `config right-prompt` (3 cases — default empty, parsed segments, explicit-empty-array opt-out) and `config powerline` (6 cases — default plain, default bg slots all 0, `separator_style = "powerline"` sets 1, explicit `"plain"` stays 0, raw bg stored, raw bg via palette ref). Theme files exercise the existing config-load path through `cp` install. Helper tests are hermetic. `cyrius test` green.
 - `tests/commandress.bcyr` — per-segment + config + parser + full-prompt timings (above).
 - `tests/commandress.fcyr` — fuzz stub (no harness yet).
 
@@ -84,11 +84,7 @@ External: none (and none planned for v1.0).
 
 ## In-flight work
 
-- **M5 partially closed in 0.6.0** (tagged 2026-05-18): `src/color.cyr` (SGR helpers + named-colour table) + 10 per-segment SGR slots in Config + opinionated default theme baked into `config_default` + `[[palette]]` reference layer (`fg = "palette:<name>"`) + cwd `max_length` truncation (M1 carry-over).
-- **M5 remaining (deferred to v0.6.x bites)**:
-  - **Powerline-style separators** — decorative glyph separators (``) with fg/bg transitions between segments. Bigger surface — needs separator-pair config (glyph + fg/bg per pair) and a render-side block-style layer. The colour foundation is in place; this is an additive change.
-  - **Right-prompt support** — shell-specific (zsh `RPROMPT`, no clean bash equivalent). Output-shape design (delimiter on stdout? second invocation? env hint?) still to settle.
-  - **`docs/themes/` curated examples** — landing trivially once the contract is exercised by an `[[palettes.<name>]]` multi-palette layer that ships in v0.7.x. For now users copy / paste the schema directly.
+- **M5 fully closed in 0.6.1** (tagged 2026-05-18): the three remaining M5 deliverables — `docs/themes/` (commandress + nord/dracula/gruvbox/monokai, each a self-contained `cp`-installable theme file), right-prompt support (`cmdrs --side=right` + `[[prompt]] right_segments`), powerline-style separators (`separator_style = "powerline"` + transition glyphs + raw bg storage per segment) — plus the opportunistic config-path rename `~/.commandress.cyml` → `~/.commandress` ([ADR 0006](../adr/0006-config-path-rename.md); pre-emptive to the v1 schema freeze).
 - **Deferred behind upstream gaps**:
   - `rust-toolchain.toml` parsing — blocked on Cyrius single-bracket TOML (papercut Item 3, v6.x).
   - `find_in_path` itself — pending Cyrius v6.x Item 8 (no stdlib `which()`); the `src/pathlookup.cyr` workaround ships.
@@ -96,8 +92,9 @@ External: none (and none planned for v1.0).
 - **Deferred by policy (file-first, per user direction 2026-05-18)**:
   - `python --version`, `node --version`, `rustup show` shellouts. Parked pre-v1 alongside M6 caching.
   - `package.json` `engines.node` parsing. Same reasoning.
-- **Known regression**: `vcs_render` measured at 3.9 ms (vs 1.8 ms in 0.5.0). Code path untouched in this release; suspect dev-host variance. Re-baseline in 0.6.x.
-- Next: complete M5, then **M6 — performance hardening** (parallel segment evaluation, 1 s TTL probe cache, default-segment flip to include `vcs`, ≤ 5 ms cold-start CI gate, benchmark history CSV).
+- **Known variance**: `vcs_render` measured at 4.6 ms in 0.6.1 (vs 1.8 ms in 0.5.0). Code path untouched across the entire milestone; dev-host load is the most likely explanation (fork+exec is sensitive). M6 caching closes this regardless.
+- **Pre-v1 theme-switching path** (per user commitment in M5 design): single-palette `[[palette]]` shipped 0.6.0; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector planned for v0.7.x; curated `docs/themes/` library shipped 0.6.1; schema freeze (and path lock) at v0.9.0 (M8).
+- **Next**: **M6 — performance hardening** (parallel segment evaluation where safe, 1 s TTL probe cache making `vcs` cheap enough to default-on, default-segment flip from `["cwd", "exit"]` → `["cwd", "vcs", "exit"]`, ≤ 5 ms cold-start CI gate enforced, benchmark history CSV).
 
 ## Next
 

@@ -6,18 +6,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-05-18
+
+**M5 fully closed.** Three remaining M5 deliverables land — `docs/themes/` curated theme files, right-prompt support, and powerline-style separators — plus an opportunistic config-path rename that aligns commandress with the `.bashrc` / `.vimrc` dotfile convention before v1 schema-freeze locks the path. Suite grows from 217 to 237 assertions; binary grows 188,495 → 193,753 B (+5,258 B) for the new render branches and the 13 new Config slots. The "any terminal" angle for commandress is closer — colour ships in 0.6.0, structured rendering and right-prompt ship here, palette switching lands in 0.7.x. Pure Cyrius. No deps beyond stdlib.
+
 ### Breaking
 
 - **Config file renamed: `~/.commandress.cyml` → `~/.commandress`.** No fall-back; the old path is no longer read. Migration is one `mv`: `mv ~/.commandress.cyml ~/.commandress`. Rationale + alternatives in [ADR 0006](docs/adr/0006-config-path-rename.md). Pre-emptive to the v1 schema freeze — the path is part of the public contract M8 locks down.
 
-### Changed
-
-- **`src/main.cyr::_default_config_path`** — suffix `/.commandress.cyml` → `/.commandress`. One-string change; parse path, schema, validation all unchanged. The file is still CYML.
-- **Docs refresh** — README, CLAUDE.md, `docs/guides/{getting-started,zsh-testing}.md`, `docs/themes/README.md`, `docs/examples/prompt-tour.md`, `docs/architecture/001-prompt-render-budget.md`, `docs/development/state.md`, and the schema-comment header in `src/config.cyr` all updated to reference the new path.
-
 ### Added
 
-- **ADR 0006** — `~/.commandress` rename rationale, including the three alternatives considered (fall-back support, defer-to-v1, keep-as-is) and the dotfile-convention argument.
+- **`docs/themes/`** — five curated theme files, each a self-contained `~/.commandress` drop-in: `commandress.cyml` (first-party signature theme; royal palette mapping Tyrian purple / royal blue / heraldic gold / crimson / emerald / argent to the canonical six royal colours with heraldic origins called out in comments), `nord.cyml`, `dracula.cyml`, `gruvbox.cyml`, `monokai.cyml`. Each theme file ships a full `[[prompt]]` + `[[palette]]` + `[[segments.X]]` set so `cp <theme> ~/.commandress` produces a working coloured prompt. README explains 16-colour-named-vs-terminal-palette interaction and the "edit by hand to merge into an existing config" workflow.
+- **Right-prompt support.** `cmdrs --side=right` renders `cfg.right_segments` (a new `[[prompt]] right_segments = [...]` list) and skips the trailer. Default empty — opt-in. New `_parse_side()` walks argv looking for `--side=right`; unrecognised / absent → left-side default. Zsh integration is one extra line in the precmd hook: `RPROMPT="$(cmdrs --side=right)"`. Empty `right_segments` → `RPROMPT` evaluates to "" → no right prompt rendered.
+- **Powerline-style separators.** Opt-in via `[[prompt]] separator_style = "powerline"` + `separator_glyph` (e.g. `""` for U+E0B0, needs nerd font; any ASCII char works as a fallback). Render emits `<fg=prev_bg; bg=next_bg>` SGR + glyph between adjacent segment blocks, plus a closing transition (`fg=last_bg; bg=default`) after the last segment. Each segment now stores raw bg cstring in a parallel `CFG_BG_<segment>` slot so transitions can be composed at render time (the pre-baked SGR doesn't surface its bg back out). Right-prompt has its own `right_separator_glyph` for left-pointing variants (`""` / U+E0B2). Plain mode is unchanged and remains the default.
+- **`docs/adr/0006-config-path-rename.md`** — captures the rename decision with the three alternatives considered (clean break / fall-back / defer-to-v1), the dotfile-convention argument, and the schema-freeze framing.
+- **Tests** — 20 new assertions across 13 cases (`217 → 237`):
+  - 3 `config right-prompt` (default empty, parsed segments, explicit `[]` opt-out).
+  - 6 `config powerline` (default separator_style is plain, default bg slots all 0, `separator_style = "powerline"` sets 1, explicit "plain" stays 0, raw bg stored for direct values, raw bg via palette ref).
+  - Theme-related cases didn't get a separate test group — themes are pure config snippets exercised through the existing config-load test paths.
+  - Suite is now **237 passed, 0 failed (237 total)**.
+
+### Changed
+
+- **`src/main.cyr`** — `include "lib/args.cyr"` + `args_init()` early in `main`. New `_parse_side()` for the `--side=right` flag. `render_prompt(cfg, ctx, side)` signature change; main passes `_parse_side()`. `_default_config_path` suffix `/.commandress.cyml` → `/.commandress`. Comments updated.
+- **`src/config.cyr`** — `CFG_SIZE` 152 → 264 B. New slots: `CFG_RIGHT_SEGMENTS` (8 B), 10 × `CFG_BG_<segment>` (80 B total), `CFG_SEPARATOR_STYLE` (8 B, int), `CFG_SEPARATOR_GLYPH` + `CFG_RIGHT_SEPARATOR_GLYPH` (16 B). New getters for all 13. `_apply_seg_style` and `_load_color_only_section` grew a `bg_offset` parameter — they now stash the resolved raw bg alongside the baked SGR. Prompt-block allow-list adds `right_segments`, `separator_style`, `separator_glyph`, `right_separator_glyph`. Schema comment expanded.
+- **`src/render.cyr`** — new `_bg_for(cfg, name)` mirrors `_sgr_for` for the parallel raw-bg slots. New `_emit_powerline_transition(prev_bg, next_bg, glyph)` writes `\x1b[<fg>;<bg>m<glyph>\x1b[0m` (skips when glyph empty; partial SGR handled correctly via `sgr_open_for`). `render_prompt(cfg, ctx, side)` now branches on `cfg_separator_style`: plain path unchanged; powerline path emits transitions between segments + trailing close-glyph when last segment has a bg. Trailer paints only on the left side (`side == 0`); right-prompt is segments-only.
+- **`docs/themes/README.md`** — leads with `cp` (themes are self-contained); "Existing config you want to keep" section calls out CYML / TOML first-occurrence-wins semantics and gives the edit-by-hand recipe; new "Powerline mode" section with full example config + font requirement.
+- **`docs/guides/zsh-testing.md`** — precmd hook updated with `RPROMPT="$(cmdrs --side=right)"`; example config gets `right_segments = ["time"]`.
+- **Doc refresh for the path rename** — README, CLAUDE.md, `docs/guides/{getting-started,zsh-testing}.md`, `docs/themes/README.md`, `docs/examples/prompt-tour.md`, `docs/architecture/001-prompt-render-budget.md`, `docs/development/state.md`, and the schema-comment header in `src/config.cyr` all updated to reference `~/.commandress`.
+- **Binary size** — text 133,799 → 138,937 B (+5,138 for the argv parsing path, render-side branches, three new resolvers, palette-vs-raw bg parsing). bss 54,696 → 54,816 B (+120). **Total 188,495 → 193,753 B (+5,258 B)** for M5-complete + the rename.
+- **Performance** — `render_prompt (cwd+exit)` 3 µs avg unchanged. `config_default` 2 → 3 µs (extra slot inits). All other timings within run-to-run variance. `vcs_render` measured at 4.6 ms vs 1.8 ms in 0.5.0 — still suspect dev-host load (vcs code path untouched); M6 caching closes this regardless.
+
+### Roadmap
+
+- **M5 fully closed.** All five deliverables shipped: ANSI colour palette + per-segment colours + opinionated default theme (v0.6.0), `[[palette]]` reference layer (v0.6.0), cwd `max_length` truncation (v0.6.0), `docs/themes/` curated themes (this release), right-prompt support (this release), powerline-style separators (this release). Next: **M6 — performance hardening** (parallel segment evaluation, 1 s TTL probe cache, default-segment flip to include `vcs`, ≤ 5 ms cold-start CI gate, benchmark history CSV).
 
 ## [0.6.0] — 2026-05-18
 

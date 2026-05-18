@@ -19,14 +19,6 @@
 
 ## Milestones
 
-### M5 — Theming + visuals (v0.6.0 partial → v0.6.x complete)
-
-- [x] ANSI color palette in config — shipped v0.6.0 (`src/color.cyr` + per-segment `fg`/`bg`/`style` + opinionated default theme + `[[palette]]` reference layer)
-- [x] cwd length-truncation (deferred from M1) — shipped v0.6.0 (`max_length` at `/` boundaries)
-- [ ] Segment separator (powerline-style optional) — v0.6.x
-- [ ] Right-prompt support (if shell exposes it) — v0.6.x
-- [ ] `docs/themes/` with examples — v0.6.x (lands trivially once the multi-palette `[[palettes.<name>]]` layer ships)
-
 ### M6 — Performance hardening (v0.7.0)
 
 - [ ] Parallel segment evaluation (where safe)

@@ -134,19 +134,66 @@ fn _sgr_for(cfg, name): i64 {
     return 0;
 }
 
+# Resolve `name` to the raw bg color cstring (e.g. "blue", or 0 for
+# unset). Used by the powerline render path to build transition SGRs
+# at redraw time — the pre-baked SGR doesn't surface its bg back out,
+# so we keep the raw bg in a parallel slot.
+fn _bg_for(cfg, name): i64 {
+    if (streq(name, "cwd") == 1)        { return cfg_bg_cwd(cfg); }
+    if (streq(name, "exit") == 1)       { return cfg_bg_exit(cfg); }
+    if (streq(name, "vcs") == 1)        { return cfg_bg_vcs(cfg); }
+    if (streq(name, "time") == 1)       { return cfg_bg_time(cfg); }
+    if (streq(name, "hostname") == 1)   { return cfg_bg_hostname(cfg); }
+    if (streq(name, "user") == 1)       { return cfg_bg_user(cfg); }
+    if (streq(name, "cyrius_env") == 1) { return cfg_bg_cyrius_env(cfg); }
+    if (streq(name, "python_env") == 1) { return cfg_bg_python_env(cfg); }
+    if (streq(name, "node_env") == 1)   { return cfg_bg_node_env(cfg); }
+    if (streq(name, "rustup_env") == 1) { return cfg_bg_rustup_env(cfg); }
+    return 0;
+}
+
+# Emit a powerline transition glyph: `\x1b[<fg=prev_bg>;<bg=next_bg>m<glyph>\x1b[0m`.
+# Either bg may be 0 (treated as terminal-default); when both are 0 the
+# glyph paints as plain text. The transition fg comes from the prev
+# segment's bg via `color_to_sgr_fg(prev_bg)` — that's correct because
+# the GLYPH's fg should match the PREVIOUS BLOCK's color so the visual
+# bridge between blocks renders seamlessly.
+fn _emit_powerline_transition(prev_bg, next_bg, glyph): i64 {
+    var glen = strlen(glyph);
+    if (glen == 0) { return 0; }
+    var sgr = sgr_open_for(prev_bg, next_bg, 0);
+    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, sgr, strlen(sgr)); }
+    syscall(SYS_WRITE, STDOUT, glyph, glen);
+    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, SGR_RESET, strlen(SGR_RESET)); }
+    return 0;
+}
+
 # Paint segments to stdout. `side` selects the segment list (0 = left
 # / cfg.segments; 1 = right / cfg.right_segments). Trailer paints only
 # on the left — the right prompt is just segments, no `$ ` indicator
 # (zsh's `RPROMPT` is static decoration, not a cursor anchor).
+#
+# Two render styles are dispatched here based on `cfg.separator_style`:
+#
+#   - plain (0): segments are joined by `cfg.separator`; SGR wraps
+#     each segment individually; no transitions.
+#   - powerline (1): segments form bg-blocks; the separator BETWEEN
+#     segments is the glyph painted as `fg=prev_bg, bg=next_bg`; a
+#     trailing glyph closes the chain (`fg=last_bg, bg=default`)
+#     unless the last segment had no bg set.
 fn render_prompt(cfg, ctx, side): i64 {
     var segs = cfg_segments(cfg);
     if (side != 0) { segs = cfg_right_segments(cfg); }
 
+    var powerline = cfg_separator_style(cfg);
     var sep = cfg_separator(cfg);
     var sep_len = strlen(sep);
+    var glyph = cfg_separator_glyph(cfg);
+    if (side != 0) { glyph = cfg_right_separator_glyph(cfg); }
 
     var n = vec_len(segs);
     var painted = 0;
+    var prev_bg = 0;
     var i = 0;
     while (i < n) {
         var name = vec_get(segs, i);
@@ -158,15 +205,33 @@ fn render_prompt(cfg, ctx, side): i64 {
         } else {
             var out = fncall2(fp, cfg, ctx);
             if (out != 0) {
-                if (painted == 1) { syscall(SYS_WRITE, STDOUT, sep, sep_len); }
+                var seg_bg = _bg_for(cfg, name);
+                if (painted == 1) {
+                    if (powerline == 1) {
+                        _emit_powerline_transition(prev_bg, seg_bg, glyph);
+                    } else {
+                        syscall(SYS_WRITE, STDOUT, sep, sep_len);
+                    }
+                }
                 var sgr = _sgr_for(cfg, name);
                 if (sgr != 0) { syscall(SYS_WRITE, STDOUT, sgr, strlen(sgr)); }
                 syscall(SYS_WRITE, STDOUT, out, strlen(out));
                 if (sgr != 0) { syscall(SYS_WRITE, STDOUT, SGR_RESET, strlen(SGR_RESET)); }
+                prev_bg = seg_bg;
                 painted = 1;
             }
         }
         i = i + 1;
+    }
+
+    # Trailing transition closes the final block in powerline mode
+    # (fg = last segment's bg, bg = terminal default). Skipped when the
+    # last segment had no bg (no block to close) — the helper returns
+    # immediately when there's nothing to emit.
+    if (powerline == 1) {
+        if (painted == 1) {
+            if (prev_bg != 0) { _emit_powerline_transition(prev_bg, 0, glyph); }
+        }
     }
 
     if (side == 0) {
