@@ -368,6 +368,60 @@ fn test_config_load_color_only_python_env(): i64 {
     return 0;
 }
 
+# ---- config: palette ----
+
+fn test_config_load_palette_resolves_ref(): i64 {
+    var content = "[[palette]]\nprimary = \"cyan\"\n\n[[segments.cwd]]\nfg = \"palette:primary\"\nstyle = \"bold\"\n";
+    var path = _write_test_config("palette-ref", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[1;36m", "palette:primary → cyan resolves to bold cyan SGR");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_palette_multi_slot(): i64 {
+    var content = "[[palette]]\nprimary = \"cyan\"\nerror   = \"red\"\n\n[[segments.cwd]]\nfg = \"palette:primary\"\n\n[[segments.exit]]\nfg = \"palette:error\"\nstyle = \"bold\"\n";
+    var path = _write_test_config("palette-multi", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_cwd(c),  "\x1b[36m",   "palette:primary → cyan (cwd)");
+    _streq_or_dump(cfg_sgr_exit(c), "\x1b[1;31m", "palette:error → red bold (exit)");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_palette_unknown_ref(): i64 {
+    # Unknown palette name → resolves to 0 → SGR emits no fg code. With
+    # no other styling, the segment ends up unstyled.
+    var content = "[[palette]]\nprimary = \"cyan\"\n\n[[segments.cwd]]\nfg = \"palette:typo\"\n";
+    var path = _write_test_config("palette-unknown", content);
+    var c = config_load(path);
+    assert_eq(cfg_sgr_cwd(c), 0, "unknown palette ref leaves segment unstyled");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_palette_mixed_with_raw(): i64 {
+    # Mixing palette refs and raw colors in the same config works —
+    # raw values pass through `_resolve_color_value` unchanged.
+    var content = "[[palette]]\naccent = \"magenta\"\n\n[[segments.cwd]]\nfg = \"yellow\"\n\n[[segments.cyrius_env]]\nfg = \"palette:accent\"\n";
+    var path = _write_test_config("palette-mixed", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_cwd(c),        "\x1b[33m", "raw \"yellow\" on cwd");
+    _streq_or_dump(cfg_sgr_cyrius_env(c), "\x1b[35m", "palette:accent → magenta on cyrius_env");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_palette_absent_behaves_like_before(): i64 {
+    # No [[palette]] section; raw color still works.
+    var content = "[[segments.cwd]]\nfg = \"red\"\n";
+    var path = _write_test_config("no-palette", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "absent palette doesn't break raw color");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 # ---- vcs parser ----
 # We don't fork `sit` in tests — vcs_parse_render is the pure-fn target.
 # Fabricated `sit status` outputs cover the four cases: clean, dirty
@@ -1133,6 +1187,11 @@ fn main(): i64 {
     test_config_load_color_reset_to_plain();
     test_config_load_color_only_hostname();
     test_config_load_color_only_python_env();
+    test_config_load_palette_resolves_ref();
+    test_config_load_palette_multi_slot();
+    test_config_load_palette_unknown_ref();
+    test_config_load_palette_mixed_with_raw();
+    test_config_load_palette_absent_behaves_like_before();
 
     test_group("vcs parser");
     test_vcs_parse_clean();

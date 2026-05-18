@@ -29,6 +29,13 @@
 #   [[segments.<env_segment>]]            # cyrius_env / python_env / node_env / rustup_env
 #   fg = "..."                            # color-only knobs for the env segments
 #
+#   [[palette]]
+#   primary = "cyan"                      # define named slots that segments can reference
+#   accent  = "magenta"
+#
+#   [[segments.cwd]]
+#   fg = "palette:primary"                # `palette:<name>` resolves at config-load time
+#
 #   ---
 #   The body zone (after `---`) is ignored; reserved for user notes.
 #
@@ -168,12 +175,46 @@ fn _parse_str_array(s): i64 {
     return out;
 }
 
+# Look up `name` in a palette table (flat vec of alternating
+# cstrings: [k0, v0, k1, v1, ...]). Returns the value cstring or 0
+# when the name isn't bound. Linear scan — palettes are small (~10
+# entries in practice); a hashmap would be over-engineering.
+fn _palette_lookup(palette, name): i64 {
+    if (palette == 0) { return 0; }
+    if (name == 0) { return 0; }
+    var pn = vec_len(palette);
+    var pi = 0;
+    while (pi + 1 < pn) {
+        if (streq(vec_get(palette, pi), name) == 1) {
+            return vec_get(palette, pi + 1);
+        }
+        pi = pi + 2;
+    }
+    return 0;
+}
+
+# Resolve a color value cstring through the palette. Values that begin
+# with `palette:` are looked up; the prefix is stripped and the
+# remainder used as the slot name. An unknown name resolves to 0 (no
+# code emitted — same path as "default") so users get muted output
+# instead of a crash on a typo.
+fn _resolve_color_value(value, palette): i64 {
+    if (value == 0) { return 0; }
+    var prefix = "palette:";
+    var prefix_len = strlen(prefix);
+    var vlen = strlen(value);
+    if (vlen <= prefix_len) { return value; }
+    if (memeq(value, prefix, prefix_len) == 0) { return value; }
+    return _palette_lookup(palette, value + prefix_len);
+}
+
 # Overwrite the SGR slot at `c + offset` from this section's `fg` / `bg`
 # / `style` pairs, but ONLY if at least one of those keys is present.
 # Sections with no color fields leave the default-theme SGR intact —
 # important so boolean-only overrides (e.g. `home_shorten = false`)
-# don't accidentally strip the cwd's default cyan-bold.
-fn _apply_seg_style(c, offset, pairs): i64 {
+# don't accidentally strip the cwd's default cyan-bold. `palette` is
+# the table parsed from the optional [[palette]] section (or 0).
+fn _apply_seg_style(c, offset, pairs, palette): i64 {
     var fg_v = toml_get(pairs, "fg");
     var bg_v = toml_get(pairs, "bg");
     var style_v = toml_get(pairs, "style");
@@ -185,8 +226,8 @@ fn _apply_seg_style(c, offset, pairs): i64 {
     var fg = 0;
     var bg = 0;
     var style = 0;
-    if (fg_v != 0)    { fg = str_cstr(fg_v); }
-    if (bg_v != 0)    { bg = str_cstr(bg_v); }
+    if (fg_v != 0)    { fg = _resolve_color_value(str_cstr(fg_v), palette); }
+    if (bg_v != 0)    { bg = _resolve_color_value(str_cstr(bg_v), palette); }
     if (style_v != 0) { style = str_cstr(style_v); }
     store64(c + offset, sgr_open_for(fg, bg, style));
     return 0;
@@ -224,7 +265,7 @@ fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
 # knobs (no booleans / strings of its own). Loads, allow-lists fg/bg/
 # style, applies. Used by hostname / user / the four env segments —
 # all introduced as configurable-only-for-color sections in v0.6.0.
-fn _load_color_only_section(c, sgr_offset, sections, name): i64 {
+fn _load_color_only_section(c, sgr_offset, sections, name, palette): i64 {
     var secs = toml_get_sections(sections, name);
     if (vec_len(secs) == 0) { return 0; }
     var sec = vec_get(secs, 0);
@@ -234,8 +275,37 @@ fn _load_color_only_section(c, sgr_offset, sections, name): i64 {
     vec_push(allowed, "bg");
     vec_push(allowed, "style");
     _warn_unknown_pairs(pairs, allowed, name);
-    _apply_seg_style(c, sgr_offset, pairs);
+    _apply_seg_style(c, sgr_offset, pairs, palette);
     return 0;
+}
+
+# Load the [[palette]] section into a flat alternating-cstring vec.
+# Returns an empty vec when the section is absent so callers can pass
+# it through `_resolve_color_value` without a null check.
+fn _load_palette(sections): i64 {
+    var p = vec_new();
+    var secs = toml_get_sections(sections, "palette");
+    if (vec_len(secs) == 0) { return p; }
+    var sec = vec_get(secs, 0);
+    var pairs = toml_section_pairs(sec);
+    var pn = vec_len(pairs);
+    var pi = 0;
+    while (pi < pn) {
+        var pair = vec_get(pairs, pi);
+        var key = toml_pair_key(pair);
+        var val = toml_pair_value(pair);
+
+        # Promote key from a `str` (data+len, possibly unterminated)
+        # into an owned NUL-terminated cstring so streq lookups work.
+        var klen = str_len(key);
+        var kcs = alloc(klen + 1);
+        if (klen > 0) { memcpy(kcs, str_data(key), klen); }
+        store8(kcs + klen, 0);
+        vec_push(p, kcs);
+        vec_push(p, str_cstr(val));
+        pi = pi + 1;
+    }
+    return p;
 }
 
 # Load config from `path`. On read failure (file missing / unreadable)
@@ -256,6 +326,12 @@ fn config_load(path): i64 {
     if (hlen == 0) { return c; }
 
     var sections = toml_parse(str_new(hdr, hlen));
+
+    # [[palette]] — optional named-slot table parsed first so every
+    # segment block below can resolve `palette:<name>` references in
+    # its fg/bg fields. Absent → empty vec (resolution falls through
+    # to "no code emitted" on any palette ref it can't bind).
+    var palette = _load_palette(sections);
 
     # [[prompt]] — segment order + separator + trailer.
     var prompt_secs = toml_get_sections(sections, "prompt");
@@ -301,7 +377,7 @@ fn config_load(path): i64 {
 
         var ml_v = toml_get(cwd_pairs, "max_length");
         if (ml_v != 0) { store64(c + CFG_CWD_MAX_LENGTH, atoi(str_cstr(ml_v))); }
-        _apply_seg_style(c, CFG_SGR_CWD, cwd_pairs);
+        _apply_seg_style(c, CFG_SGR_CWD, cwd_pairs, palette);
     }
 
     # [[segments.exit]] — exit-segment options.
@@ -319,7 +395,7 @@ fn config_load(path): i64 {
 
         var hz_v = toml_get(exit_pairs, "hide_zero");
         store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
-        _apply_seg_style(c, CFG_SGR_EXIT, exit_pairs);
+        _apply_seg_style(c, CFG_SGR_EXIT, exit_pairs, palette);
     }
 
     # [[segments.vcs]] — vcs-segment options.
@@ -341,7 +417,7 @@ fn config_load(path): i64 {
 
         var dm_v = toml_get(vcs_pairs, "dirty_marker");
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
-        _apply_seg_style(c, CFG_SGR_VCS, vcs_pairs);
+        _apply_seg_style(c, CFG_SGR_VCS, vcs_pairs, palette);
     }
 
     # [[segments.time]] — time-segment options.
@@ -359,18 +435,18 @@ fn config_load(path): i64 {
 
         var fmt_v = toml_get(time_pairs, "format");
         if (fmt_v != 0) { store64(c + CFG_TIME_FORMAT, str_cstr(fmt_v)); }
-        _apply_seg_style(c, CFG_SGR_TIME, time_pairs);
+        _apply_seg_style(c, CFG_SGR_TIME, time_pairs, palette);
     }
 
     # Color-only sections — segments with no non-color knobs of their
     # own. Each gets its [[segments.X]] block in v0.6.0 so users can
     # recolor without having to touch the dispatcher in code.
-    _load_color_only_section(c, CFG_SGR_HOSTNAME,   sections, "segments.hostname");
-    _load_color_only_section(c, CFG_SGR_USER,       sections, "segments.user");
-    _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, sections, "segments.cyrius_env");
-    _load_color_only_section(c, CFG_SGR_PYTHON_ENV, sections, "segments.python_env");
-    _load_color_only_section(c, CFG_SGR_NODE_ENV,   sections, "segments.node_env");
-    _load_color_only_section(c, CFG_SGR_RUSTUP_ENV, sections, "segments.rustup_env");
+    _load_color_only_section(c, CFG_SGR_HOSTNAME,   sections, "segments.hostname",   palette);
+    _load_color_only_section(c, CFG_SGR_USER,       sections, "segments.user",       palette);
+    _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, sections, "segments.cyrius_env", palette);
+    _load_color_only_section(c, CFG_SGR_PYTHON_ENV, sections, "segments.python_env", palette);
+    _load_color_only_section(c, CFG_SGR_NODE_ENV,   sections, "segments.node_env",   palette);
+    _load_color_only_section(c, CFG_SGR_RUSTUP_ENV, sections, "segments.rustup_env", palette);
 
     return c;
 }
