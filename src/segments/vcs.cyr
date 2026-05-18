@@ -1,0 +1,178 @@
+# vcs.cyr — VCS context segment (sit-based).
+#
+# Shells out to `sit status` directly via fork+pipe+execve, parses the
+# captured stdout for branch name + dirty/clean flag, and emits
+# `<branch>` (clean) or `<branch><dirty_marker>` (dirty).
+#
+# Returns 0 (renders empty) when sit isn't on PATH, when sit exits
+# non-zero, when stdout is empty, or when the output doesn't start
+# with the expected `On branch ` prefix. The empty render covers:
+# not a sit repo, sit not installed, sit errored, detached HEAD (no
+# `On branch <name>` line). Per ADR 0004.
+#
+# Per-segment timeout enforcement is deferred to v0.4.0 (out of scope
+# for M2 ship; tracked in roadmap). For v0.3.0 we trust `sit status`
+# to return quickly on healthy repos.
+#
+# This file does not use `lib/process.cyr::run_capture` because that
+# wraps `_exec3` whose `var argv[4]` stack buffer is sized as 4 BYTES
+# but stores 5 pointers (40 B) into it — silent stack overflow that
+# corrupts argv before execve sees it. Filed upstream alongside the
+# missing-stderr-redirect in the vec-based `exec_capture` family.
+# Both make `lib/process.cyr` unusable as-is for our case; an inline
+# fork+pipe is ~30 LoC and avoids the trap entirely.
+
+# Find `name` (a cstring like "sit") on $PATH. Returns a heap-alloc'd
+# absolute-path cstring or 0 when not found. Walks the colon-separated
+# $PATH, building `<dir>/<name>` candidates and probing each with
+# access(X_OK). Needed because Linux `execve(2)` does NOT do PATH
+# lookup — that's a libc-`execvp` thing — and no stdlib helper exposes
+# the equivalent today.
+fn _find_in_path(name): i64 {
+    var path = getenv("PATH");
+    if (path == 0) { return 0; }
+    var nlen = strlen(name);
+    var plen = strlen(path);
+    var pi = 0;
+    var hit = 0;
+    var done = 0;
+    while (done == 0) {
+        if (pi >= plen) { done = 1; }
+        else {
+            var end = pi;
+            var seek = 1;
+            while (seek == 1) {
+                if (end >= plen) { seek = 0; }
+                else { if (load8(path + end) == 58) { seek = 0; } else { end = end + 1; } }
+            }
+            var dir_len = end - pi;
+            if (dir_len > 0) {
+                var candidate = alloc(dir_len + 1 + nlen + 1);
+                memcpy(candidate, path + pi, dir_len);
+                store8(candidate + dir_len, 47);              # '/'
+                memcpy(candidate + dir_len + 1, name, nlen);
+                store8(candidate + dir_len + 1 + nlen, 0);
+                if (syscall(SYS_ACCESS, candidate, 1) == 0) {
+                    hit = candidate;
+                    done = 1;
+                }
+            }
+            pi = end + 1;
+        }
+    }
+    return hit;
+}
+
+# fork+pipe+execve, capturing stdout, redirecting stderr to /dev/null.
+# `cmd_path` is an absolute path; `arg1` is the sole argv[1] (we only
+# need one for `sit status`). Heap-allocates argv to avoid the
+# `var argv[N]` byte-vs-entry trap in `lib/process.cyr::_exec3`.
+# Returns the number of stdout bytes captured into `buf` (truncated to
+# buflen). Returns -1 on syscall failure.
+fn _vcs_capture(cmd_path, arg1, buf, buflen): i64 {
+    var argv = alloc(24);
+    store64(argv, cmd_path);
+    store64(argv + 8, arg1);
+    store64(argv + 16, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+
+    var pipefd[16];
+    var pr = sys_pipe(&pipefd);
+    if (pr < 0) { return 0 - 1; }
+    var rfd = load32(&pipefd);
+    var wfd = load32(&pipefd + 4);
+
+    var pid = sys_fork();
+    if (pid < 0) { sys_close(rfd); sys_close(wfd); return 0 - 1; }
+    if (pid == 0) {
+        sys_close(rfd);
+        sys_dup2(wfd, 1);
+        sys_close(wfd);
+        # O_WRONLY = 1 (literal, matches lib/process.cyr's run_capture
+        # comment about the io.cyr-dependency footgun).
+        var devnull = sys_open("/dev/null", 1, 0);
+        if (devnull >= 0) { sys_dup2(devnull, 2); sys_close(devnull); }
+        sys_execve(cmd_path, argv, envp);
+        sys_exit(127);
+    }
+
+    sys_close(wfd);
+    var total = 0;
+    var rgo = 1;
+    while (rgo == 1) {
+        var n = sys_read(rfd, buf + total, buflen - total);
+        if (n <= 0) { rgo = 0; }
+        else {
+            total = total + n;
+            if (total >= buflen) { rgo = 0; }
+        }
+    }
+    sys_close(rfd);
+    # 8-byte status buffer (kernel writes 4 bytes; pad for alignment).
+    var stbuf[8];
+    sys_waitpid(pid, &stbuf, 0);
+    return total;
+}
+
+# Pure parser. Given the raw stdout bytes from `sit status` and a
+# dirty_marker cstring (or 0 for no marker), returns a heap-alloc'd
+# NUL-terminated cstring formatted per the contract above, or 0 on
+# any parse failure. Splitting this from the shell-out path lets tests
+# fabricate `sit status` outputs without forking a real subprocess.
+fn vcs_parse_render(buf, n, dirty_marker): i64 {
+    var prefix = "On branch ";
+    var prefix_len = strlen(prefix);
+    if (n < prefix_len) { return 0; }
+    if (memeq(buf, prefix, prefix_len) == 0) { return 0; }
+
+    var i = prefix_len;
+    var seek = 1;
+    while (seek == 1) {
+        if (i >= n) { seek = 0; }
+        else { if (load8(buf + i) == 10) { seek = 0; } else { i = i + 1; } }
+    }
+    var branch_len = i - prefix_len;
+    if (branch_len == 0) { return 0; }
+
+    var clean_msg = "nothing to commit, working tree clean";
+    var cmlen = strlen(clean_msg);
+    var dirty = 1;
+    if (n >= cmlen) {
+        var ci = 0;
+        var scan = 1;
+        while (scan == 1) {
+            if (ci + cmlen > n) { scan = 0; }
+            else {
+                if (memeq(buf + ci, clean_msg, cmlen) == 1) {
+                    dirty = 0;
+                    scan = 0;
+                } else {
+                    ci = ci + 1;
+                }
+            }
+        }
+    }
+
+    var marker_len = 0;
+    if (dirty == 1) {
+        if (dirty_marker != 0) { marker_len = strlen(dirty_marker); }
+    }
+    var out = alloc(branch_len + marker_len + 1);
+    memcpy(out, buf + prefix_len, branch_len);
+    if (marker_len > 0) { memcpy(out + branch_len, dirty_marker, marker_len); }
+    store8(out + branch_len + marker_len, 0);
+    return out;
+}
+
+# Shell-out path. Finds `sit` on PATH, forks `sit status`, reads
+# stdout, hands the bytes to the parser. Returns 0 on any failure
+# mode for an empty segment.
+fn vcs_render(dirty_marker): i64 {
+    var sit_path = _find_in_path("sit");
+    if (sit_path == 0) { return 0; }
+    var buf[8192];
+    var n = _vcs_capture(sit_path, "status", &buf, 8192);
+    if (n <= 0) { return 0; }
+    return vcs_parse_render(&buf, n, dirty_marker);
+}

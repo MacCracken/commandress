@@ -42,14 +42,14 @@ Three segments + config loader + render pipeline.
 
 **Acceptance hit**: `AGNOSHI_LAST_EXIT=0 cd /tmp && cmdrs` prints `/tmp $ `. With `AGNOSHI_LAST_EXIT=42` prints `/tmp [42] $ `. With a `~/.commandress.cyml` overriding segment order/separator/trailer the prompt picks up the changes per redraw.
 
-### M2 — VCS context (v0.3.0)
+### M2 — VCS context (v0.3.0) — feature-complete on `main`, awaiting tag
 
-- [ ] **ADR 0004**: VCS probe strategy — shell out to [`sit`](https://github.com/MacCracken/sit) (AGNOS-native VCS), **not** external `git`. Sovereign-stack alignment — commandress already commits to zero non-stdlib deps, and adding a hard dep on `git` would re-introduce one in spirit. `sit` is a first-party Cyrius binary, on the same toolchain/version cadence, and exposes the plumbing we need (branch, status, log). Capture the trade vs reimplementing VCS-state read in-tree (rejected: more code, every storage-format bump becomes our problem).
-- [ ] `src/segments/vcs.cyr` (filename hedges so a future fossil/jj/etc. probe can land alongside without renaming) — branch name, dirty/clean state, ahead/behind counts. Probe via `exec_vec("sit", ...)` with explicit argv (no shell, no command injection surface).
-- [ ] Per-segment timeout enforcement — kill the `sit` probe at the per-segment budget and render empty (per [`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)).
-- [ ] Graceful fallback when no `sit` repo is detected (`sit status` non-zero exit / no `.sit/` walked-up) — render empty, not noisy.
+- [x] **ADR 0004**: VCS probe shells out to [`sit`](https://github.com/MacCracken/sit), not external `git`. Sovereign-stack alignment. [`docs/adr/0004-vcs-probe-via-sit.md`](../adr/0004-vcs-probe-via-sit.md).
+- [x] `src/segments/vcs.cyr` — branch name + dirty/clean indicator. Inline fork+pipe+execve (lib/process.cyr has bugs we filed upstream); parses `On branch <name>` line + scans for `nothing to commit, working tree clean` substring. Ahead/behind counts deferred (sit doesn't currently surface them in `status` output).
+- [x] Graceful fallback when no `sit` repo is detected, when `sit` isn't on PATH, or on parse failure — renders empty.
+- [ ] **Per-segment timeout enforcement — deferred to v0.4.0.** `sit status` returns sub-millisecond on healthy repos (1.8 ms total fork+exec round-trip on the dev host); the watchdog (fork+pipe+poll+kill) deserves its own slot. Tracked here as M2's outstanding deliverable.
 
-**Acceptance**: prompt shows current `sit` branch + dirty indicator inside a `sit` repo, blank elsewhere. Probe stays under the per-segment 500 µs budget on a small repo; larger repos respect the watchdog.
+**Acceptance hit**: with `segments = ["cwd", "vcs", "exit"]` in `~/.commandress.cyml`, inside a `sit` repo on branch `main` and a clean tree → `<cwd> main $ `; one edit later → `<cwd> main* $ `; `cd /tmp` outside any repo → vcs renders empty.
 
 ### M3 — Time + hostname + user (v0.4.0)
 

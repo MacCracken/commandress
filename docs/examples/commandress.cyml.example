@@ -2,7 +2,7 @@
 # Segment order — left-to-right. Names must match registered segments
 # (see render.cyr::_seg_fn_for). Unknown names warn to stderr; they
 # don't abort the prompt.
-segments = ["cwd", "exit"]
+segments = ["cwd", "vcs", "exit"]
 
 # Inserted between adjacent painted segments.
 separator = " "
@@ -22,6 +22,16 @@ home_shorten = true
 # the common case. Set false to always show "[N]" including "[0]".
 hide_zero = true
 
+[[segments.vcs]]
+# When true (default), a dirty tree shows the marker character after
+# the branch name (e.g. "main*"). Set false to suppress the marker.
+show_dirty = true
+
+# Single character (or short string) appended to the branch name when
+# the working tree is dirty. The default "*" matches the convention
+# from starship/p10k.
+dirty_marker = "*"
+
 ---
 
 # Notes zone
@@ -30,9 +40,10 @@ Everything below the `---` is ignored by the loader. Use it for theme
 references, segment recipes, links — anything you want to keep next to
 the config it documents.
 
-## Available segments (v0.2.0)
+## Available segments (v0.3.0)
 
-- `cwd` — current working directory.
-- `exit` — last-command exit code.
+- `cwd` — current working directory (optional `~` home-shortening).
+- `vcs` — current branch + dirty/clean state via [sit](https://github.com/MacCracken/sit). Renders empty when not in a `sit` repo or `sit` isn't on PATH.
+- `exit` — last-command exit code (optional hide on success).
 
-More segments land in M2+ (git, time, hostname, user, language env).
+More segments land in M3+ (time, hostname, user, language env).

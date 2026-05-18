@@ -28,13 +28,17 @@ var CFG_SEPARATOR = 8;
 var CFG_TRAILER = 16;
 var CFG_CWD_HOME_SHORTEN = 24;
 var CFG_EXIT_HIDE_ZERO = 32;
-var CFG_SIZE = 40;
+var CFG_VCS_SHOW_DIRTY = 40;
+var CFG_VCS_DIRTY_MARKER = 48;
+var CFG_SIZE = 56;
 
 fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
 fn cfg_separator(c): i64          { return load64(c + CFG_SEPARATOR); }
 fn cfg_trailer(c): i64            { return load64(c + CFG_TRAILER); }
 fn cfg_cwd_home_shorten(c): i64   { return load64(c + CFG_CWD_HOME_SHORTEN); }
 fn cfg_exit_hide_zero(c): i64     { return load64(c + CFG_EXIT_HIDE_ZERO); }
+fn cfg_vcs_show_dirty(c): i64     { return load64(c + CFG_VCS_SHOW_DIRTY); }
+fn cfg_vcs_dirty_marker(c): i64   { return load64(c + CFG_VCS_DIRTY_MARKER); }
 
 # Build the default Config. Used when no file is present, and as the
 # base for partial overrides — a config that sets only `separator`
@@ -52,6 +56,8 @@ fn config_default(): i64 {
     store64(c + CFG_TRAILER, " $ ");
     store64(c + CFG_CWD_HOME_SHORTEN, 1);
     store64(c + CFG_EXIT_HIDE_ZERO, 1);
+    store64(c + CFG_VCS_SHOW_DIRTY, 1);
+    store64(c + CFG_VCS_DIRTY_MARKER, "*");
     return c;
 }
 
@@ -197,6 +203,24 @@ fn config_load(path): i64 {
 
         var hz_v = toml_get(exit_pairs, "hide_zero");
         store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
+    }
+
+    # [[segments.vcs]] — vcs-segment options.
+    var vcs_secs = toml_get_sections(sections, "segments.vcs");
+    if (vec_len(vcs_secs) > 0) {
+        var vcs = vec_get(vcs_secs, 0);
+        var vcs_pairs = toml_section_pairs(vcs);
+
+        var vcs_allowed = vec_new();
+        vec_push(vcs_allowed, "show_dirty");
+        vec_push(vcs_allowed, "dirty_marker");
+        _warn_unknown_pairs(vcs_pairs, vcs_allowed, "segments.vcs");
+
+        var sd_v = toml_get(vcs_pairs, "show_dirty");
+        store64(c + CFG_VCS_SHOW_DIRTY, _parse_bool(sd_v, cfg_vcs_show_dirty(c)));
+
+        var dm_v = toml_get(vcs_pairs, "dirty_marker");
+        if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
     }
 
     return c;

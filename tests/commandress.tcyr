@@ -15,10 +15,13 @@ include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/cyml.cyr"
 include "lib/toml.cyr"
+include "lib/tagged.cyr"
+include "lib/process.cyr"
 include "lib/assert.cyr"
 
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
+include "src/segments/vcs.cyr"
 include "src/config.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
@@ -182,6 +185,77 @@ fn test_config_load_partial_override(): i64 {
     return 0;
 }
 
+fn test_config_load_vcs_section(): i64 {
+    var content = "[[segments.vcs]]\nshow_dirty = false\ndirty_marker = \"!\"\n";
+    var path = _write_test_config("vcs", content);
+    var c = config_load(path);
+    assert_eq(cfg_vcs_show_dirty(c), 0, "vcs show_dirty override == 0");
+    _streq_or_dump(cfg_vcs_dirty_marker(c), "!", "vcs dirty_marker override == \"!\"");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_default_vcs_fields(): i64 {
+    var c = config_default();
+    assert_eq(cfg_vcs_show_dirty(c), 1, "default vcs show_dirty == 1");
+    _streq_or_dump(cfg_vcs_dirty_marker(c), "*", "default vcs dirty_marker == \"*\"");
+    return 0;
+}
+
+# ---- vcs parser ----
+# We don't fork `sit` in tests — vcs_parse_render is the pure-fn target.
+# Fabricated `sit status` outputs cover the four cases: clean, dirty
+# (staged), dirty (unstaged), and parse failure (wrong prefix).
+
+fn test_vcs_parse_clean(): i64 {
+    var s = "On branch main\n\nnothing to commit, working tree clean\n";
+    var out = vcs_parse_render(s, strlen(s), "*");
+    _streq_or_dump(out, "main", "vcs clean tree → \"main\"");
+    return 0;
+}
+
+fn test_vcs_parse_dirty_staged(): i64 {
+    var s = "On branch feature-x\n\nStaged for commit:\n  new file:  foo.txt\n";
+    var out = vcs_parse_render(s, strlen(s), "*");
+    _streq_or_dump(out, "feature-x*", "vcs staged → \"feature-x*\"");
+    return 0;
+}
+
+fn test_vcs_parse_dirty_unstaged(): i64 {
+    var s = "On branch trunk\n\nUnstaged changes:\n  modified:  bar.txt\n";
+    var out = vcs_parse_render(s, strlen(s), "*");
+    _streq_or_dump(out, "trunk*", "vcs unstaged → \"trunk*\"");
+    return 0;
+}
+
+fn test_vcs_parse_custom_marker(): i64 {
+    var s = "On branch main\n\nUnstaged changes:\n  modified:  bar.txt\n";
+    var out = vcs_parse_render(s, strlen(s), "!");
+    _streq_or_dump(out, "main!", "vcs custom marker → \"main!\"");
+    return 0;
+}
+
+fn test_vcs_parse_no_marker_when_disabled(): i64 {
+    var s = "On branch main\n\nUnstaged changes:\n  modified:  bar.txt\n";
+    var out = vcs_parse_render(s, strlen(s), 0);
+    _streq_or_dump(out, "main", "vcs disabled marker (0) → \"main\"");
+    return 0;
+}
+
+fn test_vcs_parse_wrong_prefix_returns_empty(): i64 {
+    var s = "sit: not a sit repository\n";
+    var out = vcs_parse_render(s, strlen(s), "*");
+    assert_eq(out, 0, "vcs wrong-prefix → 0 (empty segment)");
+    return 0;
+}
+
+fn test_vcs_parse_short_buffer_returns_empty(): i64 {
+    var s = "On";  # shorter than the prefix
+    var out = vcs_parse_render(s, strlen(s), "*");
+    assert_eq(out, 0, "vcs short-buffer → 0");
+    return 0;
+}
+
 # ---- harness ----
 
 fn main(): i64 {
@@ -200,10 +274,21 @@ fn main(): i64 {
 
     test_group("config loader");
     test_config_defaults();
+    test_config_default_vcs_fields();
     test_config_load_missing_returns_defaults();
     test_config_load_null_path_returns_defaults();
     test_config_load_full_override();
     test_config_load_partial_override();
+    test_config_load_vcs_section();
+
+    test_group("vcs parser");
+    test_vcs_parse_clean();
+    test_vcs_parse_dirty_staged();
+    test_vcs_parse_dirty_unstaged();
+    test_vcs_parse_custom_marker();
+    test_vcs_parse_no_marker_when_disabled();
+    test_vcs_parse_wrong_prefix_returns_empty();
+    test_vcs_parse_short_buffer_returns_empty();
 
     return assert_summary();
 }

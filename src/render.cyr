@@ -13,6 +13,7 @@ include "src/context.cyr"
 include "src/config.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
+include "src/segments/vcs.cyr"
 
 # Dispatcher for the `cwd` segment. Pulls HOME from ctx, gates the
 # home-shorten path on cfg.cwd_home_shorten.
@@ -37,11 +38,22 @@ fn _dispatch_exit(cfg, ctx): i64 {
     return out;
 }
 
+# Dispatcher for the `vcs` segment. Forwards the dirty-marker config
+# (or 0 when show_dirty is off) to `vcs_render`, which shells out to
+# `sit status` and parses the result. Returns 0 when not in a sit repo
+# or sit isn't available — segment renders empty.
+fn _dispatch_vcs(cfg, ctx): i64 {
+    var marker = 0;
+    if (cfg_vcs_show_dirty(cfg) == 1) { marker = cfg_vcs_dirty_marker(cfg); }
+    return vcs_render(marker);
+}
+
 # Registry — name → dispatcher fn pointer. Returns 0 for unknown names
 # so the caller can emit a single targeted warning.
 fn _seg_fn_for(name): i64 {
     if (streq(name, "cwd") == 1)  { return &_dispatch_cwd; }
     if (streq(name, "exit") == 1) { return &_dispatch_exit; }
+    if (streq(name, "vcs") == 1)  { return &_dispatch_vcs; }
     return 0;
 }
 
