@@ -1,0 +1,53 @@
+# dracula — vivid purples + pinks + green accents.
+#
+# Source: https://draculatheme.com/
+# Aesthetic: high-contrast neon on near-black. Pink + purple
+# dominate; green for clean / success states; cyan for highlights.
+#
+# Best with a terminal running the dracula 16-color theme (the
+# official site lists builds for every common terminal). Default-
+# palette terminals still work — the bindings just resolve to your
+# normal magenta / cyan / etc.
+
+[[palette]]
+purple     = "bright_magenta"  # dracula purple — primary accent
+pink       = "magenta"         # dracula pink — secondary accent
+cyan       = "bright_cyan"     # dracula cyan — info / context
+green      = "bright_green"    # dracula green — success / clean
+yellow     = "bright_yellow"   # dracula yellow — warnings
+red        = "bright_red"      # dracula red — errors
+foreground = "white"           # neutral foreground
+dim        = "bright_black"    # comment / muted
+
+[[segments.cwd]]
+fg    = "palette:purple"
+style = "bold"
+
+[[segments.vcs]]
+fg = "palette:yellow"
+
+[[segments.time]]
+fg = "palette:dim"
+
+[[segments.hostname]]
+fg = "palette:cyan"
+
+[[segments.user]]
+fg    = "palette:green"
+style = "bold"
+
+[[segments.cyrius_env]]
+fg = "palette:pink"
+
+[[segments.python_env]]
+fg = "palette:yellow"
+
+[[segments.node_env]]
+fg = "palette:green"
+
+[[segments.rustup_env]]
+fg = "palette:red"
+
+[[segments.exit]]
+fg    = "palette:red"
+style = "bold"

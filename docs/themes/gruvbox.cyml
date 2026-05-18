@@ -1,0 +1,52 @@
+# gruvbox — warm retro palette.
+#
+# Source: https://github.com/morhetz/gruvbox
+# Aesthetic: warm yellows + oranges + earth tones on dark background.
+# Retro amber-monitor feel; high contrast without neon.
+#
+# Best with a terminal running a gruvbox 16-color theme. Default-
+# palette terminals still work — the bindings just resolve to your
+# normal yellow / red / etc.
+
+[[palette]]
+amber  = "bright_yellow"   # gruvbox bright yellow — primary accent
+ochre  = "yellow"          # gruvbox yellow — warnings / vcs dirty
+rust   = "bright_red"      # gruvbox orange-red — emphasis / errors
+leaf   = "bright_green"    # gruvbox green — success / clean
+sky    = "bright_blue"     # gruvbox blue — info / context
+purple = "bright_magenta"  # gruvbox purple — secondary accent
+cream  = "white"           # neutral foreground
+dim    = "bright_black"    # comment / muted
+
+[[segments.cwd]]
+fg    = "palette:amber"
+style = "bold"
+
+[[segments.vcs]]
+fg = "palette:ochre"
+
+[[segments.time]]
+fg = "palette:dim"
+
+[[segments.hostname]]
+fg = "palette:sky"
+
+[[segments.user]]
+fg    = "palette:leaf"
+style = "bold"
+
+[[segments.cyrius_env]]
+fg = "palette:purple"
+
+[[segments.python_env]]
+fg = "palette:ochre"
+
+[[segments.node_env]]
+fg = "palette:leaf"
+
+[[segments.rustup_env]]
+fg = "palette:rust"
+
+[[segments.exit]]
+fg    = "palette:rust"
+style = "bold"

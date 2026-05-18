@@ -1,0 +1,72 @@
+# commandress — first-party signature theme.
+#
+# Royal palette. The aesthetic matches the project identity
+# ("commandress" — feminine form of "commander", the prompt commands
+# the line). Every slot below maps to one of the six historical
+# royal colors, with heraldic / dye origins called out in the comments.
+#
+# Best on a terminal running a saturated 16-color theme (papercolor-
+# dark, ayu-dark, catppuccin-mocha all have rich purples + gold).
+# Hex / 256-color refinement will land in a later v0.6.x once those
+# value spaces are supported; until then the named-ANSI slots are
+# faithful enough that the royal intent comes through.
+
+[[palette]]
+# 1. Royal Purple — Tyrian (ancient world's most prestigious dye).
+royal_purple = "bright_magenta"
+# 2. Royal Blue — power, dependability, House standard.
+royal_blue   = "bright_blue"
+# 3. Gold — Or in heraldry. Sun, divine favor, crown / scepter.
+gold         = "bright_yellow"
+# 4. Crimson / Ruby Red — Gules in heraldry. Courage, high standing.
+crimson      = "bright_red"
+# 5. Emerald Green — rebirth, luxury, Crown Jewels.
+emerald      = "bright_green"
+# 6. White — Argent in heraldry. Purity, ceremony, coronation.
+white        = "white"
+# Plus a single non-royal slot for the time segment — pure black-
+# on-black would disappear; bright_black gives muted grey context.
+muted        = "bright_black"
+
+[[segments.cwd]]
+# Cwd anchors the prompt — Tyrian purple, the seat of authority.
+fg    = "palette:royal_purple"
+style = "bold"
+
+[[segments.vcs]]
+# Gold standard — the branch is the working banner.
+fg    = "palette:gold"
+style = "bold"
+
+[[segments.time]]
+fg = "palette:muted"
+
+[[segments.hostname]]
+# Argent / white — formal address, the host's identity badge.
+fg = "palette:white"
+
+[[segments.user]]
+# Gold — the user's prestige slot.
+fg    = "palette:gold"
+style = "bold"
+
+[[segments.cyrius_env]]
+# Royal blue — the toolchain seal.
+fg    = "palette:royal_blue"
+style = "bold"
+
+[[segments.python_env]]
+# Emerald — language-as-jewel slot for runtime / project pins.
+fg = "palette:emerald"
+
+[[segments.node_env]]
+fg = "palette:emerald"
+
+[[segments.rustup_env]]
+# Crimson — Rust's heraldic red.
+fg = "palette:crimson"
+
+[[segments.exit]]
+# Crimson alarm — errors call out in royal red.
+fg    = "palette:crimson"
+style = "bold"

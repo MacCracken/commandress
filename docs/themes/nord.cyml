@@ -1,0 +1,52 @@
+# nord — cool Arctic palette.
+#
+# Source: https://www.nordtheme.com/
+# Aesthetic: blues + cyans + soft slate greys. Designed for low eye
+# strain and a calm, distraction-free look.
+#
+# Pairs best with terminals running the nord 16-color theme
+# (alacritty / kitty / wezterm / iTerm all ship a built-in nord). On
+# default-palette terminals the bindings still work — they just use
+# your terminal's normal blue / cyan / etc.
+
+[[palette]]
+frost      = "bright_cyan"    # nord8 — primary accent
+polar      = "bright_blue"    # nord9 — secondary accent
+aurora_red = "red"            # nord11 — error / danger
+aurora_yel = "yellow"         # nord13 — warning / dirty state
+aurora_grn = "green"          # nord14 — success / clean state
+snow       = "white"          # nord4-6 — neutral text
+dim        = "bright_black"   # nord3 — subdued context
+
+[[segments.cwd]]
+fg    = "palette:frost"
+style = "bold"
+
+[[segments.vcs]]
+fg = "palette:aurora_yel"
+
+[[segments.time]]
+fg = "palette:dim"
+
+[[segments.hostname]]
+fg = "palette:polar"
+
+[[segments.user]]
+fg    = "palette:snow"
+style = "bold"
+
+[[segments.cyrius_env]]
+fg = "palette:polar"
+
+[[segments.python_env]]
+fg = "palette:frost"
+
+[[segments.node_env]]
+fg = "palette:aurora_grn"
+
+[[segments.rustup_env]]
+fg = "palette:aurora_red"
+
+[[segments.exit]]
+fg    = "palette:aurora_red"
+style = "bold"
