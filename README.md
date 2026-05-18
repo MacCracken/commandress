@@ -104,6 +104,7 @@ commandress/
 - [`docs/development/roadmap.md`](docs/development/roadmap.md) — milestones through v1.0
 - [`docs/adr/`](docs/adr/) — architectural decisions (rendering model, config format, VCS-via-sit, etc.)
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants (prompt render budget, etc.)
+- [`docs/doc-health.md`](docs/doc-health.md) — doc-currency ledger: which docs are fresh / stale / evergreen
 - [`CLAUDE.md`](CLAUDE.md) — agent instructions for this repo
 
 ## Place in the AGNOS ecosystem
