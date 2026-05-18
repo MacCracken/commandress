@@ -23,11 +23,12 @@ include "src/segments/node_env.cyr"
 include "src/segments/rustup_env.cyr"
 
 # Dispatcher for the `cwd` segment. Pulls HOME from ctx, gates the
-# home-shorten path on cfg.cwd_home_shorten.
+# home-shorten path on cfg.cwd_home_shorten, forwards max_length for
+# byte-bounded truncation at '/' boundaries.
 fn _dispatch_cwd(cfg, ctx): i64 {
     var home = ctx_home(ctx);
     if (cfg_cwd_home_shorten(cfg) == 0) { home = 0; }
-    return cwd_render(home);
+    return cwd_render(home, cfg_cwd_max_length(cfg));
 }
 
 # Dispatcher for the `exit` segment. Standard path is "empty on zero,

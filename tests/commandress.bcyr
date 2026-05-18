@@ -61,7 +61,7 @@ fn bench_cwd_segment(): i64 {
         bench_batch_start(b);
         var bi = 0;
         while (bi < batch) {
-            cwd_render(home);
+            cwd_render(home, 0);
             bi = bi + 1;
         }
         bench_batch_stop(b, batch);

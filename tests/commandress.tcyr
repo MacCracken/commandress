@@ -76,14 +76,14 @@ fn test_exit_negative(): i64 {
 # ---- cwd segment ----
 
 fn test_cwd_no_home(): i64 {
-    var out = cwd_render(0);
+    var out = cwd_render(0, 0);
     assert_neq(out, 0, "cwd_render(home=0) returns a path");
     assert_eq(load8(out), 47, "cwd_render(home=0) starts with '/'");
     return 0;
 }
 
 fn test_cwd_home_mismatch(): i64 {
-    var out = cwd_render("/nonexistent/never/matches/this");
+    var out = cwd_render("/nonexistent/never/matches/this", 0);
     assert_neq(out, 0, "cwd_render(bad-home) returns a path");
     assert_eq(load8(out), 47, "cwd_render(bad-home) keeps absolute path");
     return 0;
@@ -97,7 +97,7 @@ fn test_cwd_home_prefix_exact(): i64 {
     var fake = alloc(n + 1);
     memcpy(fake, &buf, n);
     store8(fake + n, 0);
-    var out = cwd_render(fake);
+    var out = cwd_render(fake, 0);
     _streq_or_dump(out, "~", "cwd_render(home==cwd) == \"~\"");
     return 0;
 }
@@ -117,10 +117,89 @@ fn test_cwd_home_strict_prefix(): i64 {
     var fake = alloc(sep + 1);
     memcpy(fake, &buf, sep);
     store8(fake + sep, 0);
-    var out = cwd_render(fake);
+    var out = cwd_render(fake, 0);
     assert_neq(out, 0, "cwd_render(home==parent) not empty");
     assert_eq(load8(out), 126, "cwd_render(home==parent) starts '~'");
     assert_eq(load8(out + 1), 47, "cwd_render(home==parent) byte 1 == '/'");
+    return 0;
+}
+
+# max_length truncation — driven by the pure _truncate_cwd helper so
+# we can assert exact bytes without depending on the test process's
+# actual cwd length.
+
+fn test_truncate_cwd_no_op_zero(): i64 {
+    var p = "/home/user/Repos/commandress";
+    var out = _truncate_cwd(p, strlen(p), 0);
+    assert_eq(out, p, "max_length=0 returns input unchanged");
+    return 0;
+}
+
+fn test_truncate_cwd_no_op_within_budget(): i64 {
+    var p = "/short";
+    var out = _truncate_cwd(p, strlen(p), 40);
+    assert_eq(out, p, "path within budget returns input unchanged");
+    return 0;
+}
+
+fn test_truncate_cwd_collapses_at_slash(): i64 {
+    var p = "/home/macro/Repos/commandress/src";    # 33 bytes
+    var out = _truncate_cwd(p, strlen(p), 20);
+    # budget = 17. Earliest '/' with suffix <= 17 is at index 17 ('/'
+    # before "commandress"). Result: "..." + "/commandress/src" = 19.
+    _streq_or_dump(out, ".../commandress/src", "truncate(20) keeps suffix at '/' boundary");
+    return 0;
+}
+
+fn test_truncate_cwd_exact_budget(): i64 {
+    var p = "/a/bb/ccc/dddd";       # 14 bytes
+    var out = _truncate_cwd(p, strlen(p), 14);
+    assert_eq(out, p, "exact-length path returns unchanged");
+    return 0;
+}
+
+fn test_truncate_cwd_keeps_only_leaf(): i64 {
+    var p = "/home/user/Repos/very/deep/nested/project";   # 41 bytes
+    var out = _truncate_cwd(p, strlen(p), 11);
+    # budget = 8. Earliest '/' with suffix <= 8 is at index 33
+    # ('/' before "project"). Result: "..." + "/project" = 11 bytes.
+    _streq_or_dump(out, ".../project", "truncate(11) keeps just leaf");
+    return 0;
+}
+
+fn test_truncate_cwd_pathologically_small(): i64 {
+    var p = "/some/path";
+    var out = _truncate_cwd(p, strlen(p), 3);
+    _streq_or_dump(out, "...", "max_length=3 emits three dots");
+
+    var out2 = _truncate_cwd(p, strlen(p), 1);
+    _streq_or_dump(out2, ".", "max_length=1 emits one dot");
+    return 0;
+}
+
+fn test_truncate_cwd_no_slash_fits_in_budget(): i64 {
+    # A path with one early '/' and a long tail past budget — no
+    # qualifying '/' exists, so we chop into the tail mid-component.
+    var p = "/longComponentNameThatHasNoSlashes";   # 34 bytes
+    var out = _truncate_cwd(p, strlen(p), 10);
+    # budget = 7. Earliest '/' is at index 0; suffix len = 34 > 7.
+    # No more '/'s. Fallback: "..." + last 7 bytes = ".." + "Slashes" → "...Slashes" (10).
+    _streq_or_dump(out, "...Slashes", "fallback chops mid-component when no '/' fits");
+    return 0;
+}
+
+fn test_truncate_cwd_via_render(): i64 {
+    # Exercise the full cwd_render path with max_length set. Use a
+    # bogus HOME so home-shorten is bypassed and we get the absolute
+    # cwd, then truncate it. We don't assert the exact output (depends
+    # on the runner's cwd length) — just that the returned cstring is
+    # bounded by max_length.
+    var out = cwd_render("/nonexistent/never/matches/this", 10);
+    assert_neq(out, 0, "cwd_render(_, 10) returns non-null");
+    var olen = strlen(out);
+    var ok = 0;
+    if (olen <= 10) { ok = 1; }
+    assert(ok, "cwd_render with max_length=10 bounded under 10 bytes");
     return 0;
 }
 
@@ -1029,6 +1108,14 @@ fn main(): i64 {
     test_cwd_home_mismatch();
     test_cwd_home_prefix_exact();
     test_cwd_home_strict_prefix();
+    test_truncate_cwd_no_op_zero();
+    test_truncate_cwd_no_op_within_budget();
+    test_truncate_cwd_collapses_at_slash();
+    test_truncate_cwd_exact_budget();
+    test_truncate_cwd_keeps_only_leaf();
+    test_truncate_cwd_pathologically_small();
+    test_truncate_cwd_no_slash_fits_in_budget();
+    test_truncate_cwd_via_render();
 
     test_group("config loader");
     test_config_defaults();

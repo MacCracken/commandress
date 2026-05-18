@@ -58,7 +58,8 @@ var CFG_SGR_CYRIUS_ENV = 112;
 var CFG_SGR_PYTHON_ENV = 120;
 var CFG_SGR_NODE_ENV = 128;
 var CFG_SGR_RUSTUP_ENV = 136;
-var CFG_SIZE = 144;
+var CFG_CWD_MAX_LENGTH = 144;
+var CFG_SIZE = 152;
 
 fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
 fn cfg_separator(c): i64          { return load64(c + CFG_SEPARATOR); }
@@ -78,6 +79,7 @@ fn cfg_sgr_cyrius_env(c): i64     { return load64(c + CFG_SGR_CYRIUS_ENV); }
 fn cfg_sgr_python_env(c): i64     { return load64(c + CFG_SGR_PYTHON_ENV); }
 fn cfg_sgr_node_env(c): i64       { return load64(c + CFG_SGR_NODE_ENV); }
 fn cfg_sgr_rustup_env(c): i64     { return load64(c + CFG_SGR_RUSTUP_ENV); }
+fn cfg_cwd_max_length(c): i64     { return load64(c + CFG_CWD_MAX_LENGTH); }
 
 # Build the default Config. Used when no file is present, and as the
 # base for partial overrides — a config that sets only `separator`
@@ -117,6 +119,8 @@ fn config_default(): i64 {
     store64(c + CFG_SGR_PYTHON_ENV, sgr_open_for("yellow",       0, 0));
     store64(c + CFG_SGR_NODE_ENV,   sgr_open_for("green",        0, 0));
     store64(c + CFG_SGR_RUSTUP_ENV, sgr_open_for("red",          0, 0));
+    # 0 = no truncation. Users opt in via `[[segments.cwd]] max_length = N`.
+    store64(c + CFG_CWD_MAX_LENGTH, 0);
     return c;
 }
 
@@ -286,6 +290,7 @@ fn config_load(path): i64 {
 
         var cwd_allowed = vec_new();
         vec_push(cwd_allowed, "home_shorten");
+        vec_push(cwd_allowed, "max_length");
         vec_push(cwd_allowed, "fg");
         vec_push(cwd_allowed, "bg");
         vec_push(cwd_allowed, "style");
@@ -293,6 +298,9 @@ fn config_load(path): i64 {
 
         var hs_v = toml_get(cwd_pairs, "home_shorten");
         store64(c + CFG_CWD_HOME_SHORTEN, _parse_bool(hs_v, cfg_cwd_home_shorten(c)));
+
+        var ml_v = toml_get(cwd_pairs, "max_length");
+        if (ml_v != 0) { store64(c + CFG_CWD_MAX_LENGTH, atoi(str_cstr(ml_v))); }
         _apply_seg_style(c, CFG_SGR_CWD, cwd_pairs);
     }
 

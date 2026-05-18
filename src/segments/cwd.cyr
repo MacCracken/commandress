@@ -1,11 +1,78 @@
 # cwd.cyr — current-working-directory segment.
 #
-# Renders the cwd, optionally shortening a leading $HOME to "~".
+# Renders the cwd, optionally shortening a leading $HOME to "~" and
+# bounding the rendered path to `max_length` bytes (0 = no limit).
 # Returns a heap-allocated NUL-terminated cstring, or 0 for empty.
-# Per ADR 0002 the segment reads only its inputs (here: HOME pointer);
-# no shared mutable state.
+# Per ADR 0002 the segment reads only its inputs (here: HOME pointer
+# and max_length); no shared mutable state.
 
-fn cwd_render(home): i64 {
+# Truncate `path` (length `plen`) to fit within `max_length` bytes by
+# replacing the longest leading run-of-components with "..." while
+# preserving '/' boundaries. Returns the original buffer when no
+# truncation is needed (max_length <= 0 or path already fits) so the
+# happy path skips an extra alloc.
+#
+# Algorithm: walk left→right looking for the earliest '/' such that
+# the suffix from that '/' to end is <= (max_length - 3). That '/'
+# anchors the longest qualifying suffix. Prefix with "...".
+#
+# Edge: max_length < 4 → emit a row of '.' dots up to max_length;
+# there's no room for both "..." and any path content. Edge: no '/'
+# matches → emit "..." + the last (max_length - 3) bytes verbatim
+# (chops mid-component, but the user asked for a hard cap).
+fn _truncate_cwd(path, plen, max_length): i64 {
+    if (max_length <= 0) { return path; }
+    if (plen <= max_length) { return path; }
+
+    if (max_length < 4) {
+        var n = max_length;
+        var out = alloc(n + 1);
+        var i = 0;
+        while (i < n) { store8(out + i, 46); i = i + 1; }       # '.'
+        store8(out + n, 0);
+        return out;
+    }
+
+    var budget = max_length - 3;
+    var cut = 0 - 1;
+    var i = 0;
+    var done = 0;
+    while (done == 0) {
+        if (i >= plen) { done = 1; }
+        else {
+            if (load8(path + i) == 47) {                        # '/'
+                if (plen - i <= budget) {
+                    cut = i;
+                    done = 1;
+                }
+            }
+            if (done == 0) { i = i + 1; }
+        }
+    }
+
+    if (cut < 0) {
+        # No '/' anchor fit. Fall back to "..." + raw tail.
+        var taillen = budget;
+        var out_nb = alloc(3 + taillen + 1);
+        store8(out_nb,     46);
+        store8(out_nb + 1, 46);
+        store8(out_nb + 2, 46);
+        memcpy(out_nb + 3, path + plen - taillen, taillen);
+        store8(out_nb + 3 + taillen, 0);
+        return out_nb;
+    }
+
+    var suffix_len = plen - cut;
+    var out = alloc(3 + suffix_len + 1);
+    store8(out,     46);
+    store8(out + 1, 46);
+    store8(out + 2, 46);
+    memcpy(out + 3, path + cut, suffix_len);
+    store8(out + 3 + suffix_len, 0);
+    return out;
+}
+
+fn cwd_render(home, max_length): i64 {
     var buf[4096];
     var n = syscall(SYS_GETCWD, &buf, 4096);
     if (n <= 0) { return 0; }
@@ -30,17 +97,21 @@ fn cwd_render(home): i64 {
         }
     }
 
+    var path = 0;
+    var path_len = 0;
     if (shorten == 1) {
         var rest = n - hlen;
-        var out = alloc(rest + 2);
-        store8(out, 126);                       # '~'
-        if (rest > 0) { memcpy(out + 1, &buf + hlen, rest); }
-        store8(out + 1 + rest, 0);
-        return out;
+        path = alloc(rest + 2);
+        store8(path, 126);                       # '~'
+        if (rest > 0) { memcpy(path + 1, &buf + hlen, rest); }
+        store8(path + 1 + rest, 0);
+        path_len = 1 + rest;
+    } else {
+        path = alloc(n + 1);
+        memcpy(path, &buf, n);
+        store8(path + n, 0);
+        path_len = n;
     }
 
-    var out2 = alloc(n + 1);
-    memcpy(out2, &buf, n);
-    store8(out2 + n, 0);
-    return out2;
+    return _truncate_cwd(path, path_len, max_length);
 }
