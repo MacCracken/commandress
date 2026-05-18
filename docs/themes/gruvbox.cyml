@@ -8,6 +8,11 @@
 # palette terminals still work — the bindings just resolve to your
 # normal yellow / red / etc.
 
+[[prompt]]
+segments  = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+separator = " "
+trailer   = " $ "
+
 [[palette]]
 amber  = "bright_yellow"   # gruvbox bright yellow — primary accent
 ochre  = "yellow"          # gruvbox yellow — warnings / vcs dirty

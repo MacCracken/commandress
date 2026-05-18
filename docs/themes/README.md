@@ -22,15 +22,28 @@ Hex / 256-color support lands in a later release; once it does, these themes wil
 
 ## Installing a theme
 
-```sh
-# Replace whatever's currently in your config:
-cp docs/themes/nord.cyml ~/.commandress.cyml
+Each theme file is **self-contained** — it ships its own `[[prompt]]` block alongside `[[palette]]` and `[[segments.X]]`. So `cp` of any theme into your config gives you a working, fully-populated prompt out of the box.
 
-# Or append to an existing config (everything below your current content):
-cat docs/themes/nord.cyml >> ~/.commandress.cyml
+### Fresh install / full replace
+
+```sh
+cp docs/themes/commandress.cyml ~/.commandress.cyml
 ```
 
-Then open a new prompt — the precmd hook re-runs `cmdrs` on the next redraw, no shell restart needed.
+This overwrites anything currently in `~/.commandress.cyml`. Use when you don't have a config yet — or when you don't mind starting fresh.
+
+### Existing config you want to keep
+
+Don't `cat >>` blindly. The config loader treats duplicate section names ("array of tables" semantics) as a list and uses the **first** occurrence — so appending a theme on top of an existing config means the theme's `[[prompt]]`, `[[segments.X]]`, and `[[palette]]` blocks get ignored, and you'd be staring at an unchanged prompt wondering why.
+
+Edit by hand instead:
+
+1. Open `~/.commandress.cyml` and the theme file side by side.
+2. Replace your `[[palette]]` block with the theme's (or add one if you don't have one).
+3. Replace each `[[segments.X]]` block with the theme's matching block. Leave alone the ones the theme doesn't ship.
+4. Optionally update your `[[prompt]]` segment list — themes ship a maximalist set; trim to taste.
+
+Open a new prompt — the precmd hook re-runs `cmdrs` on the next redraw, no shell restart needed.
 
 ## Writing your own
 

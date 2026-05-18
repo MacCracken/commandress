@@ -8,6 +8,11 @@
 # palette terminals still work — the bindings just resolve to your
 # normal green / magenta / etc.
 
+[[prompt]]
+segments  = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+separator = " "
+trailer   = " $ "
+
 [[palette]]
 neon_green = "bright_green"    # monokai green — strings / clean
 hot_pink   = "bright_magenta"  # monokai pink — keywords / accents

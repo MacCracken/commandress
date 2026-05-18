@@ -9,6 +9,11 @@
 # palette terminals still work — the bindings just resolve to your
 # normal magenta / cyan / etc.
 
+[[prompt]]
+segments  = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+separator = " "
+trailer   = " $ "
+
 [[palette]]
 purple     = "bright_magenta"  # dracula purple — primary accent
 pink       = "magenta"         # dracula pink — secondary accent

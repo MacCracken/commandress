@@ -9,6 +9,11 @@
 # default-palette terminals the bindings still work — they just use
 # your terminal's normal blue / cyan / etc.
 
+[[prompt]]
+segments  = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+separator = " "
+trailer   = " $ "
+
 [[palette]]
 frost      = "bright_cyan"    # nord8 — primary accent
 polar      = "bright_blue"    # nord9 — secondary accent

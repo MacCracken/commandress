@@ -11,6 +11,11 @@
 # value spaces are supported; until then the named-ANSI slots are
 # faithful enough that the royal intent comes through.
 
+[[prompt]]
+segments  = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+separator = " "
+trailer   = " $ "
+
 [[palette]]
 # 1. Royal Purple — Tyrian (ancient world's most prestigious dye).
 royal_purple = "bright_magenta"
