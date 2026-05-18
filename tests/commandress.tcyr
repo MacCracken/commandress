@@ -32,6 +32,7 @@ include "src/segments/hostname.cyr"
 include "src/segments/user.cyr"
 include "src/segments/cyrius_env.cyr"
 include "src/segments/python_env.cyr"
+include "src/segments/node_env.cyr"
 include "src/config.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
@@ -618,6 +619,59 @@ fn test_python_env_render_smoke(): i64 {
     return 0;
 }
 
+# ---- node_env ----
+
+# Smoke test: the test process runs from this project's tree (no
+# .nvmrc on any ancestor), so the segment must render empty. Asserting
+# this catches regressions like a stale find_ancestor_with hit on a
+# different marker.
+fn test_node_env_render_empty_outside_project(): i64 {
+    var out = node_env_render();
+    assert_eq(out, 0, "node_env_render outside any .nvmrc tree → empty");
+    return 0;
+}
+
+# `node_env_render` walks cwd upward, so we can't easily fake "we're
+# inside a .nvmrc tree" from within a test process. Instead, exercise
+# the helpers it composes (find_ancestor_with + read_trimmed_file_at)
+# against a temp tree — that's the real coverage; node_env_render is
+# just five lines of glue over them. This test mirrors the canonical
+# "subdir walks up to root" pattern from cyrius_env_find_root_hit.
+fn test_node_env_helpers_against_temp_tree(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_node_tst/.nvmrc");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_tst/sub");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_tst");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_node_tst", 0x1FF), 0, "mkdir tmp root");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_node_tst/sub", 0x1FF), 0, "mkdir subdir");
+    var fd = file_open("/tmp/cmdrs_node_tst/.nvmrc", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open .nvmrc for write");
+    var contents = "20.11.1\n";
+    file_write(fd, contents, strlen(contents));
+    file_close(fd);
+
+    var root = find_ancestor_with("/tmp/cmdrs_node_tst/sub", "/.nvmrc");
+    assert_neq(root, 0, "find_ancestor_with(sub, /.nvmrc) returns non-null");
+    _streq_or_dump(root, "/tmp/cmdrs_node_tst", "walked up to root containing .nvmrc");
+
+    var ver = read_trimmed_file_at(root, "/.nvmrc");
+    assert_neq(ver, 0, "read_trimmed_file_at(.nvmrc) returns non-null");
+    _streq_or_dump(ver, "20.11.1", ".nvmrc contents trimmed");
+
+    # LTS-style content should pass through untouched (slash isn't ws).
+    fd = file_open("/tmp/cmdrs_node_tst/.nvmrc", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "reopen .nvmrc for lts content");
+    var lts = "lts/iron\n";
+    file_write(fd, lts, strlen(lts));
+    file_close(fd);
+    var ver2 = read_trimmed_file_at(root, "/.nvmrc");
+    _streq_or_dump(ver2, "lts/iron", ".nvmrc passes lts/iron verbatim");
+
+    syscall(SYS_UNLINK, "/tmp/cmdrs_node_tst/.nvmrc");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_tst/sub");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_tst");
+    return 0;
+}
+
 # ---- pathlookup ----
 
 # Find `sh` on PATH — present on every conceivable POSIX host. Skip
@@ -784,6 +838,10 @@ fn main(): i64 {
     test_python_env_read_pin_trims();
     test_python_env_read_pin_missing();
     test_python_env_render_smoke();
+
+    test_group("node_env segment");
+    test_node_env_render_empty_outside_project();
+    test_node_env_helpers_against_temp_tree();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();

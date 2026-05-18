@@ -1,0 +1,30 @@
+# node_env.cyr — Node.js project segment.
+#
+# Resolution (file-first; no shellout in v0.5.0):
+#   1. <ancestor>/.nvmrc → trimmed contents
+#   2. empty
+#
+# `.nvmrc` is the canonical version-pin file across nvm / fnm / Volta —
+# every Node-version manager respects it. The contents are usually a
+# semver-ish string (`18.17.0`, `v20`, `lts/iron`); we just emit the
+# trimmed bytes verbatim.
+#
+# Not parsed in v0.5.0: `package.json` `engines.node` (semver-range
+# parsing isn't worth the JSON-walk cost without M6 caching) and
+# `node --version` shellout (deferred pre-v1 per the file-first
+# policy). Both are roadmapped as later additions if user demand shows.
+
+fn node_env_render(): i64 {
+    var buf[4096];
+    var n = syscall(SYS_GETCWD, &buf, 4096);
+    if (n <= 0) { return 0; }
+    n = n - 1;
+
+    var cwd = alloc(n + 1);
+    memcpy(cwd, &buf, n);
+    store8(cwd + n, 0);
+
+    var root = find_ancestor_with(cwd, "/.nvmrc");
+    if (root == 0) { return 0; }
+    return read_trimmed_file_at(root, "/.nvmrc");
+}
