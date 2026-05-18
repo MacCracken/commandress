@@ -28,8 +28,8 @@
 
 The first build that produces a usable prompt for agnoshi. Three segments + config loader + render pipeline.
 
-- [ ] **ADR 0001**: rendering model (segment pipeline shape — pure-function-of-context, no shared state)
-- [ ] **ADR 0002**: config format — CYML (Cyrius-native) vs TOML (broader convention). Capture the trade
+- [ ] **ADR 0002**: rendering model (segment pipeline shape — pure-function-of-context, no shared state). *ADR 0001 is reserved for the repo-split decision, already accepted.*
+- [ ] **ADR 0003**: config format — CYML (Cyrius-native) vs TOML (broader convention). Capture the trade
 - [ ] **Architecture note 001**: prompt render budget — total budget, per-segment slice, what happens on overrun
 - [ ] `src/config.cyr` — CYML loader for `~/.commandress.cyml`. Validate every field. Fallback to baked-in defaults if file missing.
 - [ ] `src/segments/cwd.cyr` — render current working directory, optionally home-shortened (`~/foo`) and length-truncated

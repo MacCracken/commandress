@@ -19,4 +19,8 @@ Decisions about commandress — what we chose, the context, and the consequences
 
 ## Index
 
-_No ADRs yet. Add the first as `0001-kebab-case-title.md`._
+| # | Title | Status |
+|---|---|---|
+| [0001](0001-separate-repo-from-agnoshi.md) | Prompt rendering lives in its own repo, not inside agnoshi | Accepted |
+| [0002](0002-segment-rendering-model.md) | Segment rendering model: pure function of context, no shared state | Accepted |
+| [0003](0003-config-format.md) | Config format: CYML for the user config file | Accepted |

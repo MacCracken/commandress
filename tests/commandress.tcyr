@@ -1,13 +1,140 @@
-# commandress test suite
-# Stdlib auto-included via cyrius.cyml
+# commandress test suite — M1 segments.
+#
+# Unit tests for the cwd + exit segments. Each segment is a pure fn of
+# its inputs (per ADR 0002), so the harness fabricates inputs and
+# inspects the returned cstring directly — no fork, no syscall trace,
+# no IO capture.
 
-fn main() {
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/io.cyr"
+include "lib/assert.cyr"
+
+include "src/segments/cwd.cyr"
+include "src/segments/exit.cyr"
+
+# Helper — returns 1 if cstring `a` equals literal `b`. assert_streq
+# isn't in lib/assert.cyr, so streq + assert wrap it.
+fn _streq_or_dump(got, want, name): i64 {
+    if (streq(got, want) == 1) {
+        assert(1, name);
+    } else {
+        assert(0, name);
+        syscall(1, 2, "    got:  ", 10);
+        syscall(1, 2, got, strlen(got));
+        syscall(1, 2, "\n    want: ", 11);
+        syscall(1, 2, want, strlen(want));
+        syscall(1, 2, "\n", 1);
+    }
+    return 0;
+}
+
+# ---- exit segment ----
+
+fn test_exit_zero_empty(): i64 {
+    var out = exit_render(0);
+    assert_eq(out, 0, "exit(0) renders empty");
+    return 0;
+}
+
+fn test_exit_nonzero_brackets(): i64 {
+    var out = exit_render(42);
+    assert_neq(out, 0, "exit(42) not empty");
+    _streq_or_dump(out, "[42]", "exit(42) == \"[42]\"");
+    return 0;
+}
+
+fn test_exit_negative(): i64 {
+    var out = exit_render(0 - 1);
+    assert_neq(out, 0, "exit(-1) not empty");
+    _streq_or_dump(out, "[-1]", "exit(-1) == \"[-1]\"");
+    return 0;
+}
+
+# ---- cwd segment ----
+# These tests use the real getcwd syscall + a fabricated HOME so we can
+# exercise both the home-shortened path and the absolute-path fallback
+# without changing the process's actual cwd.
+
+fn test_cwd_no_home(): i64 {
+    var out = cwd_render(0);
+    assert_neq(out, 0, "cwd_render(home=0) returns a path");
+    # First byte must be '/' — any cwd Cyrius can see is absolute.
+    assert_eq(load8(out), 47, "cwd_render(home=0) starts with '/'");
+    return 0;
+}
+
+fn test_cwd_home_mismatch(): i64 {
+    # A HOME the cwd cannot possibly start with → absolute fallback.
+    var out = cwd_render("/nonexistent/never/matches/this");
+    assert_neq(out, 0, "cwd_render(bad-home) returns a path");
+    assert_eq(load8(out), 47, "cwd_render(bad-home) keeps absolute path (no false-shorten)");
+    return 0;
+}
+
+fn test_cwd_home_prefix_exact(): i64 {
+    # Allocate a fake HOME equal to the first N bytes of the current cwd
+    # (terminated). cwd_render must recognize the exact prefix and emit
+    # just "~". We can only safely test this if cwd has at least one
+    # '/' beyond the root — Cyrius's repo cwd at test time does.
+    var buf[4096];
+    var n = syscall(SYS_GETCWD, &buf, 4096);
+    # n includes trailing NUL.
+    if (n <= 2) { assert(1, "cwd_home_prefix_exact skipped (cwd too short)"); return 0; }
+    n = n - 1;
+    var fake = alloc(n + 1);
+    memcpy(fake, &buf, n);
+    store8(fake + n, 0);
+    var out = cwd_render(fake);
+    _streq_or_dump(out, "~", "cwd_render(home==cwd) == \"~\"");
+    return 0;
+}
+
+fn test_cwd_home_strict_prefix(): i64 {
+    # Fabricate a HOME = parent dir of cwd. Expect "~/<basename>".
+    var buf[4096];
+    var n = syscall(SYS_GETCWD, &buf, 4096);
+    if (n <= 2) { assert(1, "cwd_home_strict_prefix skipped (cwd too short)"); return 0; }
+    n = n - 1;
+    # Find last '/' — that's the boundary between parent and basename.
+    var sep = 0 - 1;
+    var si = 0;
+    while (si < n) {
+        if (load8(&buf + si) == 47) { sep = si; }
+        si = si + 1;
+    }
+    if (sep <= 0) { assert(1, "cwd_home_strict_prefix skipped (cwd is root)"); return 0; }
+    var fake = alloc(sep + 1);
+    memcpy(fake, &buf, sep);
+    store8(fake + sep, 0);
+    var out = cwd_render(fake);
+    # Expect "~" + cwd-from-sep ("/foo"). First two chars are "~/".
+    assert_neq(out, 0, "cwd_render(home==parent) not empty");
+    assert_eq(load8(out), 126, "cwd_render(home==parent) starts '~'");
+    assert_eq(load8(out + 1), 47, "cwd_render(home==parent) byte 1 == '/'");
+    return 0;
+}
+
+# ---- harness ----
+
+fn main(): i64 {
     alloc_init();
-    test_group("smoke");
-    assert(1, "true is true");
-    assert_eq(1 + 1, 2, "math works");
+
+    test_group("exit segment");
+    test_exit_zero_empty();
+    test_exit_nonzero_brackets();
+    test_exit_negative();
+
+    test_group("cwd segment");
+    test_cwd_no_home();
+    test_cwd_home_mismatch();
+    test_cwd_home_prefix_exact();
+    test_cwd_home_strict_prefix();
+
     return assert_summary();
 }
 
 var exit_code = main();
-syscall(60, exit_code);
+syscall(SYS_EXIT, exit_code);

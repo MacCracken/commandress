@@ -1,0 +1,22 @@
+# exit.cyr — last-command exit-status segment.
+#
+# Empty when the previous command succeeded (exit 0 — no clutter).
+# Non-zero renders as "[N]". Plain ASCII for M1; ANSI colour comes
+# at M5 along with the theme palette.
+#
+# Per ADR 0002 the segment reads only its inputs (here: the integer
+# exit code passed in). The caller (main.cyr) is responsible for
+# sourcing the code from $AGNOSHI_LAST_EXIT, a CLI flag, etc.
+
+fn exit_render(code): i64 {
+    if (code == 0) { return 0; }
+    # 24 = 1 ('[') + 21 (max i64 decimal incl. sign) + 1 (']') + 1 (NUL).
+    var out = alloc(24);
+    store8(out, 91);                            # '['
+    var dbuf[24];
+    var dlen = fmt_int_buf(code, &dbuf);
+    memcpy(out + 1, &dbuf, dlen);
+    store8(out + 1 + dlen, 93);                 # ']'
+    store8(out + 2 + dlen, 0);
+    return out;
+}

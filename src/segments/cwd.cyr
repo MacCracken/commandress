@@ -1,0 +1,46 @@
+# cwd.cyr — current-working-directory segment.
+#
+# Renders the cwd, optionally shortening a leading $HOME to "~".
+# Returns a heap-allocated NUL-terminated cstring, or 0 for empty.
+# Per ADR 0002 the segment reads only its inputs (here: HOME pointer);
+# no shared mutable state.
+
+fn cwd_render(home): i64 {
+    var buf[4096];
+    var n = syscall(SYS_GETCWD, &buf, 4096);
+    if (n <= 0) { return 0; }
+    # SYS_GETCWD returns the byte length INCLUDING the trailing NUL.
+    # Strip it so memcpy/memeq see only the path bytes.
+    n = n - 1;
+
+    var hlen = 0;
+    if (home != 0) { hlen = strlen(home); }
+
+    # Home-shorten only when HOME is set, non-empty, and a strict prefix
+    # of cwd. "Strict" = next char after the prefix is either NUL (cwd ==
+    # HOME) or '/' (cwd is below HOME). Without that check, /home/macro
+    # would shorten /home/macrobench to "~bench".
+    var shorten = 0;
+    if (hlen > 0) {
+        if (n >= hlen) {
+            if (memeq(&buf, home, hlen) == 1) {
+                if (n == hlen) { shorten = 1; }
+                else { if (load8(&buf + hlen) == 47) { shorten = 1; } }
+            }
+        }
+    }
+
+    if (shorten == 1) {
+        var rest = n - hlen;
+        var out = alloc(rest + 2);
+        store8(out, 126);                       # '~'
+        if (rest > 0) { memcpy(out + 1, &buf + hlen, rest); }
+        store8(out + 1 + rest, 0);
+        return out;
+    }
+
+    var out2 = alloc(n + 1);
+    memcpy(out2, &buf, n);
+    store8(out2 + n, 0);
+    return out2;
+}

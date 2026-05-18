@@ -1,13 +1,114 @@
-# commandress benchmarks
-# Stdlib auto-included via cyrius.cyml
+# commandress benchmarks — per-segment + full-prompt render time.
+#
+# Per architecture/001 the full-prompt budget is 5 ms cold start and the
+# per-segment default is 500 µs. This file feeds the benchmark history
+# we'll keep an eye on as segments multiply.
+#
+# render_prompt() writes to stdout. To keep the bench output clean we
+# dup fd 1 to /dev/null for the timed section and restore it before the
+# report. The dup2 itself costs ~200 ns and is amortized across the
+# batch.
 
-fn bench_noop() { return 0; }
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/io.cyr"
+include "lib/bench.cyr"
 
-fn main() {
+include "src/render.cyr"
+
+# Saved stdout fd — restored after the timed batch.
+var _saved_stdout = 0;
+
+fn _silence_stdout(): i64 {
+    _saved_stdout = syscall(SYS_DUP, STDOUT);
+    var devnull = file_open("/dev/null", O_WRONLY, 0);
+    if (devnull >= 0) { syscall(SYS_DUP2, devnull, STDOUT); syscall(SYS_CLOSE, devnull); }
+    return 0;
+}
+
+fn _restore_stdout(): i64 {
+    if (_saved_stdout > 0) {
+        syscall(SYS_DUP2, _saved_stdout, STDOUT);
+        syscall(SYS_CLOSE, _saved_stdout);
+    }
+    return 0;
+}
+
+# ---- segment-level micro-benchmarks ----
+
+fn bench_cwd_segment(): i64 {
+    var b = bench_new("cwd_render");
+    var home = getenv("HOME");
+    var rounds = 100;
+    var batch = 1000;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            cwd_render(home);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
+fn bench_exit_segment(): i64 {
+    var b = bench_new("exit_render(nonzero)");
+    var rounds = 100;
+    var batch = 10000;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            exit_render(42);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
+# ---- full-prompt benchmark ----
+
+fn bench_prompt(): i64 {
+    var b = bench_new("render_prompt (cwd+exit)");
+    var home = getenv("HOME");
+    _silence_stdout();
+    var rounds = 50;
+    var batch = 500;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            render_prompt(home, 1);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    _restore_stdout();
+    bench_report(b);
+    return 0;
+}
+
+fn main(): i64 {
     alloc_init();
-    bench("noop", &bench_noop, 1000000);
+    println("=== commandress benchmarks ===");
+    bench_cwd_segment();
+    bench_exit_segment();
+    bench_prompt();
     return 0;
 }
 
 var r = main();
-syscall(60, r);
+syscall(SYS_EXIT, r);

@@ -1,0 +1,30 @@
+# render.cyr — prompt render pipeline.
+#
+# Walks the (currently hard-coded) segment list, concatenates non-empty
+# segment outputs with a single space separator, and appends the prompt
+# trailer "$ " to stdout. Config-driven order replaces the hard-coded
+# order when the config loader lands (roadmap M1, follow-up commit).
+#
+# Per ADR 0002 / architecture/001 each segment is a pure fn of its
+# inputs; an empty segment (return value 0) is dropped from the line.
+
+include "src/segments/cwd.cyr"
+include "src/segments/exit.cyr"
+
+# Write `out` (if non-zero) with a space prefix when at least one segment
+# has already painted. Returns the updated painted-flag (1 once anything
+# has been emitted).
+fn _paint(out, painted): i64 {
+    if (out == 0) { return painted; }
+    if (painted == 1) { syscall(SYS_WRITE, STDOUT, " ", 1); }
+    syscall(SYS_WRITE, STDOUT, out, strlen(out));
+    return 1;
+}
+
+fn render_prompt(home, last_exit): i64 {
+    var painted = 0;
+    painted = _paint(cwd_render(home), painted);
+    painted = _paint(exit_render(last_exit), painted);
+    syscall(SYS_WRITE, STDOUT, " $ ", 3);
+    return 0;
+}
