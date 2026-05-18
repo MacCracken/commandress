@@ -40,10 +40,11 @@ jobs:
           echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
 
       - name: Build
+        # Binary is `cmdrs`, not the repo name — see ci.yml for the rationale.
         run: |
           cyrius deps
           mkdir -p build
-          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          cyrius build src/main.cyr build/cmdrs
 
       - name: Create release
         uses: softprops/action-gh-release@v2

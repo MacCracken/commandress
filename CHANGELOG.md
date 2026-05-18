@@ -23,6 +23,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bumped Cyrius toolchain pin from `5.11.54` → `5.11.59` in `cyrius.cyml` and synced `lib/` from `~/.cyrius/versions/5.11.59/lib` via `cyrius lib sync`. Picks up the v5.11.55–.59 wrapper polish (manifest-pin drift detection, `--strict-pin`, `cyrius lib sync` itself) and the DCE-aware undef-fn reachability filter (cross-arch).
 - Binary size: **58,568 B → 73,544 B** (+14,976 B for the M1 segments + render pipeline + tests).
 - Roadmap M1 ADR references renumbered: `ADR 0001/0002` → `ADR 0002/0003` (the original `0001` is reserved for the already-accepted repo-split decision; ADR numbers never renumber).
+- **`cyrius.cyml` `version` now resolves via `${file:VERSION}`** (was hardcoded `"0.1.0"`). Aligns with the kriya pattern and the CLAUDE.md rule that the `VERSION` file is the single source of truth for the project version. Combined with `release.yml`'s `cat VERSION == $GITHUB_REF_NAME` gate, a release bump is now one edit to `VERSION` — drift becomes a fail-loud CI error rather than a silently-publishable inconsistency.
+
+### Fixed
+
+- **CI parity with [kriya](https://github.com/MacCracken/kriya)**: added `workflow_call:` trigger to `.github/workflows/ci.yml` so the release workflow's `uses: ./.github/workflows/ci.yml` gate can actually invoke it (the trigger was missing — release would have failed at the CI-gate step). Also switched the build step's output path from `build/${{ github.event.repository.name }}` (which would have published an asset called `commandress`) to `build/cmdrs`, matching the documented binary name in `[build].output` and `CLAUDE.md` Quick Start.
 
 ## [0.1.0] — 2026-05-15
 
