@@ -50,3 +50,13 @@ jobs:
         # stub didn't exist (Issue 1) and also wouldn't ever exercise
         # tests/${proj}.tcyr.
         run: cyrius test
+
+      - name: Cold-start budget gate (≤ 5 ms)
+        # `cyrius bench` runs the full bench suite; the gate script
+        # greps for the `render_prompt` line, normalises its avg to
+        # µs, and fails CI if it exceeds 5000 µs (the budget set by
+        # architecture/001-prompt-render-budget.md). Override with
+        # `BUDGET_US` if a tighter / looser bound is wanted locally.
+        # Bench timings on CI runners are slower than dev hardware —
+        # 5 ms keeps headroom over the typical ~10 µs measured locally.
+        run: cyrius bench tests/commandress.bcyr | scripts/bench-gate.sh

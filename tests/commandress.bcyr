@@ -304,7 +304,7 @@ fn bench_rustup_env_segment(): i64 {
 # ---- full-prompt benchmark ----
 
 fn bench_prompt(): i64 {
-    var b = bench_new("render_prompt (cwd+exit)");
+    var b = bench_new("render_prompt (default cwd+vcs+exit)");
     var cfg = config_default();
     var ctx = context_new(getenv("HOME"), 1);
     _silence_stdout();
