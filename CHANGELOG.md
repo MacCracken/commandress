@@ -6,6 +6,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-18
+
+**M4 — language-env segments.** Four new probes — `cyrius_env`, `python_env`, `node_env`, `rustup_env` — close the milestone. All four follow a single file-first resolution order ([ADR 0005](docs/adr/0005-language-env-probe-pattern.md)): optional env var (e.g. `$VIRTUAL_ENV`) → ancestor walk for a marker file (`VERSION`, `.python-version`, `.nvmrc`, `rust-toolchain`) → read+trim → optional shellout (today only `cyrius_env` falls back to `cyrius --version` — Python / Node / Rust shellouts are parked pre-v1 per the file-first user direction). The walk + read are absorbed into two shared helpers in `src/fslookup.cyr` (`find_ancestor_with` + `read_trimmed_file_at`); `_find_in_path` similarly lifted from `vcs.cyr` to `src/pathlookup.cyr` so the shellout segments share PATH resolution. Net result: a new env-segment is ~20 lines (`node_env.cyr` is 20; `rustup_env.cyr` is 18). Default segments stay `["cwd", "exit"]`; new segments are opt-in.
+
+### Added
+
+- **`src/segments/cyrius_env.cyr`** — Cyrius project segment. Walks ancestors for `cyrius.cyml` (project marker), reads `<root>/VERSION` (the canonical project pin per `CLAUDE.md`), falls back to `cyrius --version` via `shellout_capture` (5 ms budget, parses the `cyrius X.Y.Z` first line). Output is the raw version string; no label/glyph (theming is M5). Helpers `cyrius_env_find_root`, `cyrius_env_read_version`, `cyrius_env_parse_version`, `cyrius_env_render` are individually testable.
+- **`src/segments/python_env.cyr`** — Python project/venv segment. `$VIRTUAL_ENV` basename first (e.g. `myproj`), else `.python-version` ancestor walk + read+trim (e.g. `3.11.7`). `python --version` shellout deferred pre-v1. `python_env_basename` is a pure helper with edge-case coverage (trailing slashes, multi-slash, bare names, null, empty, all-slashes, `/`).
+- **`src/segments/node_env.cyr`** — Node project segment. `.nvmrc` ancestor walk + read+trim. Passes both numeric (`20.11.1`) and channel-style (`lts/iron`) content verbatim. `package.json engines.node` parsing and `node --version` shellout both deferred.
+- **`src/segments/rustup_env.cyr`** — Rust toolchain segment. Plain-format `rust-toolchain` ancestor walk + read+trim (`1.75.0`, `stable`, etc.). `rust-toolchain.toml` parsing blocked on Cyrius stdlib's single-bracket TOML gap (papercut Item 3, deferred to v6.x); `rustup show` shellout deferred per file-first policy.
+- **`src/pathlookup.cyr`** — shared `find_in_path(name)` lifted from `src/segments/vcs.cyr`. Same walk-`$PATH` + `access(X_OK)` probe; one heap-alloc'd absolute-path cstring per hit. The lift exists because the upcoming shellout-backed env probes (only `cyrius_env` today, more pre-v1) all need PATH resolution. Pending Cyrius v6.x Item 8 upstream.
+- **`src/fslookup.cyr`** — shared fs helpers for env-probe segments:
+  - `find_ancestor_with(start_dir, marker)` — walks `start_dir` upward returning the nearest ancestor where `<dir><marker>` exists (`access(F_OK)`). Marker must start with `/` (e.g. `"/cyrius.cyml"`). POSIX collapses leading `//` so the root-case join is correct.
+  - `read_trimmed_file_at(root, suffix)` — reads `<root><suffix>` (256-byte cap), trims surrounding ws (space, tab, `\n`, `\r`) at both ends, returns heap-alloc'd cstring or 0.
+  Both extracted from inline implementations in `cyrius_env.cyr` / `python_env.cyr` once M4 hit three consumers. `cyrius_env_find_root` / `cyrius_env_read_version` / `python_env_read_pin` are now one-line delegates.
+- **`docs/adr/0005-language-env-probe-pattern.md`** — captures the three-layer resolution contract (env var → ancestor file → shellout → empty), shared infrastructure (`fslookup` + `pathlookup` + `shellout`), output convention (raw version, theming deferred to M5), and per-segment artifact expectations (header / tests / bench). Alternatives considered: shellout-first (starship-style), per-segment walkers, single-spec factory, no-shellout-ever.
+- **Render registry registers `cyrius_env` / `python_env` / `node_env` / `rustup_env`** via `_dispatch_cyrius_env` / `_dispatch_python_env` / `_dispatch_node_env` / `_dispatch_rustup_env` in `src/render.cyr`.
+- **Tests** — 65 new assertions across 32 tests (`65 → 130` total):
+  - 10 `cyrius_env`: parser (basic + no-trailing-newline + wrong-prefix + empty-version), find_root (hit + miss + trailing-slash + subdir walk-up), read_version (trims + missing + whitespace-only), render smoke.
+  - 11 `python_env`: 8 basename edge cases (simple / trailing slash / multi-slash / bare / null / empty / all-slashes / root), read_pin (trims CRLF + missing), render smoke.
+  - 2 `node_env`: empty-outside-project + helpers against temp tree (numeric + lts-style).
+  - 2 `rustup_env`: empty-outside-project + helpers against temp tree (numeric + channel-name).
+  - 2 `pathlookup`: finds `sh` (3 asserts: non-null + ends-in-`/sh` + passes `access(X_OK)`) + misses garbage name.
+  - Suite is now **130 passed, 0 failed (130 total)**.
+- **Benchmarks** — file-walk segments are all well inside the 5 ms total budget (CHANGELOG: numbers captured on the dev host, Linux 7.0.5-arch1-1, x86_64):
+  - `cyrius_env_parse_version` **76 ns** avg (pure prefix-match + newline scan).
+  - `cyrius_env_render (file path)` **7 µs** avg — getcwd + ancestor walk + open/read/trim. **0.14 %** of the 5 ms budget.
+  - `python_env_basename` **98 ns** avg (trailing-slash strip + last-slash scan).
+  - `python_env_render` **12 µs** avg — bench cwd has no `$VIRTUAL_ENV` so this is the full walk-to-`/` for `.python-version`. **0.24 %** of budget.
+  - `node_env_render (empty walk)` **6 µs** avg. **0.12 %** of budget.
+  - `rustup_env_render (empty walk)` **6 µs** avg.
+  - All five env segments combined ≈ **31 µs** — three orders of magnitude under the budget. M6 caching is a *latency improvement* for the shellout cases, not a *prerequisite* for being usable.
+
+### Changed
+
+- **`VERSION`** — `0.4.0` → `0.5.0`.
+- **`src/segments/vcs.cyr`** — inline `_find_in_path` (~30 LoC) replaced by a call to the shared `find_in_path` in `src/pathlookup.cyr`. No behavior change; `sit` PATH resolution still happens the same way.
+- **`src/main.cyr`** — `include "src/pathlookup.cyr"` and `include "src/fslookup.cyr"` added ahead of `src/shellout.cyr` / `src/render.cyr`. Same on `tests/commandress.tcyr` and `tests/commandress.bcyr`.
+- **`tests/commandress.bcyr`** — added the previously-missing `lib/chrono.cyr`, `lib/pwd.cyr`, `src/pathlookup.cyr`, `src/shellout.cyr` includes. Without them, post-`vcs_render` benches would have hit undefined-symbol crashes; the pre-existing gap was masked because no later bench reached those symbols.
+- **Binary size** — text 114,578 → 121,520 B (+6,942 for the four new segments + two shared utility modules; ~1.4 KB came back when the read+trim duplication collapsed into `read_trimmed_file_at`). bss 37,656 → 54,568 B (+16,912 — additional segment file-scope buffers). **Total 152,234 → 176,088 B (+23,854 B)** for four segments + two shared utilities + the parser/orchestration code.
+
+### Roadmap
+
+- **M4 closed.** All four language-env segments shipped; the per-env-probe pattern captured as ADR 0005. Default segments stay `["cwd", "exit"]` — env segments are opt-in until M6 caching changes the cost math for the shellout-backed paths. Next: **M5 — theming + visuals** (ANSI palette, separator glyphs, right-prompt, themed examples, cwd length-truncation deferred from M1).
+
 ## [0.4.0] — 2026-05-18
 
 **M3 — time + hostname + user segments + per-segment timeout watchdog (M2 carry-over).** Closes the four-deliverable bag for milestone M3 from the roadmap. The per-segment timeout enforcement that was carried forward from M2 lands as a generic `shellout_capture` watchdog (`src/shellout.cyr`) that wraps fork + pipe + epoll-deadline + SIGKILL + waitpid around any external command; `src/segments/vcs.cyr` switched from its inline `_vcs_capture` workaround onto the watchdog. Three new pure-syscall segments — `time` (mini-strftime over `lib/chrono.cyr`), `hostname` (`uname(2)` nodename field), and `user` (`getuid` + `lib/pwd.cyr` musl-style /etc/passwd reader, `$USER` fallback) — round out the M3 core set. Cyrius pin bumped to 5.11.63 along the way; binary size dropped **395,115 B → 152,234 B** vs the 5.11.59-era 0.3.0 (−242,881 B; the .61 heap-alloc of `lib/toml.cyr::toml_parse_file` reclaimed 256 KB of bss DCE couldn't drop).

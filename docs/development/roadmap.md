@@ -19,21 +19,6 @@
 
 ## Milestones
 
-### M3 — Time + hostname + user (v0.4.0)
-
-- [ ] `src/segments/time.cyr` — configurable strftime-style format
-- [ ] `src/segments/hostname.cyr` — `gethostname` syscall
-- [ ] `src/segments/user.cyr` — `getuid` + passwd-lookup (or fall back to `$USER`)
-- [ ] **Per-segment timeout enforcement** — carried over from M2. Watchdog around any segment that shells out (vcs today, language-env in M4). Implementation: fork + pipe + `poll`/`select` with timeout, kill child on overrun, render empty. Lives in `src/render.cyr` so every segment inherits the same gate.
-
-### M4 — Language env segments (v0.5.0)
-
-- [ ] `src/segments/cyrius_env.cyr` — `cyrius.cyml [package].cyrius` pin parse (sovereign-stack first-party; in-tree Cyrius project detection)
-- [ ] `src/segments/python_env.cyr` — `$VIRTUAL_ENV` parse, version probe
-- [ ] `src/segments/node_env.cyr` — `.nvmrc` / `package.json` parse
-- [ ] `src/segments/rustup_env.cyr` — `rustup show` (or AGNOS-native equivalent)
-- [ ] One ADR capturing the per-env-probe pattern (so additions follow precedent)
-
 ### M5 — Theming + visuals (v0.6.0)
 
 - [ ] ANSI color palette in config
