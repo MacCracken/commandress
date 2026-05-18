@@ -23,6 +23,7 @@ include "lib/assert.cyr"
 
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
+include "src/color.cyr"
 include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
@@ -716,6 +717,139 @@ fn test_rustup_env_helpers_against_temp_tree(): i64 {
     return 0;
 }
 
+# ---- color ----
+
+fn test_color_fg_standard_eight(): i64 {
+    assert_eq(color_to_sgr_fg("black"),   30, "fg(black) == 30");
+    assert_eq(color_to_sgr_fg("red"),     31, "fg(red) == 31");
+    assert_eq(color_to_sgr_fg("green"),   32, "fg(green) == 32");
+    assert_eq(color_to_sgr_fg("yellow"),  33, "fg(yellow) == 33");
+    assert_eq(color_to_sgr_fg("blue"),    34, "fg(blue) == 34");
+    assert_eq(color_to_sgr_fg("magenta"), 35, "fg(magenta) == 35");
+    assert_eq(color_to_sgr_fg("cyan"),    36, "fg(cyan) == 36");
+    assert_eq(color_to_sgr_fg("white"),   37, "fg(white) == 37");
+    return 0;
+}
+
+fn test_color_fg_bright_eight(): i64 {
+    assert_eq(color_to_sgr_fg("bright_black"),   90, "fg(bright_black) == 90");
+    assert_eq(color_to_sgr_fg("bright_red"),     91, "fg(bright_red) == 91");
+    assert_eq(color_to_sgr_fg("bright_green"),   92, "fg(bright_green) == 92");
+    assert_eq(color_to_sgr_fg("bright_yellow"),  93, "fg(bright_yellow) == 93");
+    assert_eq(color_to_sgr_fg("bright_blue"),    94, "fg(bright_blue) == 94");
+    assert_eq(color_to_sgr_fg("bright_magenta"), 95, "fg(bright_magenta) == 95");
+    assert_eq(color_to_sgr_fg("bright_cyan"),    96, "fg(bright_cyan) == 96");
+    assert_eq(color_to_sgr_fg("bright_white"),   97, "fg(bright_white) == 97");
+    return 0;
+}
+
+fn test_color_fg_absent_or_default(): i64 {
+    assert_eq(color_to_sgr_fg(0),         0, "fg(null) == 0 (no code)");
+    assert_eq(color_to_sgr_fg(""),        0, "fg(\"\") == 0");
+    assert_eq(color_to_sgr_fg("default"), 0, "fg(default) == 0");
+    assert_eq(color_to_sgr_fg("xyzzy"),   0, "fg(unknown) == 0");
+    return 0;
+}
+
+fn test_color_bg_is_fg_plus_ten(): i64 {
+    assert_eq(color_to_sgr_bg("black"),         40, "bg(black) == 40");
+    assert_eq(color_to_sgr_bg("red"),           41, "bg(red) == 41");
+    assert_eq(color_to_sgr_bg("white"),         47, "bg(white) == 47");
+    assert_eq(color_to_sgr_bg("bright_black"), 100, "bg(bright_black) == 100");
+    assert_eq(color_to_sgr_bg("bright_white"), 107, "bg(bright_white) == 107");
+    assert_eq(color_to_sgr_bg("default"),       0, "bg(default) == 0");
+    assert_eq(color_to_sgr_bg(0),               0, "bg(null) == 0");
+    return 0;
+}
+
+fn test_style_single_mod(): i64 {
+    var codes[32];
+    assert_eq(style_to_sgr_mods("bold",      &codes, 4), 1, "style(bold) writes 1 code");
+    assert_eq(load64(&codes), 1, "  → code is 1");
+    assert_eq(style_to_sgr_mods("italic",    &codes, 4), 1, "style(italic) writes 1 code");
+    assert_eq(load64(&codes), 3, "  → code is 3");
+    assert_eq(style_to_sgr_mods("underline", &codes, 4), 1, "style(underline) writes 1 code");
+    assert_eq(load64(&codes), 4, "  → code is 4");
+    assert_eq(style_to_sgr_mods("reverse",   &codes, 4), 1, "style(reverse) writes 1 code");
+    assert_eq(load64(&codes), 7, "  → code is 7");
+    return 0;
+}
+
+fn test_style_multi_mod_preserves_order(): i64 {
+    var codes[32];
+    assert_eq(style_to_sgr_mods("bold italic", &codes, 4), 2, "style(bold italic) writes 2 codes");
+    assert_eq(load64(&codes),     1, "  first code is bold (1)");
+    assert_eq(load64(&codes + 8), 3, "  second code is italic (3)");
+    return 0;
+}
+
+fn test_style_unknown_words_skipped(): i64 {
+    var codes[32];
+    assert_eq(style_to_sgr_mods("bogus bold xyzzy", &codes, 4), 1, "unknown words skipped");
+    assert_eq(load64(&codes), 1, "  only bold made it in");
+    return 0;
+}
+
+fn test_style_absent_or_empty(): i64 {
+    var codes[32];
+    assert_eq(style_to_sgr_mods(0,    &codes, 4), 0, "style(null) == 0");
+    assert_eq(style_to_sgr_mods("",   &codes, 4), 0, "style(\"\") == 0");
+    assert_eq(style_to_sgr_mods("   ", &codes, 4), 0, "style(whitespace) == 0");
+    return 0;
+}
+
+fn test_sgr_open_all_default_returns_zero(): i64 {
+    assert_eq(sgr_open_for(0, 0, 0),                       0, "sgr_open(null,null,null) == 0");
+    assert_eq(sgr_open_for("default", "default", ""),      0, "sgr_open(default,default,empty) == 0");
+    assert_eq(sgr_open_for("xyzzy", "abcde", "bogus"),     0, "sgr_open(unknowns) == 0");
+    return 0;
+}
+
+fn test_sgr_open_fg_only(): i64 {
+    var out = sgr_open_for("red", 0, 0);
+    assert_neq(out, 0, "sgr_open(red,_,_) returns non-null");
+    _streq_or_dump(out, "\x1b[31m", "sgr_open(red) == \"\\x1b[31m\"");
+    return 0;
+}
+
+fn test_sgr_open_bg_only(): i64 {
+    var out = sgr_open_for(0, "blue", 0);
+    _streq_or_dump(out, "\x1b[44m", "sgr_open(_,blue,_) == \"\\x1b[44m\"");
+    return 0;
+}
+
+fn test_sgr_open_style_only(): i64 {
+    var out = sgr_open_for(0, 0, "bold");
+    _streq_or_dump(out, "\x1b[1m", "sgr_open(_,_,bold) == \"\\x1b[1m\"");
+    return 0;
+}
+
+fn test_sgr_open_combined_order(): i64 {
+    # Order: modifiers first, then fg, then bg (matches starship + most
+    # terminal style guides).
+    var out = sgr_open_for("cyan", "black", "bold");
+    _streq_or_dump(out, "\x1b[1;36;40m", "sgr_open(cyan/black/bold) == \"\\x1b[1;36;40m\"");
+    return 0;
+}
+
+fn test_sgr_open_three_digit_codes(): i64 {
+    # bright_white bg is 107 — exercises the 3-digit emit branch.
+    var out = sgr_open_for(0, "bright_white", 0);
+    _streq_or_dump(out, "\x1b[107m", "sgr_open(_,bright_white,_) == \"\\x1b[107m\"");
+    return 0;
+}
+
+fn test_sgr_open_multi_mod_plus_color(): i64 {
+    var out = sgr_open_for("yellow", 0, "bold underline");
+    _streq_or_dump(out, "\x1b[1;4;33m", "sgr_open(yellow,_,bold underline) == \"\\x1b[1;4;33m\"");
+    return 0;
+}
+
+fn test_sgr_reset_constant(): i64 {
+    _streq_or_dump(SGR_RESET, "\x1b[0m", "SGR_RESET == \"\\x1b[0m\"");
+    return 0;
+}
+
 # ---- pathlookup ----
 
 # Find `sh` on PATH — present on every conceivable POSIX host. Skip
@@ -890,6 +1024,24 @@ fn main(): i64 {
     test_group("rustup_env segment");
     test_rustup_env_render_empty_outside_project();
     test_rustup_env_helpers_against_temp_tree();
+
+    test_group("color");
+    test_color_fg_standard_eight();
+    test_color_fg_bright_eight();
+    test_color_fg_absent_or_default();
+    test_color_bg_is_fg_plus_ten();
+    test_style_single_mod();
+    test_style_multi_mod_preserves_order();
+    test_style_unknown_words_skipped();
+    test_style_absent_or_empty();
+    test_sgr_open_all_default_returns_zero();
+    test_sgr_open_fg_only();
+    test_sgr_open_bg_only();
+    test_sgr_open_style_only();
+    test_sgr_open_combined_order();
+    test_sgr_open_three_digit_codes();
+    test_sgr_open_multi_mod_plus_color();
+    test_sgr_reset_constant();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();

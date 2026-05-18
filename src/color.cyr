@@ -1,0 +1,181 @@
+# color.cyr — ANSI SGR color / style helpers for the prompt theme layer.
+#
+# Named-color model (M5 v0.6.0 scope per ADR-pending):
+#   - 16 ANSI named colors (8 standard + 8 bright) plus "default"
+#   - Style modifiers: bold | italic | underline | reverse
+#   - Hex / 256-color / palette references are deferred (v0.6.x+)
+#
+# Render closes every styled segment with "\x1b[0m" (`SGR_RESET`) so
+# unstyled parts of the prompt fall back to terminal defaults cleanly.
+# "Absent" and "default" emit no SGR code — same path, no override.
+#
+# Public API:
+#   color_to_sgr_fg(name): i64   → 30..37, 90..97; 0 for absent/default/unknown
+#   color_to_sgr_bg(name): i64   → 40..47, 100..107; 0 for absent/default/unknown
+#   style_to_sgr_mods(s, codes, max): i64
+#       parses space-separated tokens, writes SGR mod ints into `codes`
+#       (8 bytes each), returns count written (capped at `max`)
+#   sgr_open_for(fg, bg, style): i64
+#       returns heap-alloc'd "\x1b[<codes>m" cstring or 0 if no codes
+#   SGR_RESET: cstring "\x1b[0m"
+#
+# Unrecognized color / style names are silently ignored — the prompt is
+# a UI surface, not a compiler. Bad config means duller output, never a
+# crash. Per-section allow-list warnings in `config.cyr` catch typos.
+
+var SGR_RESET = "\x1b[0m";
+
+fn color_to_sgr_fg(name): i64 {
+    if (name == 0) { return 0; }
+    if (strlen(name) == 0) { return 0; }
+    if (streq(name, "default") == 1) { return 0; }
+    if (streq(name, "black") == 1)   { return 30; }
+    if (streq(name, "red") == 1)     { return 31; }
+    if (streq(name, "green") == 1)   { return 32; }
+    if (streq(name, "yellow") == 1)  { return 33; }
+    if (streq(name, "blue") == 1)    { return 34; }
+    if (streq(name, "magenta") == 1) { return 35; }
+    if (streq(name, "cyan") == 1)    { return 36; }
+    if (streq(name, "white") == 1)   { return 37; }
+    if (streq(name, "bright_black") == 1)   { return 90; }
+    if (streq(name, "bright_red") == 1)     { return 91; }
+    if (streq(name, "bright_green") == 1)   { return 92; }
+    if (streq(name, "bright_yellow") == 1)  { return 93; }
+    if (streq(name, "bright_blue") == 1)    { return 94; }
+    if (streq(name, "bright_magenta") == 1) { return 95; }
+    if (streq(name, "bright_cyan") == 1)    { return 96; }
+    if (streq(name, "bright_white") == 1)   { return 97; }
+    return 0;
+}
+
+# Background codes are exactly +10 from foreground codes across the full
+# 8 + 8-bright range, so we delegate. "default" / absent / unknown still
+# resolve to 0 (no code emitted).
+fn color_to_sgr_bg(name): i64 {
+    var fg = color_to_sgr_fg(name);
+    if (fg == 0) { return 0; }
+    return fg + 10;
+}
+
+# Parses `style` (space-separated tokens, e.g. "bold underline"). Writes
+# each recognized modifier's SGR code as an i64 into `codes` (8 bytes
+# per entry), in input order. Unknown tokens are silently skipped.
+# Returns the number of codes written, capped at `max`.
+fn style_to_sgr_mods(s, codes, max): i64 {
+    if (s == 0) { return 0; }
+    var slen = strlen(s);
+    if (slen == 0) { return 0; }
+
+    var count = 0;
+    var i = 0;
+    var done = 0;
+    while (done == 0) {
+        # Skip whitespace runs.
+        var skip = 1;
+        while (skip == 1) {
+            if (i >= slen) { skip = 0; }
+            else { if (load8(s + i) == 32) { i = i + 1; } else { skip = 0; } }
+        }
+        if (i >= slen) { done = 1; }
+        else {
+            var start = i;
+            var read = 1;
+            while (read == 1) {
+                if (i >= slen) { read = 0; }
+                else { if (load8(s + i) == 32) { read = 0; } else { i = i + 1; } }
+            }
+            var tlen = i - start;
+            if (tlen > 0) {
+                var code = 0;
+                if (tlen == 4) {
+                    if (memeq(s + start, "bold", 4) == 1) { code = 1; }
+                }
+                if (code == 0) { if (tlen == 6) {
+                    if (memeq(s + start, "italic", 6) == 1) { code = 3; }
+                }}
+                if (code == 0) { if (tlen == 9) {
+                    if (memeq(s + start, "underline", 9) == 1) { code = 4; }
+                }}
+                if (code == 0) { if (tlen == 7) {
+                    if (memeq(s + start, "reverse", 7) == 1) { code = 7; }
+                }}
+                if (code != 0) {
+                    if (count < max) {
+                        store64(codes + count * 8, code);
+                        count = count + 1;
+                    }
+                }
+            }
+        }
+    }
+    return count;
+}
+
+# Writes the ASCII decimal of `code` into `out` at offset `pos`; returns
+# the new offset. `code` is bounded to 0..999 (we only ever emit SGR
+# ints in 0..107 in this module), so the inline three-branch path is
+# strictly faster than calling fmt_int_buf + memmove.
+fn _emit_sgr_int(out, pos, code): i64 {
+    if (code >= 100) {
+        store8(out + pos, 48 + code / 100);
+        store8(out + pos + 1, 48 + (code / 10) % 10);
+        store8(out + pos + 2, 48 + code % 10);
+        return pos + 3;
+    }
+    if (code >= 10) {
+        store8(out + pos, 48 + code / 10);
+        store8(out + pos + 1, 48 + code % 10);
+        return pos + 2;
+    }
+    store8(out + pos, 48 + code);
+    return pos + 1;
+}
+
+# Builds the SGR opening escape `"\x1b[<mods>;<fg>;<bg>m"` from the
+# resolved style. Returns 0 (no allocation) when there's nothing to
+# emit — the empty / all-default case. Order is modifiers first, then
+# fg, then bg, matching the convention most terminals + style guides
+# use.
+#
+# Buffer size: 64 bytes covers the maximum payload (4 mods + fg + bg,
+# each up to 3 digits, plus 5 semicolons + `\x1b[` + `m` + NUL = 27 B).
+# Bumping for safety; alloc is bump-cheap.
+fn sgr_open_for(fg, bg, style): i64 {
+    var fg_code = color_to_sgr_fg(fg);
+    var bg_code = color_to_sgr_bg(bg);
+    var mods[32];                                       # 4 codes * 8 B
+    var mod_count = style_to_sgr_mods(style, &mods, 4);
+
+    var total = mod_count;
+    if (fg_code != 0) { total = total + 1; }
+    if (bg_code != 0) { total = total + 1; }
+    if (total == 0) { return 0; }
+
+    var out = alloc(64);
+    var pos = 0;
+    store8(out + pos, 27);     pos = pos + 1;          # ESC
+    store8(out + pos, 91);     pos = pos + 1;          # [
+
+    var written = 0;
+    var i = 0;
+    while (i < mod_count) {
+        if (written > 0) { store8(out + pos, 59); pos = pos + 1; }   # ;
+        pos = _emit_sgr_int(out, pos, load64(&mods + i * 8));
+        written = written + 1;
+        i = i + 1;
+    }
+    if (fg_code != 0) {
+        if (written > 0) { store8(out + pos, 59); pos = pos + 1; }
+        pos = _emit_sgr_int(out, pos, fg_code);
+        written = written + 1;
+    }
+    if (bg_code != 0) {
+        if (written > 0) { store8(out + pos, 59); pos = pos + 1; }
+        pos = _emit_sgr_int(out, pos, bg_code);
+        written = written + 1;
+    }
+
+    store8(out + pos, 109);    pos = pos + 1;          # m
+    store8(out + pos, 0);                              # NUL
+    return out;
+}
