@@ -273,6 +273,27 @@ fn bench_node_env_segment(): i64 {
     return 0;
 }
 
+# Full-segment bench. Same shape as bench_node_env_segment — empty
+# walk to "/" since the bench cwd has no rust-toolchain ancestor.
+fn bench_rustup_env_segment(): i64 {
+    var b = bench_new("rustup_env_render (empty walk)");
+    var rounds = 50;
+    var batch = 200;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            rustup_env_render();
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 # ---- full-prompt benchmark ----
 
 fn bench_prompt(): i64 {
@@ -311,6 +332,7 @@ fn main(): i64 {
     bench_python_env_basename();
     bench_python_env_segment();
     bench_node_env_segment();
+    bench_rustup_env_segment();
     bench_prompt();
     return 0;
 }

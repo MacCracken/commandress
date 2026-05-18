@@ -25,3 +25,4 @@ Decisions about commandress — what we chose, the context, and the consequences
 | [0002](0002-segment-rendering-model.md) | Segment rendering model: pure function of context, no shared state | Accepted |
 | [0003](0003-config-format.md) | Config format: CYML for the user config file | Accepted |
 | [0004](0004-vcs-probe-via-sit.md) | VCS probe shells out to `sit`, not external `git` | Accepted |
+| [0005](0005-language-env-probe-pattern.md) | Language-env segments follow a file-first probe pattern | Accepted |

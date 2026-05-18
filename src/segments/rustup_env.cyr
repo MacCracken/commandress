@@ -1,0 +1,31 @@
+# rustup_env.cyr — Rust toolchain segment.
+#
+# Resolution (file-first; no shellout in v0.5.0):
+#   1. <ancestor>/rust-toolchain → trimmed contents
+#   2. empty
+#
+# `rust-toolchain` is the legacy plain-text format (one line: a channel
+# like `1.75.0` or `stable`). Modern projects use `rust-toolchain.toml`
+# instead — its `[toolchain] channel = "..."` shape isn't parseable by
+# the Cyrius stdlib today (single-bracket sections deferred to v6.x,
+# papercut Item 3). When that lands, add a `.toml` branch before the
+# plain check.
+#
+# `rustup show active-toolchain` shellout is similarly parked pre-v1
+# per the file-first policy — version probes get cheap once M6
+# caching makes them affordable on every redraw.
+
+fn rustup_env_render(): i64 {
+    var buf[4096];
+    var n = syscall(SYS_GETCWD, &buf, 4096);
+    if (n <= 0) { return 0; }
+    n = n - 1;
+
+    var cwd = alloc(n + 1);
+    memcpy(cwd, &buf, n);
+    store8(cwd + n, 0);
+
+    var root = find_ancestor_with(cwd, "/rust-toolchain");
+    if (root == 0) { return 0; }
+    return read_trimmed_file_at(root, "/rust-toolchain");
+}

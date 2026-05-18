@@ -33,6 +33,7 @@ include "src/segments/user.cyr"
 include "src/segments/cyrius_env.cyr"
 include "src/segments/python_env.cyr"
 include "src/segments/node_env.cyr"
+include "src/segments/rustup_env.cyr"
 include "src/config.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
@@ -672,6 +673,49 @@ fn test_node_env_helpers_against_temp_tree(): i64 {
     return 0;
 }
 
+# ---- rustup_env ----
+
+# Same shape as node_env's empty-outside-project guard.
+fn test_rustup_env_render_empty_outside_project(): i64 {
+    var out = rustup_env_render();
+    assert_eq(out, 0, "rustup_env_render outside any rust-toolchain tree → empty");
+    return 0;
+}
+
+# Helpers-against-temp-tree to verify the rust-toolchain marker walks
+# + reads cleanly. Mirrors test_node_env_helpers_against_temp_tree.
+fn test_rustup_env_helpers_against_temp_tree(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rustup_tst/rust-toolchain");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rustup_tst/sub");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rustup_tst");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rustup_tst", 0x1FF), 0, "mkdir tmp root");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rustup_tst/sub", 0x1FF), 0, "mkdir subdir");
+    var fd = file_open("/tmp/cmdrs_rustup_tst/rust-toolchain", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open rust-toolchain for write");
+    file_write(fd, "1.75.0\n", 7);
+    file_close(fd);
+
+    var root = find_ancestor_with("/tmp/cmdrs_rustup_tst/sub", "/rust-toolchain");
+    assert_neq(root, 0, "find_ancestor_with(sub, /rust-toolchain) returns non-null");
+    _streq_or_dump(root, "/tmp/cmdrs_rustup_tst", "walked up to root containing rust-toolchain");
+
+    var ver = read_trimmed_file_at(root, "/rust-toolchain");
+    _streq_or_dump(ver, "1.75.0", "rust-toolchain contents trimmed");
+
+    # Channel-name style content (`stable`, `nightly`) should pass.
+    fd = file_open("/tmp/cmdrs_rustup_tst/rust-toolchain", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "reopen rust-toolchain for channel name");
+    file_write(fd, "stable\n", 7);
+    file_close(fd);
+    var ch = read_trimmed_file_at(root, "/rust-toolchain");
+    _streq_or_dump(ch, "stable", "rust-toolchain passes channel names verbatim");
+
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rustup_tst/rust-toolchain");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rustup_tst/sub");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rustup_tst");
+    return 0;
+}
+
 # ---- pathlookup ----
 
 # Find `sh` on PATH — present on every conceivable POSIX host. Skip
@@ -842,6 +886,10 @@ fn main(): i64 {
     test_group("node_env segment");
     test_node_env_render_empty_outside_project();
     test_node_env_helpers_against_temp_tree();
+
+    test_group("rustup_env segment");
+    test_rustup_env_render_empty_outside_project();
+    test_rustup_env_helpers_against_temp_tree();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();
