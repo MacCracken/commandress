@@ -38,7 +38,7 @@ cyrius bench tests/commandress.bcyr            # per-segment + full-prompt timin
 | `exit` | `$AGNOSHI_LAST_EXIT` | `[N]` on non-zero; empty on success | `hide_zero: bool` |
 | `vcs` | `sit status` | `<branch>` / `<branch>*` inside a `sit` repo | `show_dirty: bool`, `dirty_marker: string` |
 
-Default segment order is `["cwd", "exit"]` — `vcs` is opt-in for now (one fork+exec per redraw is non-trivial cost; M6 caching changes the default).
+Default segment order is `["cwd", "vcs", "exit"]` — `vcs` became default-on in v0.7.0 once the 1 s TTL probe cache (see `src/cache.cyr`) made it cheap enough (~66 µs hot avg vs ~1.8 ms cold). Outside a `sit` repo the `vcs` segment renders empty, so the prompt stays clean for non-VCS directories.
 
 ## Quick use
 

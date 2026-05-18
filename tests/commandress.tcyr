@@ -214,9 +214,10 @@ fn test_config_defaults(): i64 {
     assert_eq(cfg_cwd_home_shorten(c), 1, "default cwd_home_shorten == 1");
     assert_eq(cfg_exit_hide_zero(c), 1, "default exit_hide_zero == 1");
     var segs = cfg_segments(c);
-    assert_eq(vec_len(segs), 2, "default segments length == 2");
-    _streq_or_dump(vec_get(segs, 0), "cwd", "default segments[0] == \"cwd\"");
-    _streq_or_dump(vec_get(segs, 1), "exit", "default segments[1] == \"exit\"");
+    assert_eq(vec_len(segs), 3, "default segments length == 3");
+    _streq_or_dump(vec_get(segs, 0), "cwd",  "default segments[0] == \"cwd\"");
+    _streq_or_dump(vec_get(segs, 1), "vcs",  "default segments[1] == \"vcs\" (M6: cache makes default-on)");
+    _streq_or_dump(vec_get(segs, 2), "exit", "default segments[2] == \"exit\"");
     return 0;
 }
 

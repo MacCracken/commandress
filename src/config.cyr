@@ -6,7 +6,7 @@
 # of `[X]` for now; single-bracket support is a stdlib follow-up):
 #
 #   [[prompt]]
-#   segments              = ["cwd", "exit"]
+#   segments              = ["cwd", "vcs", "exit"]
 #   right_segments        = ["time"]            # optional; renders when `cmdrs --side=right` is invoked
 #   separator             = " "                 # used in plain mode
 #   trailer               = "$ "                # left-side only; right-prompt never emits the trailer
@@ -127,6 +127,7 @@ fn config_default(): i64 {
     var c = alloc(CFG_SIZE);
     var segs = vec_new();
     vec_push(segs, "cwd");
+    vec_push(segs, "vcs");                       # M6: cache makes this default-on (v0.7.0)
     vec_push(segs, "exit");
     store64(c + CFG_SEGMENTS, segs);
     store64(c + CFG_SEPARATOR, " ");
