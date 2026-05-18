@@ -41,21 +41,23 @@ setopt prompt_subst
 _cmdrs_precmd() {
   export AGNOSHI_LAST_EXIT=$?
   PROMPT="$(cmdrs)"
+  RPROMPT="$(cmdrs --side=right)"
 }
 precmd_functions+=(_cmdrs_precmd)
 ```
 
-`_cmdrs_precmd` runs before every prompt redraw. It captures the previous command's exit code into `$AGNOSHI_LAST_EXIT` (the env var `cmdrs` reads for the `exit` segment) and replaces `PROMPT` with whatever `cmdrs` printed.
+`_cmdrs_precmd` runs before every prompt redraw. It captures the previous command's exit code into `$AGNOSHI_LAST_EXIT` (the env var `cmdrs` reads for the `exit` segment), assigns `PROMPT` from `cmdrs` (left side), and assigns `RPROMPT` from `cmdrs --side=right` (right side). `RPROMPT` is empty when no `right_segments` are configured — zsh treats that as no right prompt, no display.
 
 Open a new shell — or `exec zsh` — to pick up the change.
 
 ## Example config
 
-`~/.commandress` lights up the full M4 segment set:
+`~/.commandress` lights up the full M4 segment set, plus a right-side with time:
 
 ```cyml
 [[prompt]]
-segments  = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+segments       = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+right_segments = ["time"]
 separator = " "
 trailer   = " $ "
 

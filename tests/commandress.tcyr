@@ -422,6 +422,40 @@ fn test_config_load_palette_absent_behaves_like_before(): i64 {
     return 0;
 }
 
+# ---- config: right-prompt ----
+
+fn test_config_default_right_segments_empty(): i64 {
+    var c = config_default();
+    var rsegs = cfg_right_segments(c);
+    assert_neq(rsegs, 0, "default right_segments returns a vec (not null)");
+    assert_eq(vec_len(rsegs), 0, "default right_segments is empty");
+    return 0;
+}
+
+fn test_config_load_right_segments(): i64 {
+    var content = "[[prompt]]\nright_segments = [\"time\", \"cyrius_env\"]\n";
+    var path = _write_test_config("rprompt", content);
+    var c = config_load(path);
+    var rsegs = cfg_right_segments(c);
+    assert_eq(vec_len(rsegs), 2, "right_segments parsed length == 2");
+    _streq_or_dump(vec_get(rsegs, 0), "time",       "right_segments[0] == \"time\"");
+    _streq_or_dump(vec_get(rsegs, 1), "cyrius_env", "right_segments[1] == \"cyrius_env\"");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_load_right_segments_empty_array(): i64 {
+    # Explicit empty array — user opting out of right-prompt. Should
+    # overwrite default (which is already empty, but the parse path
+    # still needs to accept the empty case).
+    var content = "[[prompt]]\nright_segments = []\n";
+    var path = _write_test_config("rprompt-empty", content);
+    var c = config_load(path);
+    assert_eq(vec_len(cfg_right_segments(c)), 0, "right_segments = [] stays empty");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 # ---- vcs parser ----
 # We don't fork `sit` in tests — vcs_parse_render is the pure-fn target.
 # Fabricated `sit status` outputs cover the four cases: clean, dirty
@@ -1192,6 +1226,11 @@ fn main(): i64 {
     test_config_load_palette_unknown_ref();
     test_config_load_palette_mixed_with_raw();
     test_config_load_palette_absent_behaves_like_before();
+
+    test_group("config right-prompt");
+    test_config_default_right_segments_empty();
+    test_config_load_right_segments();
+    test_config_load_right_segments_empty_array();
 
     test_group("vcs parser");
     test_vcs_parse_clean();

@@ -134,12 +134,16 @@ fn _sgr_for(cfg, name): i64 {
     return 0;
 }
 
-fn render_prompt(cfg, ctx): i64 {
+# Paint segments to stdout. `side` selects the segment list (0 = left
+# / cfg.segments; 1 = right / cfg.right_segments). Trailer paints only
+# on the left — the right prompt is just segments, no `$ ` indicator
+# (zsh's `RPROMPT` is static decoration, not a cursor anchor).
+fn render_prompt(cfg, ctx, side): i64 {
     var segs = cfg_segments(cfg);
+    if (side != 0) { segs = cfg_right_segments(cfg); }
+
     var sep = cfg_separator(cfg);
     var sep_len = strlen(sep);
-    var trailer = cfg_trailer(cfg);
-    var trailer_len = strlen(trailer);
 
     var n = vec_len(segs);
     var painted = 0;
@@ -165,6 +169,9 @@ fn render_prompt(cfg, ctx): i64 {
         i = i + 1;
     }
 
-    syscall(SYS_WRITE, STDOUT, trailer, trailer_len);
+    if (side == 0) {
+        var trailer = cfg_trailer(cfg);
+        syscall(SYS_WRITE, STDOUT, trailer, strlen(trailer));
+    }
     return 0;
 }

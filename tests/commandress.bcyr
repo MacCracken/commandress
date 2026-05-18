@@ -309,7 +309,7 @@ fn bench_prompt(): i64 {
         bench_batch_start(b);
         var bi = 0;
         while (bi < batch) {
-            render_prompt(cfg, ctx);
+            render_prompt(cfg, ctx, 0);
             bi = bi + 1;
         }
         bench_batch_stop(b, batch);

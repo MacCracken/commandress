@@ -6,9 +6,10 @@
 # of `[X]` for now; single-bracket support is a stdlib follow-up):
 #
 #   [[prompt]]
-#   segments  = ["cwd", "exit"]
-#   separator = " "
-#   trailer   = "$ "
+#   segments       = ["cwd", "exit"]
+#   right_segments = ["time"]                  # optional; renders when `cmdrs --side=right` is invoked
+#   separator      = " "
+#   trailer        = "$ "                      # left-side only; right-prompt never emits the trailer
 #
 #   [[segments.cwd]]
 #   home_shorten = true
@@ -66,7 +67,8 @@ var CFG_SGR_PYTHON_ENV = 120;
 var CFG_SGR_NODE_ENV = 128;
 var CFG_SGR_RUSTUP_ENV = 136;
 var CFG_CWD_MAX_LENGTH = 144;
-var CFG_SIZE = 152;
+var CFG_RIGHT_SEGMENTS = 152;
+var CFG_SIZE = 160;
 
 fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
 fn cfg_separator(c): i64          { return load64(c + CFG_SEPARATOR); }
@@ -87,6 +89,7 @@ fn cfg_sgr_python_env(c): i64     { return load64(c + CFG_SGR_PYTHON_ENV); }
 fn cfg_sgr_node_env(c): i64       { return load64(c + CFG_SGR_NODE_ENV); }
 fn cfg_sgr_rustup_env(c): i64     { return load64(c + CFG_SGR_RUSTUP_ENV); }
 fn cfg_cwd_max_length(c): i64     { return load64(c + CFG_CWD_MAX_LENGTH); }
+fn cfg_right_segments(c): i64     { return load64(c + CFG_RIGHT_SEGMENTS); }
 
 # Build the default Config. Used when no file is present, and as the
 # base for partial overrides — a config that sets only `separator`
@@ -128,6 +131,11 @@ fn config_default(): i64 {
     store64(c + CFG_SGR_RUSTUP_ENV, sgr_open_for("red",          0, 0));
     # 0 = no truncation. Users opt in via `[[segments.cwd]] max_length = N`.
     store64(c + CFG_CWD_MAX_LENGTH, 0);
+    # Empty by default — right-prompt is opt-in via [[prompt]] right_segments.
+    # An empty vec means `cmdrs --side=right` prints nothing (the shell's
+    # `RPROMPT="$(cmdrs --side=right)"` evaluates to "", which zsh treats
+    # as no right prompt).
+    store64(c + CFG_RIGHT_SEGMENTS, vec_new());
     return c;
 }
 
@@ -341,6 +349,7 @@ fn config_load(path): i64 {
 
         var prompt_allowed = vec_new();
         vec_push(prompt_allowed, "segments");
+        vec_push(prompt_allowed, "right_segments");
         vec_push(prompt_allowed, "separator");
         vec_push(prompt_allowed, "trailer");
         _warn_unknown_pairs(prompt_pairs, prompt_allowed, "prompt");
@@ -356,6 +365,12 @@ fn config_load(path): i64 {
             var parsed = _parse_str_array(segs_v);
             if (vec_len(parsed) > 0) { store64(c + CFG_SEGMENTS, parsed); }
         }
+
+        # `right_segments` accepts an empty array — the user opts back out
+        # of right-prompt by setting it explicitly to `[]`. So unlike
+        # `segments` we don't require len > 0 to overwrite.
+        var rsegs_v = toml_get(prompt_pairs, "right_segments");
+        if (rsegs_v != 0) { store64(c + CFG_RIGHT_SEGMENTS, _parse_str_array(rsegs_v)); }
     }
 
     # [[segments.cwd]] — cwd-segment options.
