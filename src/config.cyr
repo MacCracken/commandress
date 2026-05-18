@@ -12,14 +12,31 @@
 #
 #   [[segments.cwd]]
 #   home_shorten = true
+#   fg    = "cyan"          # named color or "default"; v0.6.0 named-only
+#   bg    = "default"
+#   style = "bold"          # space-separated: bold | italic | underline | reverse
 #
 #   [[segments.exit]]
 #   hide_zero = true
+#   fg = "red"
+#   style = "bold"
+#
+#   [[segments.vcs]]
+#   show_dirty   = true
+#   dirty_marker = "*"
+#   fg = "yellow"
+#
+#   [[segments.<env_segment>]]            # cyrius_env / python_env / node_env / rustup_env
+#   fg = "..."                            # color-only knobs for the env segments
 #
 #   ---
 #   The body zone (after `---`) is ignored; reserved for user notes.
 #
-# Missing file → all defaults. Missing field → that field's default.
+# Missing file → all defaults. Missing field → that field's default. A
+# segment section that touches *any* of fg/bg/style is a complete style
+# override for that segment (missing color fields default to absent,
+# not the default theme's value). A section with no color fields keeps
+# the default theme intact — important for boolean-only overrides.
 # Unknown fields warn to stderr but don't fail (allow-list is the
 # validation gate; see _warn_unknown_pairs).
 
@@ -31,7 +48,17 @@ var CFG_EXIT_HIDE_ZERO = 32;
 var CFG_VCS_SHOW_DIRTY = 40;
 var CFG_VCS_DIRTY_MARKER = 48;
 var CFG_TIME_FORMAT = 56;
-var CFG_SIZE = 64;
+var CFG_SGR_CWD = 64;
+var CFG_SGR_EXIT = 72;
+var CFG_SGR_VCS = 80;
+var CFG_SGR_TIME = 88;
+var CFG_SGR_HOSTNAME = 96;
+var CFG_SGR_USER = 104;
+var CFG_SGR_CYRIUS_ENV = 112;
+var CFG_SGR_PYTHON_ENV = 120;
+var CFG_SGR_NODE_ENV = 128;
+var CFG_SGR_RUSTUP_ENV = 136;
+var CFG_SIZE = 144;
 
 fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
 fn cfg_separator(c): i64          { return load64(c + CFG_SEPARATOR); }
@@ -41,6 +68,16 @@ fn cfg_exit_hide_zero(c): i64     { return load64(c + CFG_EXIT_HIDE_ZERO); }
 fn cfg_vcs_show_dirty(c): i64     { return load64(c + CFG_VCS_SHOW_DIRTY); }
 fn cfg_vcs_dirty_marker(c): i64   { return load64(c + CFG_VCS_DIRTY_MARKER); }
 fn cfg_time_format(c): i64        { return load64(c + CFG_TIME_FORMAT); }
+fn cfg_sgr_cwd(c): i64            { return load64(c + CFG_SGR_CWD); }
+fn cfg_sgr_exit(c): i64           { return load64(c + CFG_SGR_EXIT); }
+fn cfg_sgr_vcs(c): i64            { return load64(c + CFG_SGR_VCS); }
+fn cfg_sgr_time(c): i64           { return load64(c + CFG_SGR_TIME); }
+fn cfg_sgr_hostname(c): i64       { return load64(c + CFG_SGR_HOSTNAME); }
+fn cfg_sgr_user(c): i64           { return load64(c + CFG_SGR_USER); }
+fn cfg_sgr_cyrius_env(c): i64     { return load64(c + CFG_SGR_CYRIUS_ENV); }
+fn cfg_sgr_python_env(c): i64     { return load64(c + CFG_SGR_PYTHON_ENV); }
+fn cfg_sgr_node_env(c): i64       { return load64(c + CFG_SGR_NODE_ENV); }
+fn cfg_sgr_rustup_env(c): i64     { return load64(c + CFG_SGR_RUSTUP_ENV); }
 
 # Build the default Config. Used when no file is present, and as the
 # base for partial overrides — a config that sets only `separator`
@@ -61,6 +98,25 @@ fn config_default(): i64 {
     store64(c + CFG_VCS_SHOW_DIRTY, 1);
     store64(c + CFG_VCS_DIRTY_MARKER, "*");
     store64(c + CFG_TIME_FORMAT, "%H:%M");
+
+    # Opinionated default theme. Per-segment color choices follow the
+    # principle "each segment paints in a colour that matches the thing
+    # it represents" — directory cyan-bold, errors red-bold, time dim,
+    # env segments in their language's conventional colour. Users opt
+    # back to plain via `fg = "default"` (or any color override) in
+    # their `~/.commandress.cyml`. Out-of-box look beats "make it
+    # bearable" — starship-equivalent themability lands later (palette
+    # layer in v0.6.x, theme files in v0.8.0).
+    store64(c + CFG_SGR_CWD,        sgr_open_for("cyan",         0, "bold"));
+    store64(c + CFG_SGR_EXIT,       sgr_open_for("red",          0, "bold"));
+    store64(c + CFG_SGR_VCS,        sgr_open_for("yellow",       0, 0));
+    store64(c + CFG_SGR_TIME,       sgr_open_for("bright_black", 0, 0));
+    store64(c + CFG_SGR_HOSTNAME,   sgr_open_for("blue",         0, 0));
+    store64(c + CFG_SGR_USER,       sgr_open_for("green",        0, "bold"));
+    store64(c + CFG_SGR_CYRIUS_ENV, sgr_open_for("magenta",      0, 0));
+    store64(c + CFG_SGR_PYTHON_ENV, sgr_open_for("yellow",       0, 0));
+    store64(c + CFG_SGR_NODE_ENV,   sgr_open_for("green",        0, 0));
+    store64(c + CFG_SGR_RUSTUP_ENV, sgr_open_for("red",          0, 0));
     return c;
 }
 
@@ -108,6 +164,30 @@ fn _parse_str_array(s): i64 {
     return out;
 }
 
+# Overwrite the SGR slot at `c + offset` from this section's `fg` / `bg`
+# / `style` pairs, but ONLY if at least one of those keys is present.
+# Sections with no color fields leave the default-theme SGR intact —
+# important so boolean-only overrides (e.g. `home_shorten = false`)
+# don't accidentally strip the cwd's default cyan-bold.
+fn _apply_seg_style(c, offset, pairs): i64 {
+    var fg_v = toml_get(pairs, "fg");
+    var bg_v = toml_get(pairs, "bg");
+    var style_v = toml_get(pairs, "style");
+    if (fg_v == 0) {
+        if (bg_v == 0) {
+            if (style_v == 0) { return 0; }
+        }
+    }
+    var fg = 0;
+    var bg = 0;
+    var style = 0;
+    if (fg_v != 0)    { fg = str_cstr(fg_v); }
+    if (bg_v != 0)    { bg = str_cstr(bg_v); }
+    if (style_v != 0) { style = str_cstr(style_v); }
+    store64(c + offset, sgr_open_for(fg, bg, style));
+    return 0;
+}
+
 # Emit a stderr warning for any key in `pairs` not on `allowed`.
 # `allowed` is a NUL-terminated vec-of-cstrings; section_name is the
 # `[[name]]` we're scoped to.
@@ -133,6 +213,24 @@ fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
         }
         pi = pi + 1;
     }
+    return 0;
+}
+
+# Helper for segments whose [[segments.X]] block carries ONLY color
+# knobs (no booleans / strings of its own). Loads, allow-lists fg/bg/
+# style, applies. Used by hostname / user / the four env segments —
+# all introduced as configurable-only-for-color sections in v0.6.0.
+fn _load_color_only_section(c, sgr_offset, sections, name): i64 {
+    var secs = toml_get_sections(sections, name);
+    if (vec_len(secs) == 0) { return 0; }
+    var sec = vec_get(secs, 0);
+    var pairs = toml_section_pairs(sec);
+    var allowed = vec_new();
+    vec_push(allowed, "fg");
+    vec_push(allowed, "bg");
+    vec_push(allowed, "style");
+    _warn_unknown_pairs(pairs, allowed, name);
+    _apply_seg_style(c, sgr_offset, pairs);
     return 0;
 }
 
@@ -188,10 +286,14 @@ fn config_load(path): i64 {
 
         var cwd_allowed = vec_new();
         vec_push(cwd_allowed, "home_shorten");
+        vec_push(cwd_allowed, "fg");
+        vec_push(cwd_allowed, "bg");
+        vec_push(cwd_allowed, "style");
         _warn_unknown_pairs(cwd_pairs, cwd_allowed, "segments.cwd");
 
         var hs_v = toml_get(cwd_pairs, "home_shorten");
         store64(c + CFG_CWD_HOME_SHORTEN, _parse_bool(hs_v, cfg_cwd_home_shorten(c)));
+        _apply_seg_style(c, CFG_SGR_CWD, cwd_pairs);
     }
 
     # [[segments.exit]] — exit-segment options.
@@ -202,10 +304,14 @@ fn config_load(path): i64 {
 
         var exit_allowed = vec_new();
         vec_push(exit_allowed, "hide_zero");
+        vec_push(exit_allowed, "fg");
+        vec_push(exit_allowed, "bg");
+        vec_push(exit_allowed, "style");
         _warn_unknown_pairs(exit_pairs, exit_allowed, "segments.exit");
 
         var hz_v = toml_get(exit_pairs, "hide_zero");
         store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
+        _apply_seg_style(c, CFG_SGR_EXIT, exit_pairs);
     }
 
     # [[segments.vcs]] — vcs-segment options.
@@ -217,6 +323,9 @@ fn config_load(path): i64 {
         var vcs_allowed = vec_new();
         vec_push(vcs_allowed, "show_dirty");
         vec_push(vcs_allowed, "dirty_marker");
+        vec_push(vcs_allowed, "fg");
+        vec_push(vcs_allowed, "bg");
+        vec_push(vcs_allowed, "style");
         _warn_unknown_pairs(vcs_pairs, vcs_allowed, "segments.vcs");
 
         var sd_v = toml_get(vcs_pairs, "show_dirty");
@@ -224,6 +333,7 @@ fn config_load(path): i64 {
 
         var dm_v = toml_get(vcs_pairs, "dirty_marker");
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
+        _apply_seg_style(c, CFG_SGR_VCS, vcs_pairs);
     }
 
     # [[segments.time]] — time-segment options.
@@ -234,11 +344,25 @@ fn config_load(path): i64 {
 
         var time_allowed = vec_new();
         vec_push(time_allowed, "format");
+        vec_push(time_allowed, "fg");
+        vec_push(time_allowed, "bg");
+        vec_push(time_allowed, "style");
         _warn_unknown_pairs(time_pairs, time_allowed, "segments.time");
 
         var fmt_v = toml_get(time_pairs, "format");
         if (fmt_v != 0) { store64(c + CFG_TIME_FORMAT, str_cstr(fmt_v)); }
+        _apply_seg_style(c, CFG_SGR_TIME, time_pairs);
     }
+
+    # Color-only sections — segments with no non-color knobs of their
+    # own. Each gets its [[segments.X]] block in v0.6.0 so users can
+    # recolor without having to touch the dispatcher in code.
+    _load_color_only_section(c, CFG_SGR_HOSTNAME,   sections, "segments.hostname");
+    _load_color_only_section(c, CFG_SGR_USER,       sections, "segments.user");
+    _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, sections, "segments.cyrius_env");
+    _load_color_only_section(c, CFG_SGR_PYTHON_ENV, sections, "segments.python_env");
+    _load_color_only_section(c, CFG_SGR_NODE_ENV,   sections, "segments.node_env");
+    _load_color_only_section(c, CFG_SGR_RUSTUP_ENV, sections, "segments.rustup_env");
 
     return c;
 }

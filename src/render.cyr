@@ -115,6 +115,24 @@ fn _seg_fn_for(name): i64 {
     return 0;
 }
 
+# Resolve `name` to the pre-computed SGR opening cstring stored in the
+# Config struct. Returns 0 for unstyled segments or unknown names (the
+# caller then skips the SGR wrapper, saving 4+ bytes of stdout per
+# redraw).
+fn _sgr_for(cfg, name): i64 {
+    if (streq(name, "cwd") == 1)        { return cfg_sgr_cwd(cfg); }
+    if (streq(name, "exit") == 1)       { return cfg_sgr_exit(cfg); }
+    if (streq(name, "vcs") == 1)        { return cfg_sgr_vcs(cfg); }
+    if (streq(name, "time") == 1)       { return cfg_sgr_time(cfg); }
+    if (streq(name, "hostname") == 1)   { return cfg_sgr_hostname(cfg); }
+    if (streq(name, "user") == 1)       { return cfg_sgr_user(cfg); }
+    if (streq(name, "cyrius_env") == 1) { return cfg_sgr_cyrius_env(cfg); }
+    if (streq(name, "python_env") == 1) { return cfg_sgr_python_env(cfg); }
+    if (streq(name, "node_env") == 1)   { return cfg_sgr_node_env(cfg); }
+    if (streq(name, "rustup_env") == 1) { return cfg_sgr_rustup_env(cfg); }
+    return 0;
+}
+
 fn render_prompt(cfg, ctx): i64 {
     var segs = cfg_segments(cfg);
     var sep = cfg_separator(cfg);
@@ -136,7 +154,10 @@ fn render_prompt(cfg, ctx): i64 {
             var out = fncall2(fp, cfg, ctx);
             if (out != 0) {
                 if (painted == 1) { syscall(SYS_WRITE, STDOUT, sep, sep_len); }
+                var sgr = _sgr_for(cfg, name);
+                if (sgr != 0) { syscall(SYS_WRITE, STDOUT, sgr, strlen(sgr)); }
                 syscall(SYS_WRITE, STDOUT, out, strlen(out));
+                if (sgr != 0) { syscall(SYS_WRITE, STDOUT, SGR_RESET, strlen(SGR_RESET)); }
                 painted = 1;
             }
         }

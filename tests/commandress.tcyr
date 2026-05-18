@@ -215,6 +215,80 @@ fn test_config_default_vcs_fields(): i64 {
     return 0;
 }
 
+# ---- config: default theme ----
+
+fn test_config_default_theme_bakes_sgr(): i64 {
+    var c = config_default();
+    # Spot-check that every segment got an SGR string baked in. The
+    # exact bytes are validated against the color module's known output
+    # — anchored on cwd (cyan + bold) and exit (red + bold).
+    _streq_or_dump(cfg_sgr_cwd(c),  "\x1b[1;36m", "default theme cwd == bold cyan");
+    _streq_or_dump(cfg_sgr_exit(c), "\x1b[1;31m", "default theme exit == bold red");
+    assert_neq(cfg_sgr_vcs(c),        0, "default theme vcs != 0");
+    assert_neq(cfg_sgr_time(c),       0, "default theme time != 0");
+    assert_neq(cfg_sgr_hostname(c),   0, "default theme hostname != 0");
+    assert_neq(cfg_sgr_user(c),       0, "default theme user != 0");
+    assert_neq(cfg_sgr_cyrius_env(c), 0, "default theme cyrius_env != 0");
+    assert_neq(cfg_sgr_python_env(c), 0, "default theme python_env != 0");
+    assert_neq(cfg_sgr_node_env(c),   0, "default theme node_env != 0");
+    assert_neq(cfg_sgr_rustup_env(c), 0, "default theme rustup_env != 0");
+    return 0;
+}
+
+# Partial-override safety: a [[segments.cwd]] block that only sets
+# home_shorten (no color fields) must NOT clobber the default theme SGR.
+fn test_config_load_color_partial_keeps_default(): i64 {
+    var content = "[[segments.cwd]]\nhome_shorten = false\n";
+    var path = _write_test_config("color-partial", content);
+    var c = config_load(path);
+    assert_eq(cfg_cwd_home_shorten(c), 0, "home_shorten override applied");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[1;36m", "default cwd theme survives boolean-only override");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# Color override: touching any color field replaces the SGR entirely
+# (full-override semantic — see schema comment in config.cyr).
+fn test_config_load_color_fg_only_overrides(): i64 {
+    var content = "[[segments.cwd]]\nfg = \"red\"\n";
+    var path = _write_test_config("color-fg-only", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "fg=red overrides default cwd theme to plain red");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# Full reset: fg=default + style="" strips colors entirely.
+fn test_config_load_color_reset_to_plain(): i64 {
+    var content = "[[segments.cwd]]\nfg = \"default\"\nstyle = \"\"\n";
+    var path = _write_test_config("color-reset", content);
+    var c = config_load(path);
+    assert_eq(cfg_sgr_cwd(c), 0, "fg=default + empty style clears cwd SGR");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# Color-only section (hostname has no other knobs in v0.6.0).
+fn test_config_load_color_only_hostname(): i64 {
+    var content = "[[segments.hostname]]\nfg = \"yellow\"\nstyle = \"underline\"\n";
+    var path = _write_test_config("color-hostname", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_hostname(c), "\x1b[4;33m", "hostname fg+style override");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# Env-segment color override exercises the same _load_color_only_section
+# code path as hostname/user, ensuring all four env segments are wired.
+fn test_config_load_color_only_python_env(): i64 {
+    var content = "[[segments.python_env]]\nfg = \"bright_blue\"\n";
+    var path = _write_test_config("color-py", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_python_env(c), "\x1b[94m", "python_env fg override");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 # ---- vcs parser ----
 # We don't fork `sit` in tests — vcs_parse_render is the pure-fn target.
 # Fabricated `sit status` outputs cover the four cases: clean, dirty
@@ -964,6 +1038,14 @@ fn main(): i64 {
     test_config_load_full_override();
     test_config_load_partial_override();
     test_config_load_vcs_section();
+
+    test_group("config theme");
+    test_config_default_theme_bakes_sgr();
+    test_config_load_color_partial_keeps_default();
+    test_config_load_color_fg_only_overrides();
+    test_config_load_color_reset_to_plain();
+    test_config_load_color_only_hostname();
+    test_config_load_color_only_python_env();
 
     test_group("vcs parser");
     test_vcs_parse_clean();
