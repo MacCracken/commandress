@@ -25,69 +25,12 @@ enum CyriusEnvBudget {
 
 # Find the nearest ancestor of `start_dir` that contains `cyrius.cyml`.
 # Returns a heap-alloc'd cstring of the project root (no trailing
-# slash), or 0 when the walk hits "/" without finding the marker.
-#
-# Factored from `cyrius_env_render` so tests can drive it with a known
-# starting directory instead of relying on the test process's cwd.
+# slash), or 0 when the walk hits "/" without finding the marker. Thin
+# wrapper over the shared walker in `src/fslookup.cyr` (lifted v0.5.0
+# once python_env / node_env became second + third consumers of the
+# same ancestor-walk).
 fn cyrius_env_find_root(start_dir): i64 {
-    if (start_dir == 0) { return 0; }
-    var len = strlen(start_dir);
-    if (len == 0) { return 0; }
-
-    # Mutable working buffer — we truncate in place as we walk upward.
-    # 4096 matches getcwd's typical PATH_MAX and what cwd.cyr uses.
-    var cur = alloc(4097);
-    memcpy(cur, start_dir, len);
-    store8(cur + len, 0);
-    var cl = len;
-
-    # Strip trailing '/'s from input (but never the root "/" itself).
-    var strip = 1;
-    while (strip == 1) {
-        if (cl <= 1) { strip = 0; }
-        else { if (load8(cur + cl - 1) == 47) { cl = cl - 1; store8(cur + cl, 0); }
-        else { strip = 0; }
-        }
-    }
-
-    var marker = "/cyrius.cyml";
-    var marker_len = strlen(marker);
-    var hit = 0;
-    var done = 0;
-    while (done == 0) {
-        # POSIX collapses leading "//" to "/", so even when cur == "/"
-        # the candidate "//cyrius.cyml" resolves correctly.
-        var candidate = alloc(cl + marker_len + 1);
-        memcpy(candidate, cur, cl);
-        memcpy(candidate + cl, marker, marker_len);
-        store8(candidate + cl + marker_len, 0);
-        if (syscall(SYS_ACCESS, candidate, 0) == 0) {           # F_OK
-            var out = alloc(cl + 1);
-            memcpy(out, cur, cl);
-            store8(out + cl, 0);
-            hit = out;
-            done = 1;
-        } else {
-            if (cl <= 1) { done = 1; }                          # already at "/"
-            else {
-                # Walk up: truncate at the last '/'. Scan left-to-right
-                # (cheap enough at PATH_MAX bounds) and keep the
-                # rightmost index.
-                var last = 0 - 1;
-                var i = 0;
-                while (i < cl) {
-                    if (load8(cur + i) == 47) { last = i; }
-                    i = i + 1;
-                }
-                if (last < 0) { done = 1; }
-                else {
-                    if (last == 0) { cl = 1; store8(cur + 1, 0); }    # "/foo" → "/"
-                    else { cl = last; store8(cur + cl, 0); }
-                }
-            }
-        }
-    }
-    return hit;
+    return find_ancestor_with(start_dir, "/cyrius.cyml");
 }
 
 # Read `<root>/VERSION` and return its trimmed contents as a heap-

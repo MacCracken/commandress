@@ -22,6 +22,7 @@ include "lib/process.cyr"
 include "lib/assert.cyr"
 
 include "src/pathlookup.cyr"
+include "src/fslookup.cyr"
 include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"

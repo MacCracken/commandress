@@ -27,6 +27,7 @@ include "lib/pwd.cyr"
 include "lib/bench.cyr"
 
 include "src/pathlookup.cyr"
+include "src/fslookup.cyr"
 include "src/shellout.cyr"
 include "src/render.cyr"
 
