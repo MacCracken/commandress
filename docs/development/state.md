@@ -13,7 +13,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 
 ## Toolchain
 
-- **Cyrius pin**: `5.11.59` (in `cyrius.cyml [package].cyrius`)
+- **Cyrius pin**: `5.11.63` (in `cyrius.cyml [package].cyrius`)
 
 ## Source
 
@@ -25,7 +25,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 | `src/render.cyr` | **M1 (0.2.0)** — table-driven registry (name → dispatcher fn ptr), walks `cfg.segments` array via `fncall2`, paints with `cfg.separator`/`cfg.trailer`, unknown segments warn to stderr |
 | `src/segments/cwd.cyr` | M1 — `getcwd` + optional `$HOME` → `~` shortening (strict-prefix only) |
 | `src/segments/exit.cyr` | M1 — empty on 0, `[N]` otherwise; `hide_zero = false` paints `[0]` too |
-| `src/segments/vcs.cyr` | **M2 (0.3.0)** — shells out to `sit status` via inline fork+pipe (process.cyr's `_exec3` has a buffer-size bug; see upstream filing). Parses `On branch <name>` + scans for `nothing to commit, working tree clean`. Emits `<branch>` (clean) or `<branch><dirty_marker>` (dirty). Renders empty outside a sit repo, when sit isn't on PATH, or on parse failure. PATH lookup is inline (`_find_in_path`) because `lib/process.cyr` wraps bare `execve(2)` without libc-style PATH search. |
+| `src/segments/vcs.cyr` | **M2 (0.3.0)** — shells out to `sit status` via inline fork+pipe. Parses `On branch <name>` + scans for `nothing to commit, working tree clean`. Emits `<branch>` (clean) or `<branch><dirty_marker>` (dirty). Renders empty outside a sit repo, when sit isn't on PATH, or on parse failure. PATH lookup is inline (`_find_in_path`) because `lib/process.cyr` wraps bare `execve(2)` without libc-style PATH search (Item 8, deferred to Cyrius v6.x). Note: the `_exec3` buffer-size bug + missing stderr dup2 that originally motivated the inline fork+pipe were fixed upstream at Cyrius 5.11.60; replacing `_vcs_capture` with `lib/process.cyr` calls is now a viable simplification, deferred to its own slot. |
 | `src/segments/time.cyr` | not started — wall-clock segment (M3) |
 | `src/segments/hostname.cyr` | not started — hostname segment (M3) |
 | `src/segments/user.cyr` | not started — user segment (M3) |
@@ -33,7 +33,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 ## Binary
 
 - `cmdrs` (output in `build/cmdrs` after `cyrius build`)
-- Size: **395,592 B** on Cyrius 5.11.59, x86_64. `.bss` bloat dominated by stdlib stack buffers (`lib/toml.cyr::toml_parse_file`'s 256 KB; others in `lib/io.cyr`, `lib/process.cyr`). Filed upstream — see [cyrius papercuts](https://github.com/MacCracken/cyrius/blob/main/docs/development/issues/2026-05-17-commandress-stdlib-papercuts.md).
+- Size: **133,451 B** on Cyrius 5.11.63, x86_64 (text 97,483 B; bss 35,968 B). Down from **395,115 B** at 5.11.59 — the 5.11.61 heap-alloc rewrite of `lib/toml.cyr::toml_parse_file` reclaimed the 256 KB on-fn-scope buffer (`var buf[262144]`) that DCE couldn't drop. See [cyrius papercuts (archived)](https://github.com/MacCracken/cyrius/blob/main/docs/development/issues/archived/2026-05-17-commandress-stdlib-papercuts.md).
 
 ## Benchmarks
 
@@ -71,10 +71,14 @@ External: none (and none planned for v1.0).
 ## In-flight work
 
 - **Roadmap M2 feature-complete on `main`** (pending 0.3.0 tag): VCS segment shells out to `sit` (ADR 0004), parses branch + dirty/clean, renders empty outside a sit repo. Per-segment timeout enforcement deferred to v0.4.0 (M2's remaining roadmap item — `sit status` is fast in practice; a non-blocking pipe + `poll`-with-timeout watchdog earns its own slot).
-- Upstream filings during 0.3.0 (will be appended to the existing papercut doc):
-  - **`lib/process.cyr::_exec3` argv-buffer size bug** — `var argv[4]` is 4 bytes but stores 5 pointers (40 B). Silent stack overflow; the reason `run_capture("/bin/echo", "hello", 0, ...)` returns 1 byte instead of 6. Commandress's `src/segments/vcs.cyr` inlines its own fork+pipe to avoid the trap.
-  - **`lib/process.cyr`'s vec-based `exec_capture` doesn't redirect stderr** — only `run_capture` (the cstr 2-arg variant) dup2's stderr to /dev/null. Both should.
-  - **No PATH-lookup helper in stdlib** — every consumer that wants `execvp`-style semantics rolls its own (`_find_in_path` in vcs.cyr). Worth a proposal for `run_p` / `exec_p` variants.
+- Upstream filings during 0.3.0 (Cyrius `2026-05-17-commandress-stdlib-papercuts.md`, archived after the .60–.63 band):
+  - ✅ **Item 6 — `_exec3` argv-buffer byte-contract bug** (Cyrius 5.11.60). `var argv[4]` was 4 bytes but stored 5 pointers (40 B). Silent stack corruption; the reason `run_capture("/bin/echo", "hello", 0, ...)` returned 1 byte instead of 6. Commandress's inline fork+pipe in `src/segments/vcs.cyr` is no longer load-bearing.
+  - ✅ **Item 7 — vec-based `exec_capture` family missed stderr dup2** (Cyrius 5.11.60). All four vec exec fns now mirror `run_capture`'s `dup2(/dev/null, 2)`.
+  - ✅ **Item 2 — `toml_parse_file` 256 KB on-fn-scope buffer** (Cyrius 5.11.61). Heap-alloc'd; commandress's bss dropped 262 KB on the 5.11.63 rebuild.
+  - ✅ **Item 5 — `large static data` warning DCE attribution** (Cyrius 5.11.62). Warning now reports how many of the bytes sit inside unreachable fns.
+  - ✅ **Item 1 — `cyrius init` bench scaffold** (Cyrius 5.11.62). Fresh scaffolds now compile and run end-to-end against the real `bench_new` API.
+  - ⏸ **Item 8 — no PATH-lookup helper in stdlib** — deferred to Cyrius v6.x. `_find_in_path` in `vcs.cyr` stays for now.
+  - Items 3 (toml `[name]` single-bracket sections) and 4 (LSP transitive-include false positives) also deferred to Cyrius v6.x.
 - Next: tag 0.3.0, then start M3 (time, hostname, user segments per roadmap).
 
 ## Next
