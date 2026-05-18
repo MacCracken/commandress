@@ -1,62 +1,30 @@
 # commandress — Roadmap
 
-> Milestone plan through v1.0. State lives in [`state.md`](state.md);
-> this file is the sequencing — what ships, in what order, against
-> what dependency gates.
+> Milestone plan from the **current cycle** through v1.0. State lives in
+> [`state.md`](state.md); this file is the sequencing — what ships, in
+> what order, against what dependency gates. Shipped milestones move to
+> [`../../CHANGELOG.md`](../../CHANGELOG.md) at release time; only the
+> next-up + future work lives here.
 
 ## v1.0 criteria
 
 - [ ] Stable config schema — every field documented; breaking changes only via deprecation
-- [ ] Core segment set: `cwd`, `exit_code`, `time`, `git_branch`, `git_status`, `language_env` (one of pyenv/nvm/rustup-equivalent), `hostname`, `user`
+- [ ] Core segment set: `cwd`, `exit_code`, `time`, `vcs` (sit-backed), `language_env` (one of pyenv/nvm/rustup-equivalent), `hostname`, `user`
 - [ ] Full-prompt render under **5 ms** cold start on Cyrius-current hardware (CI gate)
 - [ ] Per-segment time budget enforced — slow segments degrade to empty, not stall
 - [ ] At least one downstream consumer green ([agnoshi](https://github.com/MacCracken/agnoshi))
 - [ ] CHANGELOG complete from v0.1.0 onward
-- [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`) — config parsing, env-var handling, subprocess exec (git probe)
+- [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`) — config parsing, env-var handling, subprocess exec (sit probe)
 - [ ] Benchmarks captured in `docs/benchmarks.md` — cold start, per-segment render, end-to-end
 
 ## Milestones
-
-### M0 — Scaffold (v0.1.0) — ✅ shipped 2026-05-15
-
-- `cyrius init commandress` scaffold landed
-- Doc-tree per [first-party-documentation.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/first-party-documentation.md)
-- ADR / architecture / guides / examples folders ready
-- Binary output renamed `commandress` → `cmdrs` in `cyrius.cyml`
-
-### M1 — Minimum viable prompt (v0.2.0) — ✅ feature-complete on `main`, awaiting tag
-
-Three segments + config loader + render pipeline.
-
-- [x] **ADR 0002**: rendering model — segment pipeline is pure-function-of-context, no shared state.
-- [x] **ADR 0003**: config format — CYML wins over TOML (sovereign-stack consistency + markdown body for user notes).
-- [x] **Architecture note 001**: prompt render budget — 5 ms total, 500 µs per-segment default, slow segments degrade to empty.
-- [x] `src/config.cyr` — CYML loader for `~/.commandress.cyml`. Defaults baked in; missing file → defaults; unknown fields warn to stderr (per-section allow-list).
-- [x] `src/segments/cwd.cyr` — getcwd + optional `$HOME → ~` strict-prefix shortening. (Length-truncation deferred to M5 with the rest of theming.)
-- [x] `src/segments/exit.cyr` — `[N]` non-zero, empty on 0 by default; `hide_zero = false` paints `[0]` too.
-- [x] `src/render.cyr` — table-driven registry, `fncall2` dispatch, joins with `cfg.separator`, paints `cfg.trailer`. (ANSI/color comes at M5.)
-- [x] `src/context.cyr` — per-invocation Context struct (HOME + last_exit). Earned its own file once render became table-driven.
-- [x] `src/main.cyr` — `getenv` → `config_load` → `context_new` → `render_prompt`.
-- [x] Tests: cwd + exit + config_default + config_load (missing/null/full-override/partial-override). 36 assertions green.
-- [x] Benchmark: per-segment + full-prompt timings (CSV history deferred to M6).
-
-**Acceptance hit**: `AGNOSHI_LAST_EXIT=0 cd /tmp && cmdrs` prints `/tmp $ `. With `AGNOSHI_LAST_EXIT=42` prints `/tmp [42] $ `. With a `~/.commandress.cyml` overriding segment order/separator/trailer the prompt picks up the changes per redraw.
-
-### M2 — VCS context (v0.3.0) — feature-complete on `main`, awaiting tag
-
-- [x] **ADR 0004**: VCS probe shells out to [`sit`](https://github.com/MacCracken/sit), not external `git`. Sovereign-stack alignment. [`docs/adr/0004-vcs-probe-via-sit.md`](../adr/0004-vcs-probe-via-sit.md).
-- [x] `src/segments/vcs.cyr` — branch name + dirty/clean indicator. Inline fork+pipe+execve (lib/process.cyr has bugs we filed upstream); parses `On branch <name>` line + scans for `nothing to commit, working tree clean` substring. Ahead/behind counts deferred (sit doesn't currently surface them in `status` output).
-- [x] Graceful fallback when no `sit` repo is detected, when `sit` isn't on PATH, or on parse failure — renders empty.
-- [ ] **Per-segment timeout enforcement — deferred to v0.4.0.** `sit status` returns sub-millisecond on healthy repos (1.8 ms total fork+exec round-trip on the dev host); the watchdog (fork+pipe+poll+kill) deserves its own slot. Tracked here as M2's outstanding deliverable.
-
-**Acceptance hit**: with `segments = ["cwd", "vcs", "exit"]` in `~/.commandress.cyml`, inside a `sit` repo on branch `main` and a clean tree → `<cwd> main $ `; one edit later → `<cwd> main* $ `; `cd /tmp` outside any repo → vcs renders empty.
 
 ### M3 — Time + hostname + user (v0.4.0)
 
 - [ ] `src/segments/time.cyr` — configurable strftime-style format
 - [ ] `src/segments/hostname.cyr` — `gethostname` syscall
 - [ ] `src/segments/user.cyr` — `getuid` + passwd-lookup (or fall back to `$USER`)
-- [ ] Config field for segment order (declarative array in CYML)
+- [ ] **Per-segment timeout enforcement** — carried over from M2. Watchdog around any segment that shells out (vcs today, language-env in M4). Implementation: fork + pipe + `poll`/`select` with timeout, kill child on overrun, render empty. Lives in `src/render.cyr` so every segment inherits the same gate.
 
 ### M4 — Language env segments (v0.5.0)
 
@@ -71,12 +39,15 @@ Three segments + config loader + render pipeline.
 - [ ] Segment separator (powerline-style optional)
 - [ ] Right-prompt support (if shell exposes it)
 - [ ] `docs/themes/` with examples
+- [ ] cwd length-truncation (deferred from M1)
 
 ### M6 — Performance hardening (v0.7.0)
 
 - [ ] Parallel segment evaluation (where safe)
-- [ ] Cached probe results across rapid redraws (1s TTL on git state, etc.)
+- [ ] Cached probe results across rapid redraws (1s TTL on vcs state, etc.) — the change that makes `vcs` cheap enough for default-on
+- [ ] Default segments flip from `["cwd", "exit"]` to `["cwd", "vcs", "exit"]` once caching lands
 - [ ] Cold-start ≤ 5 ms gate enforced in CI
+- [ ] Benchmark history CSV (deferred from M1)
 
 ### M7 — Shell adapters (v0.8.0)
 
@@ -103,3 +74,4 @@ Three segments + config loader + render pipeline.
 - Plugin system / dynamic segment loading — adds complexity, breaks the static-binary story; segments are first-party
 - Right-prompt animation, blink, etc. — render is one-shot, not stateful
 - Multi-line prompts as a default — supported via config if a user wants it, not the default
+- External `git` fallback for the vcs segment — `sit` is the AGNOS-native VCS and the only supported backend (per ADR 0004)
