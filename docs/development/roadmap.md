@@ -17,15 +17,26 @@
 - [x] Security audit pass — **shipped 0.9.0** ([`docs/audit/2026-05-18-audit.md`](../audit/2026-05-18-audit.md)).
 - [x] Benchmarks captured in `docs/benchmarks.md` — **shipped 0.9.0**.
 
-All criteria satisfied. M9 ships the v1.0 tag.
+All criteria satisfied. **v1.0 shipped 2026-05-18.**
 
 ## Milestones
 
-### M9 — v1.0 freeze
+### M9 — v1.0 freeze — **shipped 2026-05-18**
 
-- [ ] All v1.0 criteria above check off
-- [ ] CHANGELOG complete
-- [ ] Tag `1.0.0`
+- [x] All v1.0 criteria above check off
+- [x] CHANGELOG complete
+- [x] Tag `1.0.0`
+
+## Post-v1
+
+Public API is frozen per [ADR 0007](../adr/0007-schema-freeze.md). New work is either additive on the not-frozen surfaces (segment registry, named-colour set, modifiers, hex/256-colour reserved-for-additive, multi-palette reserved, cache format) or routed through the 3-step deprecation path.
+
+Likely near-term work:
+
+- **Multi-palette** — `[[palettes.<name>]]` + top-level `palette = "<name>"` selector. Slot was reserved at schema freeze; this is additive.
+- **`rust-toolchain.toml` parsing** — gated on Cyrius single-bracket TOML (papercut Item 3, v6.x).
+- **Deferred language shellouts** — `python --version`, `node --version`, `rustup show`. Cache infrastructure already covers the cost.
+- **agnoshi adoption** — flips on when agnoshi reads `$AGNOSHI_PROMPT_CMD`. No commandress change required.
 
 ## Out of scope (for v1.0)
 

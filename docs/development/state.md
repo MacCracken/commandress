@@ -5,7 +5,7 @@
 
 ## Version
 
-**0.9.0** — tagged release 2026-05-18. **M8 closed**: full security audit ([`docs/audit/2026-05-18-audit.md`](../audit/2026-05-18-audit.md)) — 12 findings cross-referenced against 20 published CVEs; 6 fixes shipped (F-1 ANSI/C0 sanitization, F-3 cache dir mode-verify, F-4 cache reads O_NOFOLLOW, F-5 atomic cache writes, F-7 bounded exit-code parse, F-8 PATH walker absolute-only); 2 deferred upstream (F-2 sit hooks surface, F-6 TOML parser depth-cap). Public API frozen ([ADR 0007](../adr/0007-schema-freeze.md)) — config path + schema + colour values + CLI + env-var contract + adapter contract + file paths locked at v1.0 with explicit 3-step deprecation path. Benchmarks finalised in [`docs/benchmarks.md`](../benchmarks.md). Adapter contract clarified (F-12 — consumer must not re-expand cmdrs output). Next: **M9 — v1.0 freeze + tag**.
+**1.0.0** — tagged release 2026-05-18. **M9 closed**: v1.0 freeze + tag. No code changes from 0.9.0; the v1.0 commit is a doc roll (CHANGELOG headline, README refresh from the long-stale v0.3.0 wording, state + roadmap close-out) plus the `1.0.0` tag. All v1.0 criteria from [`roadmap.md`](roadmap.md) closed in prior milestones — stable config schema ([ADR 0007](../adr/0007-schema-freeze.md), 0.9.0), full core segment set (M1–M5), 5 ms cold-start budget with CI gate (0.7.0; current 9 µs avg — 0.2 % of budget), per-segment time budget enforcement (0.4.0), zsh + bash + agnoshi-contract adapters (0.8.0), security audit pass (0.9.0), finalised benchmarks (0.9.0). Public API frozen per ADR 0007; breaking changes from here go through the 3-step deprecation path. Next: **post-v1 cadence** — multi-palette, `rust-toolchain.toml` once Cyrius single-bracket TOML lands, the parked file-first language shellouts, agnoshi adoption.
 
 ## Role
 
@@ -85,17 +85,17 @@ External: none (and none planned for v1.0).
 
 ## In-flight work
 
-- **M8 closed in 0.9.0** (tagged 2026-05-18): audit doc + 6 code fixes + ADR 0007 schema freeze + benchmarks doc + agnoshi-contract F-12 update. Public API now frozen; v1.0 criteria for "stable config schema" / "security audit pass" / "benchmarks captured" all satisfied.
-- **agnoshi adoption pending**: `/home/macro/Repos/agnoshi/src/prompt.cyr` currently renders its own prompt. When agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw (5-point contract documented in `adapters/agnoshi.sh`, now with F-12 no-re-expand rule), users sourcing the adapter get a commandress-rendered prompt with no further commandress change.
+- **M9 closed in 1.0.0** (tagged 2026-05-18): doc roll only — CHANGELOG 1.0.0 headline, README refresh, state + roadmap close-out. No code changes. Public API frozen per ADR 0007.
+- **agnoshi adoption pending**: `/home/macro/Repos/agnoshi/src/prompt.cyr` currently renders its own prompt. When agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw (5-point contract documented in `adapters/agnoshi.sh`, with F-12 no-re-expand rule), users sourcing the adapter get a commandress-rendered prompt with no further commandress change.
 - **Deferred behind upstream gaps**:
   - `rust-toolchain.toml` parsing — blocked on Cyrius single-bracket TOML (papercut Item 3, v6.x).
   - `find_in_path` itself — pending Cyrius v6.x Item 8 (no stdlib `which()`); the `src/pathlookup.cyr` workaround ships.
   - LSP transitive-include false positives across `src/render.cyr` — Cyrius Item 4, v6.x. Build is clean; the noise stays.
 - **Deferred by policy (file-first, per user direction 2026-05-18)**:
-  - `python --version`, `node --version`, `rustup show` shellouts. The cache infrastructure is now in place to make these affordable when they land — pre-v1 they remain parked.
+  - `python --version`, `node --version`, `rustup show` shellouts. The cache infrastructure makes these affordable when they land — parked for post-v1.
   - `package.json` `engines.node` parsing. JSON-walk cost still not justified.
-- **Pre-v1 theme-switching path** (per user commitment in M5 design): single-palette `[[palette]]` shipped 0.6.0; curated `docs/themes/` library shipped 0.6.1; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector planned for v0.7.x or v0.8.x; schema freeze (and path lock) at v0.9.0 (M8).
-- **Next**: **M9 — v1.0 freeze + tag**. All v1.0 criteria from `roadmap.md` are satisfiable today; the v1.0 commit is a final doc roll (CHANGELOG headline, README update) + the `1.0.0` tag.
+- **Post-v1 theme-switching path**: single-palette `[[palette]]` shipped 0.6.0; curated `docs/themes/` library shipped 0.6.1; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector remains the next theme-track move under the additive-only contract in ADR 0007.
+- **Next**: **post-v1 cadence**. Public surface is frozen; new work is additive per ADR 0007 or goes through the documented 3-step deprecation path. Driver list is the deferred items above plus whatever downstream consumers request.
 
 ## Next
 

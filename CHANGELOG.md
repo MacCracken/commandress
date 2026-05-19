@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-05-18
+
+**M9 — v1.0 freeze + tag.** No code changes. All v1.0 criteria from [`roadmap.md`](docs/development/roadmap.md) closed in prior milestones: stable config schema ([ADR 0007](docs/adr/0007-schema-freeze.md), 0.9.0), full core segment set (`cwd` / `exit` / `vcs` / `time` / `hostname` / `user` / `cyrius_env` / `python_env` / `node_env` / `rustup_env`, M1–M5), 5 ms cold-start budget with CI gate (0.7.0; current measurement 9 µs avg — 0.2 % of budget), per-segment time budget enforcement (`src/shellout.cyr` watchdog, 0.4.0), shell adapters under [`adapters/`](adapters/) for zsh + bash + agnoshi-contract (0.8.0), security audit pass with 6 fixes ([`docs/audit/2026-05-18-audit.md`](docs/audit/2026-05-18-audit.md), 0.9.0), and finalised benchmarks ([`docs/benchmarks.md`](docs/benchmarks.md), 0.9.0). v1.0 is the doc roll + the `1.0.0` tag — the public API ([config path, schema, colour values, CLI, env-var contract, adapter contract, file paths](docs/adr/0007-schema-freeze.md)) is now frozen; breaking changes from here go through the 3-step deprecation path in ADR 0007. Suite remains **279 passed, 0 failed**; binary remains **202,561 B** on Cyrius 5.11.64.
+
+### Changed
+
+- **`VERSION`** — `0.9.0` → `1.0.0`.
+- **`README.md`** — status block bumped from the long-stale `v0.3.0` claim to v1.0.0 release wording; segment table grown from the original 3 (cwd/exit/vcs) to the full v1.0 surface of 10; shell-integration section updated to reference the shipped `adapters/` directory rather than the M7-future tense; test count and project-layout block resynced.
+- **`docs/development/state.md`** — version block headline bumped to 1.0.0; "In-flight work" section closed out for M9; "Next" reframed for post-v1 cadence.
+- **`docs/development/roadmap.md`** — M9 checklist closed; v1.0 criteria all checked; section reframed for post-v1 work.
+
+### Roadmap
+
+- **M9 closed.** v1.0 ships. Public API frozen per ADR 0007. Post-v1 cadence picks up new work — multi-palette config, `rust-toolchain.toml` parsing once Cyrius single-bracket TOML lands, deferred shellouts (`python --version` / `node --version` / `rustup show`) as the cache infrastructure now makes them affordable, agnoshi adoption of `$AGNOSHI_PROMPT_CMD` — all gated on either schedule or upstream rather than blocking v1.
+
 ## [0.9.0] — 2026-05-18
 
 **M8 — public API + security audit.** Full security audit lands as [`docs/audit/2026-05-18-audit.md`](docs/audit/2026-05-18-audit.md) — 12 findings (8 actionable, 4 informational/contract) cross-referenced against 20 published CVEs and advisories from the 2020–2026 window (Git ANSI sideband, fish git-prompt fsmonitor RCE, oh-my-zsh `print -P`, Ghostty title injection, the 10-CVE dgl.cx terminal-emulator set, py-filelock TOCTOU, RenderDoc /tmp, Himmelblau Kerberos cache, Jackson TOML stack-overflow, sudo CVE-2019-14287, plus the Codex CLI ANSI-injection writeup). **6 fixes ship in 0.9.0**: ANSI/C0 control-byte sanitization at the render layer (F-1), cache-dir post-mkdir mode-verify with self-disable on mismatch (F-3), cache-read `O_NOFOLLOW` (F-4), atomic cache writes via temp+rename with `O_EXCL|O_NOFOLLOW` and mode `0o600` (F-5), bounded `$AGNOSHI_LAST_EXIT` parse with length cap + range clamp (F-7), and `find_in_path` rejection of relative `$PATH` entries (F-8). **2 deferred upstream**: F-2 (sit hooks/fsmonitor surface — needs upstream sit safe-mode flag) and F-6 partial (TOML parser depth-cap — needs upstream Cyrius stdlib). **Public API frozen** via [ADR 0007](docs/adr/0007-schema-freeze.md): config path + schema + colour value space + CLI + env-var contract + adapter contract + file paths all locked at v1.0 with an explicit 3-step deprecation path for anything we later regret. **Adapter contract clarified**: `adapters/agnoshi.sh` gains audit F-12 wording — consumers MUST NOT pass `cmdrs` output through shell-syntax re-expansion (CVE-2021-3934 / CVE-2021-45444 precedents). **Benchmarks finalised** in new [`docs/benchmarks.md`](docs/benchmarks.md). Suite grows from 245 → 279 assertions.
