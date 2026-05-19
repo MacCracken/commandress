@@ -25,6 +25,7 @@ include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
 include "src/cache.cyr"
+include "src/context.cyr"
 include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
@@ -1291,6 +1292,77 @@ fn test_cache_put_writes_mode_0600(): i64 {
 # world-readable so this isn't a real exfiltration — we just verify
 # the read REFUSES, not that confidentiality holds against a tool
 # we could otherwise just `cat` directly).
+# ---- audit F-7: parse_last_exit ----
+
+fn test_parse_last_exit_null(): i64 {
+    assert_eq(parse_last_exit(0), 0, "parse_last_exit(null) == 0");
+    return 0;
+}
+
+fn test_parse_last_exit_empty(): i64 {
+    assert_eq(parse_last_exit(""), 0, "parse_last_exit(\"\") == 0");
+    return 0;
+}
+
+fn test_parse_last_exit_normal(): i64 {
+    assert_eq(parse_last_exit("0"), 0, "parse_last_exit(\"0\") == 0");
+    assert_eq(parse_last_exit("1"), 1, "parse_last_exit(\"1\") == 1");
+    assert_eq(parse_last_exit("42"), 42, "parse_last_exit(\"42\") == 42");
+    assert_eq(parse_last_exit("255"), 255, "parse_last_exit(\"255\") == 255");
+    return 0;
+}
+
+# > 10 digits → reject (returns 0, the segment-empty path).
+fn test_parse_last_exit_clamps_overlong_input(): i64 {
+    assert_eq(parse_last_exit("99999999999"), 0, "11-digit input returns 0");
+    assert_eq(parse_last_exit("9999999999999999999999"), 0, "22-digit input returns 0");
+    return 0;
+}
+
+# Within 10 digits but > 65535 → clamp to 65535.
+fn test_parse_last_exit_clamps_overlarge_value(): i64 {
+    assert_eq(parse_last_exit("65536"), 65535, "65536 clamps to 65535");
+    assert_eq(parse_last_exit("999999"), 65535, "999999 clamps to 65535");
+    return 0;
+}
+
+fn test_parse_last_exit_rejects_negative(): i64 {
+    assert_eq(parse_last_exit("-1"),  0, "\"-1\" returns 0");
+    assert_eq(parse_last_exit("-99"), 0, "\"-99\" returns 0");
+    return 0;
+}
+
+# ---- audit F-8: find_in_path_with rejects relative entries ----
+
+fn test_find_in_path_rejects_relative(): i64 {
+    # PATH is just "bin" (relative). Walker must skip it.
+    assert_eq(find_in_path_with("bin", "sh"), 0, "relative PATH entry skipped");
+    return 0;
+}
+
+fn test_find_in_path_rejects_dot(): i64 {
+    # `.` and `..` are the canonical attacker entries. Skip them.
+    assert_eq(find_in_path_with(".",  "sh"), 0, "PATH=\".\" skipped");
+    assert_eq(find_in_path_with("..", "sh"), 0, "PATH=\"..\" skipped");
+    # Mix: PATH=":./bin" should skip both the empty and the relative.
+    assert_eq(find_in_path_with(":./bin", "sh"), 0, "PATH=\":./bin\" skipped");
+    return 0;
+}
+
+fn test_find_in_path_absolute_works(): i64 {
+    # PATH with one valid absolute entry should still find `sh`.
+    var hit = find_in_path_with("/bin", "sh");
+    assert_neq(hit, 0, "absolute PATH entry resolves");
+    if (hit != 0) {
+        _streq_or_dump(hit, "/bin/sh", "PATH=\"/bin\" finds /bin/sh");
+    }
+    # Even with a leading relative entry, the absolute one downstream
+    # wins: `bin:/bin` → skip `bin`, hit `/bin`.
+    var hit2 = find_in_path_with("bin:/bin", "sh");
+    _streq_or_dump(hit2, "/bin/sh", "relative entry skipped, absolute entry resolves");
+    return 0;
+}
+
 fn test_cache_get_refuses_symlink(): i64 {
     cache_init();
     cache_put("tst_nofollow", "/cwd/nofollow", "legit", 5);
@@ -1551,6 +1623,19 @@ fn main(): i64 {
     test_cache_miss_when_absent();
     test_cache_put_writes_mode_0600();
     test_cache_get_refuses_symlink();
+
+    test_group("audit F-7: parse_last_exit");
+    test_parse_last_exit_null();
+    test_parse_last_exit_empty();
+    test_parse_last_exit_normal();
+    test_parse_last_exit_clamps_overlong_input();
+    test_parse_last_exit_clamps_overlarge_value();
+    test_parse_last_exit_rejects_negative();
+
+    test_group("audit F-8: find_in_path absolute-only");
+    test_find_in_path_rejects_relative();
+    test_find_in_path_rejects_dot();
+    test_find_in_path_absolute_works();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();

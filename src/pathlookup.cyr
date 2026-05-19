@@ -16,14 +16,24 @@
 #   returns — heap-alloc'd absolute-path cstring (caller owns), or 0 on:
 #     - PATH unset
 #     - empty PATH entry that doesn't match
+#     - PATH entry that isn't absolute (audit F-7: skip — see below)
 #     - no PATH entry's <dir>/<name> passes access(X_OK)
+#
+# Audit finding F-8 (2026-05-18): only absolute `$PATH` entries are
+# accepted. Empty entries (consecutive `::`) and entries that don't
+# start with `/` (`.`, `bin`, `../tools`) are skipped. This closes
+# the canonical "`.` in PATH" pitfall (historic sudo cases): a
+# malicious cwd containing `sit` or `cyrius` binaries would never
+# get exec'd by `cmdrs` even if the user's PATH includes `.`.
 #
 # Allocation note: each successful call allocates exactly one cstring of
 # size strlen(dir) + 1 + strlen(name) + 1. The bump allocator owns the
 # memory for the redraw's lifetime; segments don't free.
 
-fn find_in_path(name): i64 {
-    var path = getenv("PATH");
+# Same as `find_in_path` but takes the `$PATH`-style cstring directly.
+# Splitting the env-read from the walker lets tests drive the walker
+# with fabricated PATH strings (Cyrius stdlib has no setenv today).
+fn find_in_path_with(path, name): i64 {
     if (path == 0) { return 0; }
     var nlen = strlen(name);
     var plen = strlen(path);
@@ -40,19 +50,29 @@ fn find_in_path(name): i64 {
                 else { if (load8(path + end) == 58) { seek = 0; } else { end = end + 1; } }
             }
             var dir_len = end - pi;
+            # F-8: skip non-absolute entries — must start with '/'.
+            # `dir_len > 0` filters empty entries (consecutive `::`,
+            # which POSIX treats as `.`); the load8 check filters `.`
+            # and any other relative path.
             if (dir_len > 0) {
-                var candidate = alloc(dir_len + 1 + nlen + 1);
-                memcpy(candidate, path + pi, dir_len);
-                store8(candidate + dir_len, 47);              # '/'
-                memcpy(candidate + dir_len + 1, name, nlen);
-                store8(candidate + dir_len + 1 + nlen, 0);
-                if (syscall(SYS_ACCESS, candidate, 1) == 0) {
-                    hit = candidate;
-                    done = 1;
+                if (load8(path + pi) == 47) {                  # '/' = 47
+                    var candidate = alloc(dir_len + 1 + nlen + 1);
+                    memcpy(candidate, path + pi, dir_len);
+                    store8(candidate + dir_len, 47);
+                    memcpy(candidate + dir_len + 1, name, nlen);
+                    store8(candidate + dir_len + 1 + nlen, 0);
+                    if (syscall(SYS_ACCESS, candidate, 1) == 0) {
+                        hit = candidate;
+                        done = 1;
+                    }
                 }
             }
             pi = end + 1;
         }
     }
     return hit;
+}
+
+fn find_in_path(name): i64 {
+    return find_in_path_with(getenv("PATH"), name);
 }

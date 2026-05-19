@@ -17,3 +17,22 @@ fn context_new(home, last_exit): i64 {
     store64(c + CTX_LAST_EXIT, last_exit);
     return c;
 }
+
+# Parse `$AGNOSHI_LAST_EXIT` with a length cap + range clamp. Audit
+# finding F-7 (2026-05-18): bare `atoi()` on env input is unbounded
+# (CVE-2019-14287 class). Cap the input at 10 digits — INT32_MAX is
+# 10 digits, anything longer is either malformed or an overflow
+# attempt — and clamp the parsed value to [0, 65535] which covers
+# POSIX exit-status (0..255) + signal-killed values (128+sig +
+# headroom). 0 on null / empty / non-numeric / over-range matches the
+# segment's "treat as success" default behaviour.
+fn parse_last_exit(s): i64 {
+    if (s == 0) { return 0; }
+    var n = strlen(s);
+    if (n == 0) { return 0; }
+    if (n > 10) { return 0; }
+    var v = atoi(s);
+    if (v < 0) { return 0; }
+    if (v > 65535) { return 65535; }
+    return v;
+}

@@ -72,9 +72,7 @@ fn main(): i64 {
     cache_init();
 
     var home = getenv("HOME");
-    var last_exit_str = getenv("AGNOSHI_LAST_EXIT");
-    var last_exit = 0;
-    if (last_exit_str != 0) { last_exit = atoi(last_exit_str); }
+    var last_exit = parse_last_exit(getenv("AGNOSHI_LAST_EXIT"));
 
     var cfg = config_load(_default_config_path(home));
     var ctx = context_new(home, last_exit);
