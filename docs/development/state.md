@@ -5,7 +5,7 @@
 
 ## Version
 
-**0.8.0** — tagged release 2026-05-18. **M7 closed**: first-party shell adapters under [`adapters/`](../../adapters/) — `zsh.sh` (precmd + PROMPT + RPROMPT), `bash.sh` (PROMPT_COMMAND + PS1 with `\001..\002` SGR-wrap for readline-width accounting), `agnoshi.sh` (contract-only; env-var spec until agnoshi adopts it). Users wire `cmdrs` into their shell with one `source` line. Zero Cyrius code changes this milestone — all shell-side glue + docs. Next: **M8 — public API + security audit** (schema freeze, security pass on config parsing / env-var handling / subprocess exec, benchmarks finalised).
+**0.9.0** — tagged release 2026-05-18. **M8 closed**: full security audit ([`docs/audit/2026-05-18-audit.md`](../audit/2026-05-18-audit.md)) — 12 findings cross-referenced against 20 published CVEs; 6 fixes shipped (F-1 ANSI/C0 sanitization, F-3 cache dir mode-verify, F-4 cache reads O_NOFOLLOW, F-5 atomic cache writes, F-7 bounded exit-code parse, F-8 PATH walker absolute-only); 2 deferred upstream (F-2 sit hooks surface, F-6 TOML parser depth-cap). Public API frozen ([ADR 0007](../adr/0007-schema-freeze.md)) — config path + schema + colour values + CLI + env-var contract + adapter contract + file paths locked at v1.0 with explicit 3-step deprecation path. Benchmarks finalised in [`docs/benchmarks.md`](../benchmarks.md). Adapter contract clarified (F-12 — consumer must not re-expand cmdrs output). Next: **M9 — v1.0 freeze + tag**.
 
 ## Role
 
@@ -42,7 +42,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 ## Binary
 
 - `cmdrs` (output in `build/cmdrs` after `cyrius build`)
-- Size: **200,667 B** on Cyrius 5.11.64, x86_64 (text 141,555 B; bss 59,112 B). Up from 193,753 B at the 0.6.1 baseline by **+6,914 B** for `src/cache.cyr` (~150 LoC) + vcs's cache-wrap path + the default-segment-flip's extra "vcs" string slot. Text +2,618 B; bss +4,296 B (cache UID-stringification scratch + hash buffers). Net win vs 0.3.0 baseline (395,115 B): **−194,448 B**.
+- Size: **202,561 B** on Cyrius 5.11.64, x86_64 (text 143,265 B; bss 59,296 B). Up from 200,667 B at the 0.7.0 baseline by **+1,894 B** for the M8 audit fixes — F-1 sanitization helper, F-3 cache-dir mode-verify, F-4 O_NOFOLLOW, F-5 atomic temp+rename, F-7 parse_last_exit, F-8 absolute-only PATH walker. Text +1,710 B; bss +184 B. Net win vs 0.3.0 baseline (395,115 B): **−192,554 B**.
 
 ## Benchmarks
 
@@ -50,24 +50,24 @@ Captured 2026-05-18 on the dev host (Linux 7.0.5-arch1-1, x86_64):
 
 | Operation | Avg | Min | Max |
 |---|---|---|---|
-| `cwd_render` | 670 ns | 613 ns | 808 ns |
-| `exit_render(nonzero)` | 39 ns | 36 ns | 59 ns |
-| `config_default` | 3 µs | 3 µs | 3 µs |
-| `vcs_parse_render` (pure parser) | 232 ns | 225 ns | 260 ns |
-| **`vcs_render` (cached, 1s TTL)** | **72 µs** | **6 µs** | **1.270 ms** |
-| `cyrius_env_parse_version` (pure parser) | 75 ns | 70 ns | 99 ns |
-| `cyrius_env_render` (file path, no shellout) | 7 µs | 7 µs | 8 µs |
-| `python_env_basename` (pure parser) | 88 ns | 84 ns | 98 ns |
-| `python_env_render` (empty walk) | 12 µs | 11 µs | 13 µs |
-| `node_env_render` (empty walk) | 6 µs | 5 µs | 8 µs |
-| `rustup_env_render` (empty walk) | 6 µs | 5 µs | 7 µs |
-| `render_prompt (default cwd+vcs+exit)` | 10 µs | 9 µs | 10 µs |
+| `cwd_render` | 664 ns | 620 ns | 813 ns |
+| `exit_render(nonzero)` | 38 ns | 36 ns | 58 ns |
+| `config_default` | 3 µs | 2 µs | 3 µs |
+| `vcs_parse_render` (pure parser) | 241 ns | 236 ns | 254 ns |
+| **`vcs_render` (cached, 1s TTL)** | **68 µs** | **7 µs** | **1.221 ms** |
+| `cyrius_env_parse_version` (pure parser) | 74 ns | 70 ns | 93 ns |
+| `cyrius_env_render` (file path, no shellout) | 7 µs | 6 µs | 8 µs |
+| `python_env_basename` (pure parser) | 85 ns | 82 ns | 92 ns |
+| `python_env_render` (empty walk) | 12 µs | 11 µs | 12 µs |
+| `node_env_render` (empty walk) | 6 µs | 5 µs | 6 µs |
+| `rustup_env_render` (empty walk) | 6 µs | 5 µs | 6 µs |
+| `render_prompt (default cwd+vcs+exit)` | 9 µs | 9 µs | 10 µs |
 
 Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). **M6 headline**: `vcs_render` **4.6 ms → 72 µs avg** with the 1 s TTL cache (the `max` of 1.270 ms is the one cold call that warms the entry; the remaining 99 reads in the bench averaged ~7 µs). `render_prompt (default cwd+vcs+exit)` is **10 µs** — even with vcs now in the default set, the cold-start budget is **0.2 % consumed**. The bench-gate CI step is wired to fail above 5 ms; comfortable headroom. Per-release numbers append to [`benchmarks/history.csv`](benchmarks/history.csv) for trend visibility.
 
 ## Tests
 
-- `tests/commandress.tcyr` — **245 assertions across 112 tests**: full M1–M5 coverage + M6 additions for `cache` (4 cases — roundtrip, per-cwd isolation, empty-value caching, miss-when-absent) and the updated `test_config_defaults` asserting the new 3-segment default. `cyrius test` green.
+- `tests/commandress.tcyr` — **279 assertions across 131 tests**: full M1–M7 coverage + M8 audit-fix additions for `sanitize_segment_output` (8 cases — F-1), cache hardening (2 cases — F-3/F-4/F-5: mode-0o600 stat-verify, symlink-swap refuses), `parse_last_exit` (6 cases — F-7), and `find_in_path_with` (3 cases — F-8 relative-rejected / dot-rejected / absolute-resolves-including-mixed). `cyrius test` green.
 - `tests/commandress.bcyr` — per-segment + config + parser + full-prompt timings (above).
 - `tests/commandress.fcyr` — fuzz stub (no harness yet).
 
@@ -85,8 +85,8 @@ External: none (and none planned for v1.0).
 
 ## In-flight work
 
-- **M7 closed in 0.8.0** (tagged 2026-05-18): three shell adapters under [`adapters/`](../../adapters/) — `zsh.sh` (live), `bash.sh` (live), `agnoshi.sh` (contract-only; agnoshi hasn't adopted `$AGNOSHI_PROMPT_CMD` yet, but the spec lives in the file's header so adoption is wire-and-go). zsh + bash get matching setup guides under [`docs/guides/`](../guides/).
-- **agnoshi adoption pending**: `/home/macro/Repos/agnoshi/src/prompt.cyr` currently renders its own prompt. When agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw (5-point contract documented in `adapters/agnoshi.sh`), users sourcing the adapter get a commandress-rendered prompt with no further commandress change.
+- **M8 closed in 0.9.0** (tagged 2026-05-18): audit doc + 6 code fixes + ADR 0007 schema freeze + benchmarks doc + agnoshi-contract F-12 update. Public API now frozen; v1.0 criteria for "stable config schema" / "security audit pass" / "benchmarks captured" all satisfied.
+- **agnoshi adoption pending**: `/home/macro/Repos/agnoshi/src/prompt.cyr` currently renders its own prompt. When agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw (5-point contract documented in `adapters/agnoshi.sh`, now with F-12 no-re-expand rule), users sourcing the adapter get a commandress-rendered prompt with no further commandress change.
 - **Deferred behind upstream gaps**:
   - `rust-toolchain.toml` parsing — blocked on Cyrius single-bracket TOML (papercut Item 3, v6.x).
   - `find_in_path` itself — pending Cyrius v6.x Item 8 (no stdlib `which()`); the `src/pathlookup.cyr` workaround ships.
@@ -95,7 +95,7 @@ External: none (and none planned for v1.0).
   - `python --version`, `node --version`, `rustup show` shellouts. The cache infrastructure is now in place to make these affordable when they land — pre-v1 they remain parked.
   - `package.json` `engines.node` parsing. JSON-walk cost still not justified.
 - **Pre-v1 theme-switching path** (per user commitment in M5 design): single-palette `[[palette]]` shipped 0.6.0; curated `docs/themes/` library shipped 0.6.1; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector planned for v0.7.x or v0.8.x; schema freeze (and path lock) at v0.9.0 (M8).
-- **Next**: **M8 — public API + security audit** (freeze config schema; audit pass on config parsing / env-var handling / subprocess exec — write to `docs/audit/YYYY-MM-DD-audit.md`; finalise benchmark numbers; lock the path + field contract ahead of M9's v1.0 freeze). After M8: **M9 — v1.0 freeze + tag**.
+- **Next**: **M9 — v1.0 freeze + tag**. All v1.0 criteria from `roadmap.md` are satisfiable today; the v1.0 commit is a final doc roll (CHANGELOG headline, README update) + the `1.0.0` tag.
 
 ## Next
 

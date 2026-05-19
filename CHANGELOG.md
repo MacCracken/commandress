@@ -6,6 +6,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-18
+
+**M8 — public API + security audit.** Full security audit lands as [`docs/audit/2026-05-18-audit.md`](docs/audit/2026-05-18-audit.md) — 12 findings (8 actionable, 4 informational/contract) cross-referenced against 20 published CVEs and advisories from the 2020–2026 window (Git ANSI sideband, fish git-prompt fsmonitor RCE, oh-my-zsh `print -P`, Ghostty title injection, the 10-CVE dgl.cx terminal-emulator set, py-filelock TOCTOU, RenderDoc /tmp, Himmelblau Kerberos cache, Jackson TOML stack-overflow, sudo CVE-2019-14287, plus the Codex CLI ANSI-injection writeup). **6 fixes ship in 0.9.0**: ANSI/C0 control-byte sanitization at the render layer (F-1), cache-dir post-mkdir mode-verify with self-disable on mismatch (F-3), cache-read `O_NOFOLLOW` (F-4), atomic cache writes via temp+rename with `O_EXCL|O_NOFOLLOW` and mode `0o600` (F-5), bounded `$AGNOSHI_LAST_EXIT` parse with length cap + range clamp (F-7), and `find_in_path` rejection of relative `$PATH` entries (F-8). **2 deferred upstream**: F-2 (sit hooks/fsmonitor surface — needs upstream sit safe-mode flag) and F-6 partial (TOML parser depth-cap — needs upstream Cyrius stdlib). **Public API frozen** via [ADR 0007](docs/adr/0007-schema-freeze.md): config path + schema + colour value space + CLI + env-var contract + adapter contract + file paths all locked at v1.0 with an explicit 3-step deprecation path for anything we later regret. **Adapter contract clarified**: `adapters/agnoshi.sh` gains audit F-12 wording — consumers MUST NOT pass `cmdrs` output through shell-syntax re-expansion (CVE-2021-3934 / CVE-2021-45444 precedents). **Benchmarks finalised** in new [`docs/benchmarks.md`](docs/benchmarks.md). Suite grows from 245 → 279 assertions.
+
+### Added
+
+- **`docs/audit/2026-05-18-audit.md`** — full audit doc. Methodology (dual-track internal sweep + external CVE research), threat model (3 attacker positions, no privilege boundary, no RCE path identified in audited code), findings F-1..F-12 with severity / mitigation / acceptance criteria / CVE precedent each, remediation summary table, upstream filings list, 20-entry CVE reference list.
+- **`docs/adr/0007-schema-freeze.md`** — public-API freeze for v1.0. Locks 8 surfaces (config path, schema fields, colour values, CLI, env-var read contract, env-var write contract, adapter contract, file paths). Explicitly lists **not-frozen** surfaces (segment registry, named-colour set, modifiers, hex/256-colour reserved-for-additive, multi-palette reserved, internal struct layout, cache format). Concrete 3-step deprecation path (new-form-with-warning → default-flip → v2.0-removal).
+- **`docs/benchmarks.md`** — finalised benchmarks doc per v1.0 criterion. Budget breakdown table, per-segment numbers for v0.9.0, end-to-end process-level cold vs warm (~2.4 ms vs ~0.5 ms), trend summary from `history.csv`, reproduction recipe, variance notes.
+- **`src/color.cyr::sanitize_segment_output(s)`** — F-1 fix. Strips C0 (`0x00`–`0x1F`) and DEL (`0x7F`) bytes; preserves UTF-8 (`0x80`+). Render calls it between dispatcher-return and emit so every segment's content is filtered at one chokepoint; SGR wrappers + separator + powerline glyph stay untouched (config-derived → trusted).
+- **`src/render.cyr`** — sanitization wired into the segment loop with a `safe_len > 0` guard so degenerate inputs (entirely control bytes) skip the entire paint (separator + transition + SGR) cleanly.
+- **`src/cache.cyr::_cache_disabled`** + verification in `cache_init` — F-3 fix. `sys_stat` after `sys_mkdir`; if owner uid or mode bits don't match (`uid != getuid()` or `mode & 0o777 != 0o700`), flag is set and `cache_get` / `cache_put` become no-ops for the rest of the process. Segments fall back to the uncached probe.
+- **`src/cache.cyr::cache_get`** — F-4 fix. Opens with `O_NOFOLLOW` (numeric `131072` per the agnosys.cyr precedent; stdlib hasn't exported the constant yet). Symlink swap on a cache file returns 0 → cache miss → fresh write.
+- **`src/cache.cyr::cache_put`** — F-5 fix. Atomic write: builds `<path>.tmp.<pid>`, opens with `O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW` (mode `0o600`), writes, then `rename(2)` (SYS_RENAME = 82). Stale-temp from crashed prior run → unlink + retry once. Subsumes F-11 (file mode tightened from `0o644` to `0o600`).
+- **`src/context.cyr::parse_last_exit(s)`** — F-7 fix. Length cap (≤ 10 digits, i.e. ≤ INT32_MAX width) + range clamp ([0, 65535]) + negative-rejection. Lifted into `context.cyr` from `main.cyr` so tests can drive it directly.
+- **`src/pathlookup.cyr::find_in_path_with(path, name)`** + thin wrapper — F-8 fix. Walker now requires `path[pi] == '/'` before building the candidate; empty entries, `.`, `..`, and unqualified names are skipped. Refactor exposes the internal walker so tests inject a PATH cstring without needing `setenv` (stdlib doesn't have it).
+- **Tests** — 34 new assertions across 19 cases (`245 → 279` total):
+  - 8 `sanitize_segment_output` cases (ESC-mid-string, all-C0, DEL, UTF-8 passthrough, empty, null, all-controls-yields-empty, clean-input-unchanged).
+  - 2 cache hardening cases (`cache_put_writes_mode_0600` stat-verifies the mode bits; `cache_get_refuses_symlink` unlinks + symlinks-to-`/etc/passwd` and asserts cache_get returns 0).
+  - 6 `parse_last_exit` cases (null, empty, normal `[0, 1, 42, 255]`, overlong-input-rejected, overlarge-value-clamped, negative-rejected).
+  - 3 `find_in_path_with` cases (rejects-relative, rejects-`.`/`..`/mixed-with-empty, absolute-works including `bin:/bin` skip-then-find).
+  - Suite is now **279 passed, 0 failed (279 total)**.
+
+### Changed
+
+- **`VERSION`** — `0.8.0` → `0.9.0`.
+- **`adapters/agnoshi.sh`** — contract header §3 gains the F-12 paragraph: agnoshi MUST treat captured stdout as a literal byte string; MUST NOT pass through percent-/variable-/backtick-expansion or any shell-syntax interpretation. Cites CVE-2021-3934 (oh-my-zsh `print -P`) and CVE-2021-45444 (zsh PROMPT_SUBST recursion) as precedents.
+- **`src/main.cyr`** — `atoi(getenv("AGNOSHI_LAST_EXIT"))` replaced by `parse_last_exit(getenv("AGNOSHI_LAST_EXIT"))`.
+- **`src/pathlookup.cyr`** — body extracted to `find_in_path_with(path, name)` (testable); `find_in_path(name)` becomes a one-line wrapper. No behaviour change for existing callers (vcs, cyrius_env).
+- **`docs/adr/README.md`** — adds ADR 0007 row.
+- **Binary size** — text 141,555 → 143,265 B (+1,710 for the four code fixes). bss 59,112 → 59,296 B (+184). **Total 200,667 → 202,561 B (+1,894 B).**
+- **Performance** — unchanged. `render_prompt (default cwd+vcs+exit)` still ~9–10 µs avg, well under the 5 ms budget (0.2 % consumed). The sanitizer adds an alloc+copy per segment emit (~µs-level for typical segment outputs); the cache atomic-write adds an open+rename per put (~µs). Budget impact negligible.
+
+### Roadmap
+
+- **M8 closed.** Audit shipped, 6 findings fixed, 2 documented as deferred upstream (with filing plan), schema frozen, benchmarks finalised. Next: **M9 — v1.0 freeze + tag**. All v1.0 criteria from `roadmap.md` are now satisfiable; the v1.0 commit is a doc roll + the `1.0.0` tag.
+
 ## [0.8.0] — 2026-05-18
 
 **M7 — shell adapters.** First-party `adapters/zsh.sh`, `adapters/bash.sh`, and `adapters/agnoshi.sh` ship as sourceable shell scripts: users replace whatever's setting their prompt today with a single `source /path/to/commandress/adapters/<shell>.sh` line and `cmdrs` takes over. The zsh adapter formalises the precmd-hook recipe that lived in `docs/guides/zsh-testing.md` (now [`zsh-setup.md`](docs/guides/zsh-setup.md)); the bash adapter handles bash's prompt-width quirk by wrapping ANSI SGR escapes in `\001..\002` markers via a `sed` filter (zsh doesn't need this with `prompt_subst`); the agnoshi adapter is contract-only — agnoshi hasn't adopted `$AGNOSHI_PROMPT_CMD` yet, so the file documents the spec and sets the env var so adoption flips the prompt over with zero further change here. Zero Cyrius code changes this milestone — all shell-side glue + docs.
