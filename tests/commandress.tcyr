@@ -1268,6 +1268,47 @@ fn test_cache_miss_when_absent(): i64 {
     return 0;
 }
 
+# F-5 audit: cache_put writes the file atomically via temp+rename
+# with mode 0o600. After put, stat the file and check the mode bits.
+fn test_cache_put_writes_mode_0600(): i64 {
+    cache_init();
+    cache_put("tst_mode", "/cwd/mode-check", "x", 1);
+
+    # Rebuild the cache file path via the same helper render uses, then
+    # stat it.
+    var path = _cache_path("tst_mode", "/cwd/mode-check");
+    var stbuf[144];
+    assert_eq(sys_stat(path, &stbuf), 0, "stat the cache file");
+    var mode = load32(&stbuf + 24);
+    # 0x1ff masks the 9 permission bits; 0x180 = 0o600.
+    assert_eq(mode & 0x1ff, 0x180, "cache file mode == 0o600 (audit F-5/F-11)");
+    return 0;
+}
+
+# F-4 audit: O_NOFOLLOW on cache_get refuses to traverse a symlink.
+# Pre-write a legitimate cache, replace it with a symlink to a file
+# we definitely shouldn't read through the cache (/etc/passwd is
+# world-readable so this isn't a real exfiltration — we just verify
+# the read REFUSES, not that confidentiality holds against a tool
+# we could otherwise just `cat` directly).
+fn test_cache_get_refuses_symlink(): i64 {
+    cache_init();
+    cache_put("tst_nofollow", "/cwd/nofollow", "legit", 5);
+    var path = _cache_path("tst_nofollow", "/cwd/nofollow");
+
+    # Replace the cache file with a symlink. unlink + symlink as a pair
+    # is the canonical attacker move.
+    assert_eq(syscall(SYS_UNLINK, path), 0, "unlink legitimate cache file");
+    assert_eq(syscall(88, "/etc/passwd", path), 0, "create symlink to /etc/passwd");   # SYS_SYMLINK
+
+    var v = cache_get("tst_nofollow", "/cwd/nofollow", 60);
+    assert_eq(v, 0, "cache_get on a symlink refuses (O_NOFOLLOW → 0)");
+
+    # Cleanup the symlink so the test is hermetic.
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 # ---- pathlookup ----
 
 # Find `sh` on PATH — present on every conceivable POSIX host. Skip
@@ -1508,6 +1549,8 @@ fn main(): i64 {
     test_cache_per_cwd_isolation();
     test_cache_empty_value();
     test_cache_miss_when_absent();
+    test_cache_put_writes_mode_0600();
+    test_cache_get_refuses_symlink();
 
     test_group("pathlookup");
     test_pathlookup_finds_sh();

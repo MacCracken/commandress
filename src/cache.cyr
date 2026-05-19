@@ -32,6 +32,15 @@
 # Cached dir path, lazy-built once per invocation.
 var _cache_dir = 0;
 
+# F-3 audit (2026-05-18): set to 1 by cache_init when the cache
+# directory exists with the wrong owner or permissions. Once set,
+# cache_get / cache_put become no-ops for the rest of the process
+# lifetime — segments fall back to their uncached probe path. Closes
+# the symlink-precreate + permissive-mode class
+# (CVE-2023-33865 RenderDoc; CVE-2026-31979 Himmelblau; GHSA-w853-jp5j-5j7f
+# py-filelock TOCTOU).
+var _cache_disabled = 0;
+
 fn cache_dir(): i64 {
     if (_cache_dir != 0) { return _cache_dir; }
     var uid = syscall(SYS_GETUID);
@@ -94,9 +103,23 @@ fn _cache_path(seg_name, cwd): i64 {
 # success; any other failure leaves the cache effectively disabled
 # (cache_put will silently fail on the missing dir; cache_get's stat
 # will return ENOENT → miss → fall through to the real probe).
+#
+# F-3 audit: after mkdir, stat and verify (a) `st_uid == getuid()` and
+# (b) `st_mode & 0o777 == 0o700`. On mismatch, sets `_cache_disabled`
+# so cache_get / cache_put become no-ops. Closes the case where an
+# attacker pre-creates `/tmp/commandress-<uid>/` as 0o777 (file mode
+# 0o644 inside that would be world-readable; symlink swaps possible).
 fn cache_init(): i64 {
     var dir = cache_dir();
     syscall(SYS_MKDIR, dir, 0x1c0);                             # 0o700
+    var stbuf[144];
+    if (sys_stat(dir, &stbuf) != 0) { _cache_disabled = 1; return 0; }
+    var st_mode = load32(&stbuf + 24);                          # struct stat: st_mode @ 24
+    var st_uid  = load32(&stbuf + 28);                          # struct stat: st_uid  @ 28
+    var our_uid = syscall(SYS_GETUID);
+    if (st_uid != our_uid) { _cache_disabled = 1; return 0; }
+    # 0x1ff = 0o777 perm bits mask; 0x1c0 = 0o700 expected.
+    if ((st_mode & 0x1ff) != 0x1c0) { _cache_disabled = 1; return 0; }
     return 0;
 }
 
@@ -104,7 +127,13 @@ fn cache_init(): i64 {
 # within `ttl_secs` of now, else 0. The "possibly empty" case is real
 # — vcs_render caches "" to remember "no sit repo here", short-
 # circuiting the fork+exec on the next redraw.
+#
+# F-4 audit: file_open uses O_NOFOLLOW so a symlink swap on the cache
+# file (e.g. attacker symlinks `vcs-<hash>` → `/etc/shadow`) refuses
+# to traverse — open returns ELOOP → cache miss → segment runs the
+# real probe + cache_put writes a fresh file.
 fn cache_get(seg_name, cwd, ttl_secs): i64 {
+    if (_cache_disabled == 1) { return 0; }
     var path = _cache_path(seg_name, cwd);
     var stbuf[144];                                             # struct stat is 144 B on x86_64
     if (sys_stat(path, &stbuf) != 0) { return 0; }
@@ -113,7 +142,10 @@ fn cache_get(seg_name, cwd, ttl_secs): i64 {
     if (now_sec - mtime_sec > ttl_secs) { return 0; }
 
     var file_size = load64(&stbuf + 48);                        # offset of st_size
-    var fd = file_open(path, 0, 0);
+    # O_RDONLY | O_NOFOLLOW. 131072 (0x20000) is O_NOFOLLOW on Linux;
+    # stdlib doesn't export a named constant yet — written numerically
+    # with a comment (same pattern as lib/agnosys.cyr's keyfile path).
+    var fd = file_open(path, 131072, 0);
     if (fd < 0) { return 0; }
     var buf = alloc(file_size + 1);
     var n = file_read(fd, buf, file_size);
@@ -123,8 +155,46 @@ fn cache_get(seg_name, cwd, ttl_secs): i64 {
     return buf;
 }
 
+# F-5 audit: write atomically via `<path>.tmp.<pid>` + rename.
+# `O_CREAT | O_EXCL | O_NOFOLLOW` ensures we create a fresh file
+# whose final-component is not a symlink — if a co-uid attacker
+# pre-created the temp file or symlinked it, the open fails (EEXIST
+# / ELOOP) and we skip the cache write. The rename(2) is atomic on
+# POSIX so a concurrent cache_get either sees the old file or the
+# new one, never a torn write. Mode 0o600 (tightened from the prior
+# 0o644 file_write_all) closes F-11.
 fn cache_put(seg_name, cwd, value, value_len): i64 {
+    if (_cache_disabled == 1) { return 0; }
     var path = _cache_path(seg_name, cwd);
-    file_write_all(path, value, value_len);
+    var path_len = strlen(path);
+
+    # Build "<path>.tmp.<pid>".
+    var suffix = ".tmp.";
+    var suffix_len = strlen(suffix);
+    var pid_buf[24];
+    var pid_len = fmt_int_buf(syscall(SYS_GETPID), &pid_buf);
+    var tmp_path = alloc(path_len + suffix_len + pid_len + 1);
+    memcpy(tmp_path, path, path_len);
+    memcpy(tmp_path + path_len, suffix, suffix_len);
+    memcpy(tmp_path + path_len + suffix_len, &pid_buf, pid_len);
+    store8(tmp_path + path_len + suffix_len + pid_len, 0);
+
+    # O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW = 1 | 64 | 128 | 131072.
+    # 0x180 = 0o600 (owner read+write, others none).
+    var flags = 1 + 64 + 128 + 131072;
+    var fd = file_open(tmp_path, flags, 0x180);
+    if (fd < 0) {
+        # Stale temp from a crashed previous run? Unlink + retry once.
+        syscall(SYS_UNLINK, tmp_path);
+        fd = file_open(tmp_path, flags, 0x180);
+        if (fd < 0) { return 0; }
+    }
+    file_write(fd, value, value_len);
+    file_close(fd);
+
+    # SYS_RENAME = 82 on x86_64 Linux. Atomic — concurrent readers see
+    # the old file or the new one, never a torn write. On failure, the
+    # tmp leaks until the next process notices via the retry path above.
+    syscall(82, tmp_path, path);
     return 0;
 }
