@@ -19,12 +19,6 @@
 
 ## Milestones
 
-### M7 — Shell adapters (v0.8.0)
-
-- [ ] agnoshi adapter (drops `AGNOSHI_PROMPT_CMD=cmdrs` into the shell's prompt hook)
-- [ ] bash adapter (PROMPT_COMMAND integration)
-- [ ] zsh adapter (precmd + PROMPT integration)
-
 ### M8 — Public-API + security audit (v0.9.0)
 
 - [ ] Freeze config schema

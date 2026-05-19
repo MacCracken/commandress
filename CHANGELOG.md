@@ -6,6 +6,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-18
+
+**M7 — shell adapters.** First-party `adapters/zsh.sh`, `adapters/bash.sh`, and `adapters/agnoshi.sh` ship as sourceable shell scripts: users replace whatever's setting their prompt today with a single `source /path/to/commandress/adapters/<shell>.sh` line and `cmdrs` takes over. The zsh adapter formalises the precmd-hook recipe that lived in `docs/guides/zsh-testing.md` (now [`zsh-setup.md`](docs/guides/zsh-setup.md)); the bash adapter handles bash's prompt-width quirk by wrapping ANSI SGR escapes in `\001..\002` markers via a `sed` filter (zsh doesn't need this with `prompt_subst`); the agnoshi adapter is contract-only — agnoshi hasn't adopted `$AGNOSHI_PROMPT_CMD` yet, so the file documents the spec and sets the env var so adoption flips the prompt over with zero further change here. Zero Cyrius code changes this milestone — all shell-side glue + docs.
+
+### Added
+
+- **`adapters/zsh.sh`** — sourceable from `~/.zshrc`. Resolves `cmdrs` once at source time (cached in `$_CMDRS`; `COMMANDRESS_BIN` env var overrides). Sets `prompt_subst`. Defines `_cmdrs_precmd` (captures `$?` → `$AGNOSHI_LAST_EXIT`, then assigns `PROMPT` from `cmdrs` and `RPROMPT` from `cmdrs --side=right`). Appends to `precmd_functions` so it composes with other zsh tools.
+- **`adapters/bash.sh`** — sourceable from `~/.bashrc`. Same path-caching + `$AGNOSHI_LAST_EXIT` plumbing. New `_cmdrs_bash_render` helper pipes `cmdrs` output through `sed $'s/\\x1b\\[[0-9;]*m/\\x01&\\x02/g'` so bash's readline-width accounting treats each SGR escape as zero-width (without the wrap, long commands wrap to the wrong column). Prepends to `PROMPT_COMMAND` (composable). No `RPROMPT` analogue — bash has no native right-prompt; the bash side silently ignores `right_segments` config.
+- **`adapters/agnoshi.sh`** — contract-only. One line of executable shell (`export AGNOSHI_PROMPT_CMD=cmdrs`) plus a 50-line header that *is* the prompt-cmd contract spec (5 numbered points: agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw; exports `$AGNOSHI_LAST_EXIT` before invoking; captures stdout as the prompt string; optional `--side=right` for right-prompt; direct-exec semantics). agnoshi currently renders its own prompt internally (`/path/to/agnoshi/src/prompt.cyr`); when it adopts the contract, sourcing this file flips the prompt over with no further commandress change.
+- **`adapters/README.md`** — index of all three adapters with status badges (✓ Live zsh + bash; ⏳ Contract-only agnoshi), one-line install per shell, "what every adapter does" / shell-specific quirks / `$COMMANDRESS_BIN` override.
+- **`docs/guides/bash-setup.md`** — new bash-side guide mirroring `zsh-setup.md`: install + source line, what-the-adapter-does (explicit on the `\001..\002` wrap and why `cmdrs` stays shell-agnostic), `COMMANDRESS_BIN`, "what's missing vs zsh" section (no right-prompt — explicit), manual-setup fallback, revert-to-starship.
+
+### Changed
+
+- **`VERSION`** — `0.7.0` → `0.8.0`.
+- **`docs/guides/zsh-testing.md`** → **`zsh-setup.md`**. Rewritten: leads with the one-line `source` install, documents `COMMANDRESS_BIN`, kept manual-setup section as a fallback, removed pre-M5 caveats that no longer apply (colour shipped 0.6.0; cache shipped 0.7.0).
+- **`docs/guides/getting-started.md`** — preamble updated to reflect M7 ("v0.8.0 — first-party shell adapters shipped under `adapters/`"); old "Testing today in zsh (pre-M7)" section replaced with a "Using `cmdrs` in zsh / bash" section pointing at both new guides + the agnoshi contract file.
+- **`docs/development/state.md`** — version block now `0.8.0`; In-flight "Next" updated to point at M8 (public-API + security audit).
+
+### Roadmap
+
+- **M7 closed.** All three adapters shipped. zsh + bash are first-class today; agnoshi is contract-pending — the env-var name is locked in and the spec is documented in `adapters/agnoshi.sh`'s header. Next: **M8 — public API + security audit** (schema freeze, audit pass on config parsing / env-var handling / subprocess exec, benchmarks finalised). After M8: **M9 — v1.0 freeze**.
+
 ## [0.7.0] — 2026-05-18
 
 **M6 — performance hardening.** The change that makes `vcs` default-on. A new `src/cache.cyr` module wraps any segment in a per-cwd mtime-keyed cache (1 s TTL by default); `vcs_render` becomes the first consumer and **drops from ~1.8 ms cold to ~7 µs cached** (the cold call is still paid once per TTL window; rapid redraws in the same shell pay the cached price). With caching live, the default segment list flips from `["cwd", "exit"]` to `["cwd", "vcs", "exit"]` — out-of-box prompts now show branch state without a config change, while non-sit dirs stay clean (vcs renders empty there, no extra separator). CI grows a 5 ms cold-start budget gate that fails the build if `render_prompt` exceeds the per-redraw budget. A new `docs/benchmarks/history.csv` accumulates per-release bench numbers as a versioned artifact — perf trends now live in `git log` next to the changes that caused them. Parallel segment evaluation (the fifth M6 candidate) was punted: with caching in place and only one slow segment (`vcs`), the speculative infrastructure doesn't earn its keep yet. Cyrius pin bumped to 5.11.64 alongside (silences the toolchain-drift warning that surfaced once 5.11.64 hit local; no behavior change).

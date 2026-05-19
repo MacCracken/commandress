@@ -5,7 +5,7 @@
 
 ## Version
 
-**0.7.0** — tagged release 2026-05-18. **M6 closed**: probe cache (`src/cache.cyr`, per-cwd mtime-keyed, 1 s TTL) makes `vcs_render` drop from ~1.8 ms cold to ~7 µs cached; default segment list flips to `["cwd", "vcs", "exit"]` — vcs is default-on for the first time; CI grows a 5 ms cold-start gate (`scripts/bench-gate.sh`) that fails on regression; per-release bench numbers accumulate in `docs/benchmarks/history.csv` as a versioned artifact. Parallel segment evaluation (the fifth M6 candidate) was punted — single-slow-segment regime doesn't justify the threading infrastructure yet. Cyrius pin bumped to 5.11.64. Next: **M7 — shell adapters** (agnoshi prompt-hook integration, bash `PROMPT_COMMAND`, zsh `precmd` — the current `docs/guides/zsh-testing.md` recipe formalises into shipped adapters).
+**0.8.0** — tagged release 2026-05-18. **M7 closed**: first-party shell adapters under [`adapters/`](../../adapters/) — `zsh.sh` (precmd + PROMPT + RPROMPT), `bash.sh` (PROMPT_COMMAND + PS1 with `\001..\002` SGR-wrap for readline-width accounting), `agnoshi.sh` (contract-only; env-var spec until agnoshi adopts it). Users wire `cmdrs` into their shell with one `source` line. Zero Cyrius code changes this milestone — all shell-side glue + docs. Next: **M8 — public API + security audit** (schema freeze, security pass on config parsing / env-var handling / subprocess exec, benchmarks finalised).
 
 ## Role
 
@@ -85,7 +85,8 @@ External: none (and none planned for v1.0).
 
 ## In-flight work
 
-- **M6 closed in 0.7.0** (tagged 2026-05-18): probe cache (`src/cache.cyr`) wraps vcs_render with a per-cwd 1 s TTL; default segments include vcs out of the box; CI cold-start gate (`scripts/bench-gate.sh`) fails the build above 5 ms; per-release bench numbers track in `docs/benchmarks/history.csv`. Parallel segment evaluation deferred to "as-needed / post-v1" — single-slow-segment regime doesn't justify the threading infrastructure.
+- **M7 closed in 0.8.0** (tagged 2026-05-18): three shell adapters under [`adapters/`](../../adapters/) — `zsh.sh` (live), `bash.sh` (live), `agnoshi.sh` (contract-only; agnoshi hasn't adopted `$AGNOSHI_PROMPT_CMD` yet, but the spec lives in the file's header so adoption is wire-and-go). zsh + bash get matching setup guides under [`docs/guides/`](../guides/).
+- **agnoshi adoption pending**: `/home/macro/Repos/agnoshi/src/prompt.cyr` currently renders its own prompt. When agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw (5-point contract documented in `adapters/agnoshi.sh`), users sourcing the adapter get a commandress-rendered prompt with no further commandress change.
 - **Deferred behind upstream gaps**:
   - `rust-toolchain.toml` parsing — blocked on Cyrius single-bracket TOML (papercut Item 3, v6.x).
   - `find_in_path` itself — pending Cyrius v6.x Item 8 (no stdlib `which()`); the `src/pathlookup.cyr` workaround ships.
@@ -94,7 +95,7 @@ External: none (and none planned for v1.0).
   - `python --version`, `node --version`, `rustup show` shellouts. The cache infrastructure is now in place to make these affordable when they land — pre-v1 they remain parked.
   - `package.json` `engines.node` parsing. JSON-walk cost still not justified.
 - **Pre-v1 theme-switching path** (per user commitment in M5 design): single-palette `[[palette]]` shipped 0.6.0; curated `docs/themes/` library shipped 0.6.1; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector planned for v0.7.x or v0.8.x; schema freeze (and path lock) at v0.9.0 (M8).
-- **Next**: **M7 — shell adapters** (agnoshi prompt-hook integration via `AGNOSHI_PROMPT_CMD=cmdrs`; bash `PROMPT_COMMAND` adapter; zsh `precmd` adapter — sourceable shell scripts under `adapters/` so users do one-line `source` integration).
+- **Next**: **M8 — public API + security audit** (freeze config schema; audit pass on config parsing / env-var handling / subprocess exec — write to `docs/audit/YYYY-MM-DD-audit.md`; finalise benchmark numbers; lock the path + field contract ahead of M9's v1.0 freeze). After M8: **M9 — v1.0 freeze + tag**.
 
 ## Next
 
