@@ -27,3 +27,4 @@ Decisions about commandress — what we chose, the context, and the consequences
 | [0004](0004-vcs-probe-via-sit.md) | VCS probe shells out to `sit`, not external `git` | Accepted |
 | [0005](0005-language-env-probe-pattern.md) | Language-env segments follow a file-first probe pattern | Accepted |
 | [0006](0006-config-path-rename.md) | Config file lives at `~/.commandress`, not `~/.commandress.cyml` | Accepted |
+| [0007](0007-schema-freeze.md) | Public API + config schema freeze for v1.0 | Accepted |

@@ -37,6 +37,18 @@
 #      accounting markers its readline-equivalent needs (cf. bash's
 #      \001..\002 wrap in `bash.sh`). zsh / agnoshi can consume the
 #      raw escapes; bash needs wrapping.
+#
+#      AUDIT F-12 (see docs/audit/2026-05-18-audit.md): the captured
+#      bytes are a LITERAL PROMPT STRING. agnoshi MUST NOT pass them
+#      through percent-expansion, variable-expansion, backtick-eval,
+#      command-substitution, or any other shell-syntax interpretation
+#      pass. Precedents — CVE-2021-3934 (oh-my-zsh `print -P` on git
+#      branch names), CVE-2021-45444 (zsh PROMPT_SUBST recursion):
+#      attacker-controlled segment content containing %-, $-, or
+#      backtick sequences becomes RCE if the consumer re-expands.
+#      The bytes go straight to the terminal. cmdrs's own audit-F-1
+#      sanitization closes the C0/escape side; the no-re-expand rule
+#      closes the shell-syntax side.
 #   4. Right-prompt (optional, if agnoshi grows an RPROMPT surface):
 #      agnoshi runs `$AGNOSHI_PROMPT_CMD --side=right` and renders
 #      the result on the right edge. Empty output → no right prompt.
