@@ -25,6 +25,44 @@
 
 var SGR_RESET = "\x1b[0m";
 
+# Strip C0 control bytes (0x00–0x1F) and DEL (0x7F) from `s` and
+# return a heap-alloc'd cstring of the survivors. UTF-8 multi-byte
+# sequences (0x80–0xFF) pass through unchanged — those aren't control
+# bytes in a UTF-8 terminal.
+#
+# Audit finding F-1 (2026-05-18; docs/audit/2026-05-18-audit.md).
+# Segments that copy attacker-controllable bytes verbatim — vcs
+# branch names from `sit status`, env-file contents from
+# .python-version / .nvmrc / rust-toolchain / VERSION, $VIRTUAL_ENV
+# basename, $USER fallback, $HOME-shortened cwd — would otherwise
+# re-emit ESC-based terminal-state attacks (clear screen, OSC-52
+# clipboard set, OSC-8 hyperlink, terminal-title spoof) on every
+# redraw. Precedents: CVE-2024-52005 (Git sideband), CVE-2024-50349
+# (Git prompt phishing), CVE-2024-56803 (Ghostty title-injection
+# RCE), plus the 10-CVE dgl.cx terminal-emulator set. Render calls
+# this helper between dispatcher return and emit so every segment
+# is covered at one chokepoint; SGR wrappers + separator + glyph
+# come from config-derived strings and stay untouched.
+fn sanitize_segment_output(s): i64 {
+    if (s == 0) { return 0; }
+    var len = strlen(s);
+    var out = alloc(len + 1);
+    var out_len = 0;
+    var i = 0;
+    while (i < len) {
+        var c = load8(s + i);
+        if (c >= 32) {
+            if (c != 127) {
+                store8(out + out_len, c);
+                out_len = out_len + 1;
+            }
+        }
+        i = i + 1;
+    }
+    store8(out + out_len, 0);
+    return out;
+}
+
 fn color_to_sgr_fg(name): i64 {
     if (name == 0) { return 0; }
     if (strlen(name) == 0) { return 0; }

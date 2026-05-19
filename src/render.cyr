@@ -205,20 +205,29 @@ fn render_prompt(cfg, ctx, side): i64 {
         } else {
             var out = fncall2(fp, cfg, ctx);
             if (out != 0) {
-                var seg_bg = _bg_for(cfg, name);
-                if (painted == 1) {
-                    if (powerline == 1) {
-                        _emit_powerline_transition(prev_bg, seg_bg, glyph);
-                    } else {
-                        syscall(SYS_WRITE, STDOUT, sep, sep_len);
+                # Sanitize before emit (audit F-1). The "safe_len > 0"
+                # guard skips the whole paint when a segment's content
+                # was entirely control bytes (degenerate case for
+                # attacker input) — saves a stray separator from the
+                # next segment.
+                var safe = sanitize_segment_output(out);
+                var safe_len = strlen(safe);
+                if (safe_len > 0) {
+                    var seg_bg = _bg_for(cfg, name);
+                    if (painted == 1) {
+                        if (powerline == 1) {
+                            _emit_powerline_transition(prev_bg, seg_bg, glyph);
+                        } else {
+                            syscall(SYS_WRITE, STDOUT, sep, sep_len);
+                        }
                     }
+                    var sgr = _sgr_for(cfg, name);
+                    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, sgr, strlen(sgr)); }
+                    syscall(SYS_WRITE, STDOUT, safe, safe_len);
+                    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, SGR_RESET, strlen(SGR_RESET)); }
+                    prev_bg = seg_bg;
+                    painted = 1;
                 }
-                var sgr = _sgr_for(cfg, name);
-                if (sgr != 0) { syscall(SYS_WRITE, STDOUT, sgr, strlen(sgr)); }
-                syscall(SYS_WRITE, STDOUT, out, strlen(out));
-                if (sgr != 0) { syscall(SYS_WRITE, STDOUT, SGR_RESET, strlen(SGR_RESET)); }
-                prev_bg = seg_bg;
-                painted = 1;
             }
         }
         i = i + 1;

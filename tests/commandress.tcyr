@@ -1159,6 +1159,72 @@ fn test_sgr_reset_constant(): i64 {
     return 0;
 }
 
+# ---- sanitize_segment_output (audit F-1) ----
+
+fn test_sanitize_strips_esc_mid_string(): i64 {
+    # The classic vcs-branch-name attack: `evil\x1b[2J` would clear
+    # the user's terminal screen on every redraw without sanitization.
+    var out = sanitize_segment_output("evil\x1b[2Jbad");
+    _streq_or_dump(out, "evil[2Jbad", "ESC stripped, surrounding text preserved");
+    return 0;
+}
+
+fn test_sanitize_strips_all_c0_bytes(): i64 {
+    # Every C0 control byte (0x00..0x1F) must be filtered.
+    var input = "a\x01b\x02c\x07d\x0Ae\x0Df\x1bg\x1fh";
+    var out = sanitize_segment_output(input);
+    _streq_or_dump(out, "abcdefgh", "all C0 control bytes stripped");
+    return 0;
+}
+
+fn test_sanitize_strips_del(): i64 {
+    var out = sanitize_segment_output("hello\x7Fworld");
+    _streq_or_dump(out, "helloworld", "DEL (0x7F) stripped");
+    return 0;
+}
+
+fn test_sanitize_passes_through_utf8(): i64 {
+    # UTF-8 continuation bytes (0x80–0xBF) must pass — they're part
+    # of multi-byte sequences, not standalone control characters.
+    # "café" = 63 61 66 c3 a9
+    var out = sanitize_segment_output("caf\xc3\xa9");
+    _streq_or_dump(out, "caf\xc3\xa9", "UTF-8 \"café\" passes through intact");
+    return 0;
+}
+
+fn test_sanitize_empty_input(): i64 {
+    var out = sanitize_segment_output("");
+    assert_neq(out, 0, "sanitize(\"\") returns non-null pointer");
+    assert_eq(strlen(out), 0, "sanitize(\"\") returns empty cstring");
+    return 0;
+}
+
+fn test_sanitize_null_input(): i64 {
+    assert_eq(sanitize_segment_output(0), 0, "sanitize(null) returns 0");
+    return 0;
+}
+
+fn test_sanitize_all_controls_yields_empty(): i64 {
+    # Pure-malice input: every byte is a control. Result is an empty
+    # cstring — the F-1 render guard treats this as "skip the paint
+    # entirely" so a downstream segment doesn't get a stray separator.
+    var out = sanitize_segment_output("\x1b\x07\x0a\x0d\x00");
+    # NB: \x00 means we can't use strlen on the ORIGINAL "input"
+    # because the cstring terminates early; the helper sees the byte
+    # via load8 + strlen on `s` (which already stops at the first
+    # NUL anyway). So this test actually exercises the four bytes
+    # before the NUL: ESC, BEL, LF, CR. All stripped.
+    assert_neq(out, 0, "sanitize(all controls) returns non-null pointer");
+    assert_eq(strlen(out), 0, "sanitize(all controls) returns empty cstring");
+    return 0;
+}
+
+fn test_sanitize_no_change_for_clean_input(): i64 {
+    var out = sanitize_segment_output("clean-branch-name-1.2.3");
+    _streq_or_dump(out, "clean-branch-name-1.2.3", "clean input passes through");
+    return 0;
+}
+
 # ---- cache ----
 
 # Roundtrip: write a value, read it back within the TTL window.
@@ -1428,6 +1494,14 @@ fn main(): i64 {
     test_sgr_open_three_digit_codes();
     test_sgr_open_multi_mod_plus_color();
     test_sgr_reset_constant();
+    test_sanitize_strips_esc_mid_string();
+    test_sanitize_strips_all_c0_bytes();
+    test_sanitize_strips_del();
+    test_sanitize_passes_through_utf8();
+    test_sanitize_empty_input();
+    test_sanitize_null_input();
+    test_sanitize_all_controls_yields_empty();
+    test_sanitize_no_change_for_clean_input();
 
     test_group("cache");
     test_cache_roundtrip();
