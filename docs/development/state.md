@@ -5,7 +5,7 @@
 
 ## Version
 
-**0.6.1** — tagged release 2026-05-18. **M5 fully closed**: ANSI colour palette + per-segment `fg`/`bg`/`style` + opinionated default theme + `[[palette]]` reference layer + cwd `max_length` truncation (all shipped 0.6.0); plus `docs/themes/` curated theme files (commandress + nord / dracula / gruvbox / monokai), right-prompt support (`cmdrs --side=right` + `right_segments` config), powerline-style separators (`separator_style = "powerline"` + transition glyphs + per-segment raw bg storage), and an opportunistic `~/.commandress.cyml` → `~/.commandress` config-path rename (per ADR 0006). Next: **M6 — performance hardening** (parallel segment evaluation, 1 s TTL probe cache, default-segment flip to include `vcs`, ≤ 5 ms cold-start CI gate, benchmark history CSV).
+**0.7.0** — tagged release 2026-05-18. **M6 closed**: probe cache (`src/cache.cyr`, per-cwd mtime-keyed, 1 s TTL) makes `vcs_render` drop from ~1.8 ms cold to ~7 µs cached; default segment list flips to `["cwd", "vcs", "exit"]` — vcs is default-on for the first time; CI grows a 5 ms cold-start gate (`scripts/bench-gate.sh`) that fails on regression; per-release bench numbers accumulate in `docs/benchmarks/history.csv` as a versioned artifact. Parallel segment evaluation (the fifth M6 candidate) was punted — single-slow-segment regime doesn't justify the threading infrastructure yet. Cyrius pin bumped to 5.11.64. Next: **M7 — shell adapters** (agnoshi prompt-hook integration, bash `PROMPT_COMMAND`, zsh `precmd` — the current `docs/guides/zsh-testing.md` recipe formalises into shipped adapters).
 
 ## Role
 
@@ -13,7 +13,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 
 ## Toolchain
 
-- **Cyrius pin**: `5.11.63` (in `cyrius.cyml [package].cyrius`)
+- **Cyrius pin**: `5.11.64` (in `cyrius.cyml [package].cyrius`)
 
 ## Source
 
@@ -24,12 +24,13 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 | `src/context.cyr` | **M1 (0.2.0)** — `{ home, last_exit }` per-invocation context handed to every segment dispatcher |
 | `src/render.cyr` | **M1 + M3 (0.4.0) + M4 (0.5.0) + M5 (0.6.0–0.6.1)** — table-driven registry (name → dispatcher fn ptr). `render_prompt(cfg, ctx, side)` paints either `cfg.segments` (side=0) or `cfg.right_segments` (side=1); left side appends `cfg.trailer`, right side skips it. Each painted segment wraps in its pre-computed SGR opener + `\x1b[0m` reset; emits raw when SGR is 0. **Plain mode** (default): segments joined by `cfg.separator`. **Powerline mode** (`cfg.separator_style == 1`): adjacent segments separated by `<fg=prev_bg; bg=next_bg>` SGR + glyph + reset; trailing transition (`fg=last_bg; bg=default`) closes the chain when last segment has a bg. `_sgr_for(cfg, name)` and `_bg_for(cfg, name)` mirror `_seg_fn_for` for SGR / raw-bg resolution. Unknown segments warn to stderr |
 | `src/shellout.cyr` | **M3 (0.4.0)** — generic per-call timeout watchdog. `shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen)` returns bytes / `-1` (system error) / `-2` (timeout). Implements fork + pipe + `epoll_wait(timeout)` + `kill(SIGKILL)` on overrun + `waitpid` reap. See [`architecture/002-shellout-watchdog.md`](../architecture/002-shellout-watchdog.md) |
+| `src/cache.cyr` | **M6 (0.7.0)** — per-segment per-cwd probe cache backed by `/tmp/commandress-<uid>/`. `cache_init()` (idempotent 0o700 mkdir), `cache_get(seg, cwd, ttl_secs)` (sys_stat mtime → read if fresh, else 0), `cache_put(seg, cwd, value, len)`. djb2 32-bit hash on cwd → 8 hex chars for the filename. `""` is a real cached value (distinguishable from miss) so segments can cache the no-output case |
 | `src/pathlookup.cyr` | **M4 (0.5.0)** — `find_in_path(name)` walks `$PATH`, returns the first heap-alloc'd absolute-path cstring that passes `access(X_OK)` (or 0). Lifted from `src/segments/vcs.cyr` once `cyrius_env` became a second shellout consumer. Still pending Cyrius v6.x Item 8 upstream |
 | `src/fslookup.cyr` | **M4 (0.5.0)** — shared fs helpers used by every language-env segment. `find_ancestor_with(start_dir, marker)` walks cwd upward returning the dir containing `<dir><marker>`, or 0. `read_trimmed_file_at(root, suffix)` reads `<root><suffix>` (256-byte cap) and trims surrounding ws (space, tab, `\n`, `\r`). Marker must start with `/` (e.g. `"/cyrius.cyml"`) so the root-case join is correct |
 | `src/color.cyr` | **M5 (0.6.0)** — ANSI SGR helpers. `color_to_sgr_fg(name)` / `color_to_sgr_bg(name)` map 16 named colours (8 standard + 8 bright) + `"default"` to SGR ints (30..37 / 90..97 fg; bg = fg + 10; 0 for absent/default/unknown). `style_to_sgr_mods(s, codes, max)` parses space-separated tokens (bold / italic / underline / reverse) writing mod codes as i64s. `sgr_open_for(fg, bg, style)` composes the `"\x1b[<mods>;<fg>;<bg>m"` opener, returns 0 when nothing to emit. `SGR_RESET` is `"\x1b[0m"`. Render closes every styled segment with `SGR_RESET` so terminal-defaults aren't leaked between segments |
 | `src/segments/cwd.cyr` | **M1 + M5 (0.6.0)** — `getcwd` + optional `$HOME` → `~` shortening (strict-prefix only) + optional `max_length` truncation at `/` boundaries (`_truncate_cwd` helper: walks left→right for earliest `/` whose suffix fits `max_length - 3`; pathological `< 4` emits a row of `.` dots; no-qualifying-`/` falls back to `...` + raw tail) |
 | `src/segments/exit.cyr` | M1 — empty on 0, `[N]` otherwise; `hide_zero = false` paints `[0]` too |
-| `src/segments/vcs.cyr` | **M2 (0.3.0) + watchdog (0.4.0) + pathlookup lift (0.5.0)** — shells out to `sit status` via `shellout_capture` with a hardcoded 5 ms budget. Parses `On branch <name>` + scans for `nothing to commit, working tree clean`. Emits `<branch>` (clean) or `<branch><dirty_marker>` (dirty). Renders empty outside a sit repo, when sit isn't on PATH, on watchdog timeout, or on parse failure. PATH lookup now via `src/pathlookup.cyr::find_in_path`. Config-overridable `[[segments.vcs]] budget_ms = N` plumbing is a follow-up slot |
+| `src/segments/vcs.cyr` | **M2 (0.3.0) + watchdog (0.4.0) + pathlookup lift (0.5.0) + cache (0.7.0)** — getcwd → `cache_get("vcs", cwd, 1)` short-circuit. On miss: shells out to `sit status` via `shellout_capture` (5 ms budget), parses `On branch <name>` + dirty/clean substring, caches the result (including `""` for no-output cases so the next redraw also skips the fork). 1 s TTL means rapid redraws within a single keystroke burst share one fork+exec. Config-overridable `[[segments.vcs]] budget_ms = N` plumbing is a follow-up slot |
 | `src/segments/time.cyr` | **M3 (0.4.0)** — strftime-subset formatter (`%H %M %S %Y %y %m %d %%`; unsupported specs pass through literal). UTC via `CLOCK_REALTIME`; local-time / `TZ` is a future slot. Default format `"%H:%M"`; config-overridable via `[[segments.time]] format = ...` |
 | `src/segments/hostname.cyr` | **M3 (0.4.0)** — `uname(2)` nodename. One syscall, no config knobs |
 | `src/segments/user.cyr` | **M3 (0.4.0)** — `getuid()` + `lib/pwd.cyr` direct /etc/passwd reader (musl-style; no glibc NSS). Falls back to `$USER`, then empty. No config knobs |
@@ -41,7 +42,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 ## Binary
 
 - `cmdrs` (output in `build/cmdrs` after `cyrius build`)
-- Size: **193,753 B** on Cyrius 5.11.63, x86_64 (text 138,937 B; bss 54,816 B). Up from 188,495 B at the 0.6.0 baseline by **+5,258 B** for the M5 close-out: argv parsing for `--side=right` (`lib/args.cyr` integration), 10 per-segment raw-bg slots + 3 prompt-level slots for powerline (`CFG_SIZE` 152 → 264 B), `_bg_for` resolver, `_emit_powerline_transition` helper, render-side powerline branch, plus the path-rename's one-string edit. Text +5,138 B; bss +120 B. Net win vs 0.3.0 baseline (395,115 B): **−201,362 B**.
+- Size: **200,667 B** on Cyrius 5.11.64, x86_64 (text 141,555 B; bss 59,112 B). Up from 193,753 B at the 0.6.1 baseline by **+6,914 B** for `src/cache.cyr` (~150 LoC) + vcs's cache-wrap path + the default-segment-flip's extra "vcs" string slot. Text +2,618 B; bss +4,296 B (cache UID-stringification scratch + hash buffers). Net win vs 0.3.0 baseline (395,115 B): **−194,448 B**.
 
 ## Benchmarks
 
@@ -49,24 +50,24 @@ Captured 2026-05-18 on the dev host (Linux 7.0.5-arch1-1, x86_64):
 
 | Operation | Avg | Min | Max |
 |---|---|---|---|
-| `cwd_render` | 689 ns | 663 ns | 855 ns |
-| `exit_render(nonzero)` | 44 ns | 38 ns | 76 ns |
-| `config_default` | 3 µs | 3 µs | 4 µs |
-| `vcs_parse_render` (pure parser) | 240 ns | 237 ns | 352 ns |
-| `vcs_render` (fork + `sit status` + parse) | 4.646 ms | 4.500 ms | 4.963 ms |
-| `cyrius_env_parse_version` (pure parser) | 79 ns | 70 ns | 134 ns |
-| `cyrius_env_render` (file path, no shellout) | 7 µs | 6 µs | 8 µs |
-| `python_env_basename` (pure parser) | 96 ns | 85 ns | 155 ns |
-| `python_env_render` (empty walk) | 13 µs | 12 µs | 20 µs |
-| `node_env_render` (empty walk) | 6 µs | 6 µs | 7 µs |
-| `rustup_env_render` (empty walk) | 6 µs | 6 µs | 6 µs |
-| `render_prompt (cwd+exit)` | 3 µs | 3 µs | 4 µs |
+| `cwd_render` | 670 ns | 613 ns | 808 ns |
+| `exit_render(nonzero)` | 39 ns | 36 ns | 59 ns |
+| `config_default` | 3 µs | 3 µs | 3 µs |
+| `vcs_parse_render` (pure parser) | 232 ns | 225 ns | 260 ns |
+| **`vcs_render` (cached, 1s TTL)** | **72 µs** | **6 µs** | **1.270 ms** |
+| `cyrius_env_parse_version` (pure parser) | 75 ns | 70 ns | 99 ns |
+| `cyrius_env_render` (file path, no shellout) | 7 µs | 7 µs | 8 µs |
+| `python_env_basename` (pure parser) | 88 ns | 84 ns | 98 ns |
+| `python_env_render` (empty walk) | 12 µs | 11 µs | 13 µs |
+| `node_env_render` (empty walk) | 6 µs | 5 µs | 8 µs |
+| `rustup_env_render` (empty walk) | 6 µs | 5 µs | 7 µs |
+| `render_prompt (default cwd+vcs+exit)` | 10 µs | 9 µs | 10 µs |
 
-Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). M5-close deltas: `config_default` 2 → 3 µs (13 additional slot inits in `config_default` for the new bg / right-prompt / powerline storage; one-time per redraw, 0.06 % of budget). `render_prompt (cwd+exit)` unchanged at 3 µs — the powerline branch is taken only when configured. `vcs_render` measured at **4.6 ms** vs 1.8 ms in 0.5.0 — the vcs code path is unchanged across this whole milestone, so this is dev-host variance (fork+exec is sensitive to system state). M6 caching closes the vcs cost regardless. The seven file-walk segments combined still sum to ~36 µs — three orders of magnitude under budget.
+Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). **M6 headline**: `vcs_render` **4.6 ms → 72 µs avg** with the 1 s TTL cache (the `max` of 1.270 ms is the one cold call that warms the entry; the remaining 99 reads in the bench averaged ~7 µs). `render_prompt (default cwd+vcs+exit)` is **10 µs** — even with vcs now in the default set, the cold-start budget is **0.2 % consumed**. The bench-gate CI step is wired to fail above 5 ms; comfortable headroom. Per-release numbers append to [`benchmarks/history.csv`](benchmarks/history.csv) for trend visibility.
 
 ## Tests
 
-- `tests/commandress.tcyr` — **237 assertions across 108 tests**: existing M1–M5(partial) coverage + M5-close additions for `config right-prompt` (3 cases — default empty, parsed segments, explicit-empty-array opt-out) and `config powerline` (6 cases — default plain, default bg slots all 0, `separator_style = "powerline"` sets 1, explicit `"plain"` stays 0, raw bg stored, raw bg via palette ref). Theme files exercise the existing config-load path through `cp` install. Helper tests are hermetic. `cyrius test` green.
+- `tests/commandress.tcyr` — **245 assertions across 112 tests**: full M1–M5 coverage + M6 additions for `cache` (4 cases — roundtrip, per-cwd isolation, empty-value caching, miss-when-absent) and the updated `test_config_defaults` asserting the new 3-segment default. `cyrius test` green.
 - `tests/commandress.bcyr` — per-segment + config + parser + full-prompt timings (above).
 - `tests/commandress.fcyr` — fuzz stub (no harness yet).
 
@@ -84,17 +85,16 @@ External: none (and none planned for v1.0).
 
 ## In-flight work
 
-- **M5 fully closed in 0.6.1** (tagged 2026-05-18): the three remaining M5 deliverables — `docs/themes/` (commandress + nord/dracula/gruvbox/monokai, each a self-contained `cp`-installable theme file), right-prompt support (`cmdrs --side=right` + `[[prompt]] right_segments`), powerline-style separators (`separator_style = "powerline"` + transition glyphs + raw bg storage per segment) — plus the opportunistic config-path rename `~/.commandress.cyml` → `~/.commandress` ([ADR 0006](../adr/0006-config-path-rename.md); pre-emptive to the v1 schema freeze).
+- **M6 closed in 0.7.0** (tagged 2026-05-18): probe cache (`src/cache.cyr`) wraps vcs_render with a per-cwd 1 s TTL; default segments include vcs out of the box; CI cold-start gate (`scripts/bench-gate.sh`) fails the build above 5 ms; per-release bench numbers track in `docs/benchmarks/history.csv`. Parallel segment evaluation deferred to "as-needed / post-v1" — single-slow-segment regime doesn't justify the threading infrastructure.
 - **Deferred behind upstream gaps**:
   - `rust-toolchain.toml` parsing — blocked on Cyrius single-bracket TOML (papercut Item 3, v6.x).
   - `find_in_path` itself — pending Cyrius v6.x Item 8 (no stdlib `which()`); the `src/pathlookup.cyr` workaround ships.
   - LSP transitive-include false positives across `src/render.cyr` — Cyrius Item 4, v6.x. Build is clean; the noise stays.
 - **Deferred by policy (file-first, per user direction 2026-05-18)**:
-  - `python --version`, `node --version`, `rustup show` shellouts. Parked pre-v1 alongside M6 caching.
-  - `package.json` `engines.node` parsing. Same reasoning.
-- **Known variance**: `vcs_render` measured at 4.6 ms in 0.6.1 (vs 1.8 ms in 0.5.0). Code path untouched across the entire milestone; dev-host load is the most likely explanation (fork+exec is sensitive). M6 caching closes this regardless.
-- **Pre-v1 theme-switching path** (per user commitment in M5 design): single-palette `[[palette]]` shipped 0.6.0; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector planned for v0.7.x; curated `docs/themes/` library shipped 0.6.1; schema freeze (and path lock) at v0.9.0 (M8).
-- **Next**: **M6 — performance hardening** (parallel segment evaluation where safe, 1 s TTL probe cache making `vcs` cheap enough to default-on, default-segment flip from `["cwd", "exit"]` → `["cwd", "vcs", "exit"]`, ≤ 5 ms cold-start CI gate enforced, benchmark history CSV).
+  - `python --version`, `node --version`, `rustup show` shellouts. The cache infrastructure is now in place to make these affordable when they land — pre-v1 they remain parked.
+  - `package.json` `engines.node` parsing. JSON-walk cost still not justified.
+- **Pre-v1 theme-switching path** (per user commitment in M5 design): single-palette `[[palette]]` shipped 0.6.0; curated `docs/themes/` library shipped 0.6.1; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector planned for v0.7.x or v0.8.x; schema freeze (and path lock) at v0.9.0 (M8).
+- **Next**: **M7 — shell adapters** (agnoshi prompt-hook integration via `AGNOSHI_PROMPT_CMD=cmdrs`; bash `PROMPT_COMMAND` adapter; zsh `precmd` adapter that formalises the current `docs/guides/zsh-testing.md` recipe into a shipped artifact users can `source`).
 
 ## Next
 

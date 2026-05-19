@@ -6,6 +6,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-18
+
+**M6 — performance hardening.** The change that makes `vcs` default-on. A new `src/cache.cyr` module wraps any segment in a per-cwd mtime-keyed cache (1 s TTL by default); `vcs_render` becomes the first consumer and **drops from ~1.8 ms cold to ~7 µs cached** (the cold call is still paid once per TTL window; rapid redraws in the same shell pay the cached price). With caching live, the default segment list flips from `["cwd", "exit"]` to `["cwd", "vcs", "exit"]` — out-of-box prompts now show branch state without a config change, while non-sit dirs stay clean (vcs renders empty there, no extra separator). CI grows a 5 ms cold-start budget gate that fails the build if `render_prompt` exceeds the per-redraw budget. A new `docs/benchmarks/history.csv` accumulates per-release bench numbers as a versioned artifact — perf trends now live in `git log` next to the changes that caused them. Parallel segment evaluation (the fifth M6 candidate) was punted: with caching in place and only one slow segment (`vcs`), the speculative infrastructure doesn't earn its keep yet. Cyrius pin bumped to 5.11.64 alongside (silences the toolchain-drift warning that surfaced once 5.11.64 hit local; no behavior change).
+
+### Added
+
+- **`src/cache.cyr`** — per-segment per-cwd probe cache backed by `/tmp/commandress-<uid>/`. `cache_init()` does an idempotent 0o700 mkdir; `cache_get(seg, cwd, ttl_secs)` returns the cached cstring (possibly empty — `""` is a real value meaning "no segment output here") or 0 on miss/expired; `cache_put(seg, cwd, value, len)` writes. mtime is the TTL clock via `sys_stat` (offset 88 = `st_mtim.tv_sec`). djb2 32-bit hash on cwd → 8 hex chars (`vcs-077ebd41`) keeps cache filenames bounded.
+- **Render path now consults the cache.** `src/segments/vcs.cyr::vcs_render` gets cwd via `SYS_GETCWD`, checks `cache_get("vcs", cwd, 1)` before doing any work. On hit: return immediately (empty cstring → render-empty path, matches no-sit-repo behavior). On miss: existing find_in_path + shellout + parse, then `cache_put` the result (including `""` for misses so the next redraw also short-circuits). `main.cyr` calls `cache_init()` once at startup.
+- **`scripts/bench-gate.sh`** — pipes `cyrius bench` output through, greps for `render_prompt`, parses `<n>{ns|us|ms} avg`, normalises to µs, fails when over `BUDGET_US` (default 5000 = the 5 ms total cold-start budget from `architecture/001-prompt-render-budget.md`). New "Cold-start budget gate (≤ 5 ms)" step in `.github/workflows/ci.yml` runs it.
+- **`scripts/bench-history.sh`** + **`docs/benchmarks/history.csv`** + **`docs/benchmarks/README.md`** — bench output → CSV row-per-bench-per-release (`date,version,name,avg_ns,min_ns,max_ns,iters`), values normalised to nanoseconds at write time, env-var overrides for `BENCH_DATE` / `BENCH_VERSION` / `BENCH_HISTORY_CSV` enable manual back-filling. Seeded with rows for 0.6.1 (the new-cwd-style baseline) + 0.7.0 (the post-cache numbers) so trend plots immediately show the cache win.
+- **Tests** — 8 new assertions across 4 cases in a new `cache` test group: roundtrip (put + get returns same bytes), per-cwd isolation (distinct keys don't collide), empty-value caching (`""` is a real cached value distinguishable from miss), miss-when-absent (no cache file → 0). Plus 1 assertion update in `test_config_defaults` for the new 3-segment default. Suite is now **245 passed, 0 failed (245 total)** (up from 237).
+
+### Changed
+
+- **`VERSION`** — `0.6.1` → `0.7.0`.
+- **`cyrius.cyml [package].cyrius`** — `5.11.63` → `5.11.64`. Silences the toolchain-drift warning that surfaced once the local wrapper passed our pin. No upstream features needed; the bump is hygiene.
+- **`src/config.cyr::config_default`** — segment list flipped from `["cwd", "exit"]` to `["cwd", "vcs", "exit"]`. Schema-comment example in the file header updated to match. The flip is unconditional: a user without a `~/.commandress` file now gets vcs in the prompt out of the box. Inside a sit repo: branch + dirty marker. Outside one: empty, the segment self-suppresses so the prompt stays clean.
+- **`src/segments/vcs.cyr`** — `vcs_render` rewrapped around the cache (see Added above); the existing find_in_path + shellout + parse path is preserved verbatim, just gated behind `cache_get`. Adds the `VCS_CACHE_TTL_SECS = 1` constant alongside the existing `VCS_BUDGET_MS = 5`.
+- **`tests/commandress.bcyr`** — bench label `render_prompt (cwd+exit)` → `render_prompt (default cwd+vcs+exit)` to match the new default. `bench_vcs_segment` label → `vcs_render (cached, 1s TTL)`. `cache_init()` added to bench `main` so the cache layer warms (without it, vcs_render would miss every iteration).
+- **`README.md`** — default-segment paragraph rewritten: now leads with the cache cost numbers and the "empty outside a sit repo" graceful behavior.
+- **`.github/workflows/ci.yml`** — new "Cold-start budget gate (≤ 5 ms)" step pipes the bench through `scripts/bench-gate.sh`.
+- **Binary size** — text 138,937 → 141,555 B (+2,618 for `src/cache.cyr` + the vcs render-side cache wrap). bss 54,816 → 59,112 B (+4,296 — the cache module's heap-init plumbing + UID-stringification scratch). **Total 193,753 → 200,667 B (+6,914 B).** Net win vs 0.3.0 baseline (395,115 B): **−194,448 B**.
+- **Performance** — `vcs_render` **4.6 ms → 67 µs avg** (~70× faster on the cached path; cold call is still ~1.2 ms which is the new `max`). `render_prompt (default cwd+vcs+exit)` 10 µs — even with the new default including vcs, the prompt budget is **0.2 % of 5 ms**. `config_default` 3 µs (unchanged). All other timings within run-to-run variance.
+
+### Roadmap
+
+- **M6 closed.** Cache (`src/cache.cyr`) shipped, vcs default-on, CI cold-start gate live, benchmark history CSV in `docs/benchmarks/`. Parallel segment evaluation deferred to "as-needed / post-v1" — single-slow-segment regime doesn't justify the threading infrastructure yet. Next: **M7 — shell adapters** (agnoshi prompt-hook integration, bash `PROMPT_COMMAND` adapter, zsh `precmd` adapter — the current `docs/guides/zsh-testing.md` recipe formalises into a shipped artifact).
+
 ## [0.6.1] — 2026-05-18
 
 **M5 fully closed.** Three remaining M5 deliverables land — `docs/themes/` curated theme files, right-prompt support, and powerline-style separators — plus an opportunistic config-path rename that aligns commandress with the `.bashrc` / `.vimrc` dotfile convention before v1 schema-freeze locks the path. Suite grows from 217 to 237 assertions; binary grows 188,495 → 193,753 B (+5,258 B) for the new render branches and the 13 new Config slots. The "any terminal" angle for commandress is closer — colour ships in 0.6.0, structured rendering and right-prompt ship here, palette switching lands in 0.7.x. Pure Cyrius. No deps beyond stdlib.

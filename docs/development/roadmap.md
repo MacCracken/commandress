@@ -19,14 +19,6 @@
 
 ## Milestones
 
-### M6 — Performance hardening (v0.7.0)
-
-- [ ] Parallel segment evaluation (where safe)
-- [ ] Cached probe results across rapid redraws (1s TTL on vcs state, etc.) — the change that makes `vcs` cheap enough for default-on
-- [ ] Default segments flip from `["cwd", "exit"]` to `["cwd", "vcs", "exit"]` once caching lands
-- [ ] Cold-start ≤ 5 ms gate enforced in CI
-- [ ] Benchmark history CSV (deferred from M1)
-
 ### M7 — Shell adapters (v0.8.0)
 
 - [ ] agnoshi adapter (drops `AGNOSHI_PROMPT_CMD=cmdrs` into the shell's prompt hook)

@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "commandress — structured prompt renderer for agnoshi (cmdrs binary)"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "5.11.63"
+cyrius = "5.11.64"
 
 [build]
 entry = "src/main.cyr"

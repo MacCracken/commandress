@@ -11,3 +11,15 @@ date,version,name,avg_ns,min_ns,max_ns,iters
 2026-05-18,0.6.1,node_env_render (empty walk),6000,5000,6000,10000
 2026-05-18,0.6.1,rustup_env_render (empty walk),6000,5000,6000,10000
 2026-05-18,0.6.1,render_prompt (default cwd+vcs+exit),9000,9000,10000,25000
+2026-05-18,0.7.0,cwd_render,663,610,884,100000
+2026-05-18,0.7.0,exit_render(nonzero),39,37,42,1000000
+2026-05-18,0.7.0,config_default,3000,2000,3000,100000
+2026-05-18,0.7.0,vcs_parse_render,229,224,245,1000000
+2026-05-18,0.7.0,vcs_render (cached; 1s TTL),67000,7000,1199000,100
+2026-05-18,0.7.0,cyrius_env_parse_version,74,70,93,1000000
+2026-05-18,0.7.0,cyrius_env_render (file path),7000,6000,9000,5000
+2026-05-18,0.7.0,python_env_basename,91,84,145,1000000
+2026-05-18,0.7.0,python_env_render,12000,12000,12000,10000
+2026-05-18,0.7.0,node_env_render (empty walk),6000,5000,6000,10000
+2026-05-18,0.7.0,rustup_env_render (empty walk),6000,5000,7000,10000
+2026-05-18,0.7.0,render_prompt (default cwd+vcs+exit),9000,9000,10000,25000
