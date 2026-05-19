@@ -94,7 +94,7 @@ External: none (and none planned for v1.0).
   - `python --version`, `node --version`, `rustup show` shellouts. The cache infrastructure is now in place to make these affordable when they land — pre-v1 they remain parked.
   - `package.json` `engines.node` parsing. JSON-walk cost still not justified.
 - **Pre-v1 theme-switching path** (per user commitment in M5 design): single-palette `[[palette]]` shipped 0.6.0; curated `docs/themes/` library shipped 0.6.1; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector planned for v0.7.x or v0.8.x; schema freeze (and path lock) at v0.9.0 (M8).
-- **Next**: **M7 — shell adapters** (agnoshi prompt-hook integration via `AGNOSHI_PROMPT_CMD=cmdrs`; bash `PROMPT_COMMAND` adapter; zsh `precmd` adapter that formalises the current `docs/guides/zsh-testing.md` recipe into a shipped artifact users can `source`).
+- **Next**: **M7 — shell adapters** (agnoshi prompt-hook integration via `AGNOSHI_PROMPT_CMD=cmdrs`; bash `PROMPT_COMMAND` adapter; zsh `precmd` adapter — sourceable shell scripts under `adapters/` so users do one-line `source` integration).
 
 ## Next
 

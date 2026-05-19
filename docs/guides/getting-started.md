@@ -1,6 +1,6 @@
 # Getting started with commandress
 
-> **Status**: v0.5.0 — `cmdrs` is a working prompt. The first-party shell adapters (agnoshi M7 → v0.8.0; bash + zsh same milestone) aren't shipped yet, but the binary is usable today via a `precmd` hook. For zsh in particular, see [`zsh-testing.md`](zsh-testing.md).
+> **Status**: v0.8.0 — `cmdrs` is a working prompt with first-party shell adapters for zsh, bash, and agnoshi shipped under [`adapters/`](../../adapters/). See [`zsh-setup.md`](zsh-setup.md) / [`bash-setup.md`](bash-setup.md) for the one-line `source` integration.
 
 ## Build
 
@@ -96,9 +96,19 @@ export AGNOSHI_PROMPT_CMD=cmdrs
 
 agnoshi invokes `cmdrs` once per prompt redraw, captures stdout, paints it.
 
-## Testing today in zsh (pre-M7)
+## Using `cmdrs` in zsh / bash
 
-The first-party zsh adapter is M7 (v0.8.0). Until then, a four-line `precmd` hook in `~/.zshrc` is enough to drive `cmdrs` from current zsh — see [`zsh-testing.md`](zsh-testing.md) for the recipe + caveats.
+The first-party shell adapters live in [`adapters/`](../../adapters/). One `source` line in your shell rc wires `cmdrs` into the prompt loop:
+
+```sh
+# zsh (~/.zshrc)
+source /path/to/commandress/adapters/zsh.sh
+
+# bash (~/.bashrc)
+source /path/to/commandress/adapters/bash.sh
+```
+
+Detailed setup + customization in [`zsh-setup.md`](zsh-setup.md) and [`bash-setup.md`](bash-setup.md). The agnoshi adapter ([`adapters/agnoshi.sh`](../../adapters/agnoshi.sh)) is the one-env-var contract (`AGNOSHI_PROMPT_CMD=cmdrs`) the AGNOS-native shell consumes.
 
 ## Next
 
