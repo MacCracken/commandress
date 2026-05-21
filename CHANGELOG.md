@@ -6,6 +6,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-05-21
+
+**Toolchain refresh.** Patch release lifting the Cyrius pin from `5.11.64` to `6.0.1` to clear the wrapper/manifest drift (`cyrius --version` reported `manifest-pin: 5.11.64 (drift — wrapper is 6.0.1)` before this bump). No source changes. Suite remains **279 passed, 0 failed**; binary moves from **202,561 B** to **203,040 B** (+479 B, attributable entirely to the toolchain change). Public API per [ADR 0007](docs/adr/0007-schema-freeze.md) unaffected.
+
+### Changed
+
+- **`VERSION`** — `1.0.0` → `1.0.1`.
+- **`cyrius.cyml`** — `[package].cyrius` pin `5.11.64` → `6.0.1`.
+
 ## [1.0.0] — 2026-05-18
 
 **M9 — v1.0 freeze + tag.** No code changes. All v1.0 criteria from [`roadmap.md`](docs/development/roadmap.md) closed in prior milestones: stable config schema ([ADR 0007](docs/adr/0007-schema-freeze.md), 0.9.0), full core segment set (`cwd` / `exit` / `vcs` / `time` / `hostname` / `user` / `cyrius_env` / `python_env` / `node_env` / `rustup_env`, M1–M5), 5 ms cold-start budget with CI gate (0.7.0; current measurement 9 µs avg — 0.2 % of budget), per-segment time budget enforcement (`src/shellout.cyr` watchdog, 0.4.0), shell adapters under [`adapters/`](adapters/) for zsh + bash + agnoshi-contract (0.8.0), security audit pass with 6 fixes ([`docs/audit/2026-05-18-audit.md`](docs/audit/2026-05-18-audit.md), 0.9.0), and finalised benchmarks ([`docs/benchmarks.md`](docs/benchmarks.md), 0.9.0). v1.0 is the doc roll + the `1.0.0` tag — the public API ([config path, schema, colour values, CLI, env-var contract, adapter contract, file paths](docs/adr/0007-schema-freeze.md)) is now frozen; breaking changes from here go through the 3-step deprecation path in ADR 0007. Suite remains **279 passed, 0 failed**; binary remains **202,561 B** on Cyrius 5.11.64.

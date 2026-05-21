@@ -5,7 +5,7 @@
 
 ## Version
 
-**1.0.0** — tagged release 2026-05-18. **M9 closed**: v1.0 freeze + tag. No code changes from 0.9.0; the v1.0 commit is a doc roll (CHANGELOG headline, README refresh from the long-stale v0.3.0 wording, state + roadmap close-out) plus the `1.0.0` tag. All v1.0 criteria from [`roadmap.md`](roadmap.md) closed in prior milestones — stable config schema ([ADR 0007](../adr/0007-schema-freeze.md), 0.9.0), full core segment set (M1–M5), 5 ms cold-start budget with CI gate (0.7.0; current 9 µs avg — 0.2 % of budget), per-segment time budget enforcement (0.4.0), zsh + bash + agnoshi-contract adapters (0.8.0), security audit pass (0.9.0), finalised benchmarks (0.9.0). Public API frozen per ADR 0007; breaking changes from here go through the 3-step deprecation path. Next: **post-v1 cadence** — multi-palette, `rust-toolchain.toml` once Cyrius single-bracket TOML lands, the parked file-first language shellouts, agnoshi adoption.
+**1.0.1** — released 2026-05-21. **Toolchain refresh** patch — Cyrius pin `5.11.64` → `6.0.1`, clearing the wrapper/manifest drift (`cyrius --version` had been printing `manifest-pin: 5.11.64 (drift — wrapper is 6.0.1)`). No source changes; suite remains 279/279 green. Public API per [ADR 0007](../adr/0007-schema-freeze.md) unchanged. Prior: **1.0.0** tagged 2026-05-18 (M9 — v1.0 freeze + tag, doc roll only; all v1.0 criteria from [`roadmap.md`](roadmap.md) closed in M1–M8). Next: **post-v1 cadence** — multi-palette, `rust-toolchain.toml` once Cyrius single-bracket TOML lands, the parked file-first language shellouts, agnoshi adoption.
 
 ## Role
 
