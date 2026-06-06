@@ -99,7 +99,7 @@ enum VcsCacheTtl {
 # we short-circuit the find_in_path + shellout in that case too.
 fn vcs_render(dirty_marker): i64 {
     var cwd_buf[4096];
-    var cwd_n = syscall(SYS_GETCWD, &cwd_buf, 4096);
+    var cwd_n = cmdrs_getcwd(&cwd_buf, 4096);
     if (cwd_n > 0) {
         cwd_n = cwd_n - 1;
         var cwd = alloc(cwd_n + 1);

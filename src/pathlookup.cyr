@@ -33,6 +33,21 @@
 # Same as `find_in_path` but takes the `$PATH`-style cstring directly.
 # Splitting the env-read from the walker lets tests drive the walker
 # with fabricated PATH strings (Cyrius stdlib has no setenv today).
+
+# Shared current-working-directory fetch. Linux uses getcwd(2). AGNOS has
+# no getcwd syscall — CWD is userland-owned (the shell tracks it, see the
+# agnos ABI), so there's no kernel cwd to query yet — return 0 (the
+# cwd-dependent segments degrade to empty). A real agnos CWD source (PWD
+# passed by agnsh, or a cwd primitive) can fill this in later.
+fn cmdrs_getcwd(buf, cap): i64 {
+    #ifdef CYRIUS_TARGET_AGNOS
+    return 0;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    return syscall(SYS_GETCWD, buf, cap);
+    #endif
+}
+
 fn find_in_path_with(path, name): i64 {
     if (path == 0) { return 0; }
     var nlen = strlen(name);
@@ -61,10 +76,16 @@ fn find_in_path_with(path, name): i64 {
                     store8(candidate + dir_len, 47);
                     memcpy(candidate + dir_len + 1, name, nlen);
                     store8(candidate + dir_len + 1 + nlen, 0);
+                    # AGNOS has no access(2) (capability gates, not access checks)
+                    # and no PATH/env — agnsh tools are builtins — so PATH-based
+                    # executable lookup degrades to not-found; the prompt's
+                    # tool-detection segments simply don't fire.
+                    #ifndef CYRIUS_TARGET_AGNOS
                     if (syscall(SYS_ACCESS, candidate, 1) == 0) {
                         hit = candidate;
                         done = 1;
                     }
+                    #endif
                 }
             }
             pi = end + 1;

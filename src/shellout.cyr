@@ -22,6 +22,14 @@
 # budgets land in M6 alongside parallel segment evaluation.
 
 fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
+    # AGNOS has no userland fork/exec-of-external-binaries yet — that lands with
+    # the 1.43.x execwait work. So this fork+exec+wait helper returns -1
+    # ("no output") on agnos; callers (git/tool prompt segments) treat that as
+    # "unavailable" and skip the segment. The static prompt still renders.
+    #ifdef CYRIUS_TARGET_AGNOS
+    return 0 - 1;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
     var budget = budget_ms;
     if (budget < 1) { budget = 1; }
 
@@ -110,4 +118,5 @@ fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
     if (sys_err == 1) { return 0 - 1; }
     if (timed_out == 1) { return 0 - 2; }
     return total;
+    #endif
 }

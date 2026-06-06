@@ -74,7 +74,7 @@ fn _truncate_cwd(path, plen, max_length): i64 {
 
 fn cwd_render(home, max_length): i64 {
     var buf[4096];
-    var n = syscall(SYS_GETCWD, &buf, 4096);
+    var n = cmdrs_getcwd(&buf, 4096);
     if (n <= 0) { return 0; }
     # SYS_GETCWD returns the byte length INCLUDING the trailing NUL.
     # Strip it so memcpy/memeq see only the path bytes.

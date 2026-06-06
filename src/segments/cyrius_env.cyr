@@ -88,7 +88,7 @@ fn _cyrius_env_shellout(): i64 {
 
 fn cyrius_env_render(): i64 {
     var buf[4096];
-    var n = syscall(SYS_GETCWD, &buf, 4096);
+    var n = cmdrs_getcwd(&buf, 4096);
     if (n <= 0) { return 0; }
     n = n - 1;                                                  # strip trailing NUL count
 

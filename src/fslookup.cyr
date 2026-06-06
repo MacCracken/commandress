@@ -57,7 +57,18 @@ fn find_ancestor_with(start_dir, marker): i64 {
         memcpy(candidate, cur, cl);
         memcpy(candidate + cl, marker, marker_len);
         store8(candidate + cl + marker_len, 0);
-        if (syscall(SYS_ACCESS, candidate, 0) == 0) {           # F_OK
+        # Existence check. AGNOS has no access(2); it has stat#33
+        # (path, pathlen, statbuf) → 0 if the inode exists, and a real ext2 FS,
+        # so marker detection (.git etc.) works natively. Linux uses access F_OK.
+        var found = 0;
+        #ifdef CYRIUS_TARGET_AGNOS
+        var stbuf[48];
+        if (syscall(SYS_STAT, candidate, cl + marker_len, &stbuf) == 0) { found = 1; }
+        #endif
+        #ifndef CYRIUS_TARGET_AGNOS
+        if (syscall(SYS_ACCESS, candidate, 0) == 0) { found = 1; }      # F_OK
+        #endif
+        if (found == 1) {
             var out = alloc(cl + 1);
             memcpy(out, cur, cl);
             store8(out + cl, 0);

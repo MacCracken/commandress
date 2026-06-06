@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-06 (AGNOS as a build target — builds on both Linux and agnos)
+
+### Added
+
+- **AGNOS platform support** (VERSION → 1.1.0; cyrius pin 6.0.1 → 6.0.56). `cmdrs` now builds under `cyrius build --agnos` and renders inside the agnsh shell (output via the agnos `write` syscall). Each Linux-only syscall was gated inline (`#ifdef CYRIUS_TARGET_AGNOS`), with the right agnos behavior per segment rather than a blanket stub:
+  - **hostname** segment → works natively via agnos `uname`#34 (64-byte struct, nodename @16) — shows the real agnos hostname (`src/segments/hostname.cyr`).
+  - **fs marker detection** (`.git` etc.) → uses agnos `stat`#33 (agnos has a real ext2 FS), so context detection works (`src/fslookup.cyr`).
+  - **`cwd`** → new shared `cmdrs_getcwd` helper (`src/pathlookup.cyr`); the 6 cwd-consuming segments route through it. AGNOS has no `getcwd` syscall (CWD is userland-owned per the agnos ABI), so it returns 0 and the cwd-dependent segments (cwd + node/python/cyrius/rust/vcs env detection) **degrade to empty** until agnos exposes a CWD source (PWD from agnsh, or a cwd primitive).
+  - **subprocess git/tool segments** (`shellout_capture`) → return "unavailable" on agnos (no userland fork/exec-of-external-binaries until the **1.43.x `execwait`** work); callers skip the segment.
+  - **PATH executable lookup** (`access`) → degrades on agnos (no PATH/access; agnsh tools are builtins).
+- Net: the static prompt + hostname render on agnos today; dynamic (cwd/git/tool) segments light up as agnos grows (`execwait` 1.43.x, a CWD source). Inline gating, no shared platform-abstraction layer. Linux path unchanged.
+
+### Validated
+
+- `cyrius build --agnos src/main.cyr` → **OK** (`cmdrs_agnos`, 189 KB). Linux build unaffected (**OK**).
+
 ## [1.0.1] — 2026-05-21
 
 **Toolchain refresh.** Patch release lifting the Cyrius pin from `5.11.64` to `6.0.1` to clear the wrapper/manifest drift (`cyrius --version` reported `manifest-pin: 5.11.64 (drift — wrapper is 6.0.1)` before this bump). No source changes. Suite remains **279 passed, 0 failed**; binary moves from **202,561 B** to **203,040 B** (+479 B, attributable entirely to the toolchain change). Public API per [ADR 0007](docs/adr/0007-schema-freeze.md) unaffected.

@@ -44,12 +44,13 @@ jobs:
           cyrius build src/main.cyr build/cmdrs
 
       - name: Test
-        # v5.6.28: bare `cyrius test` picks up the [build].test entry
-        # AND auto-discovers tests/*.tcyr — avoids the previous
-        # `cyrius test src/test.cyr` form that hard-failed when the
-        # stub didn't exist (Issue 1) and also wouldn't ever exercise
-        # tests/${proj}.tcyr.
-        run: cyrius test
+        # Explicit .tcyr path (matches patra + mihi/iam/chakshu) — the version-
+        # stable form across the 6.0.x line. Bare `cyrius test` stopped auto-
+        # discovering .tcyr (fails "No .tcyr files"), and the `cyrius tests`
+        # discovery subcommand only exists in cyrius AFTER 6.0.56 (the pin) — so
+        # the CI's pinned toolchain rejects it ("Unknown command"). `cyrius test
+        # <file.tcyr>` works on every 6.0.x.
+        run: cyrius test tests/commandress.tcyr
 
       - name: Cold-start budget gate (≤ 5 ms)
         # `cyrius bench` runs the full bench suite; the gate script

@@ -18,10 +18,23 @@ enum UtsLayout {
 
 fn hostname_render(): i64 {
     var uts[390];
+    # AGNOS uname is syscall #34 with (buf, len) and a 64-byte struct whose
+    # nodename field sits at offset 16 (Linux uname #63 fills the 390-byte
+    # utsname with nodename at 65). 390 covers both; agnos writes 64.
+    #ifdef CYRIUS_TARGET_AGNOS
+    var r = syscall(34, &uts, 64);
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
     var r = syscall(SYS_UNAME, &uts);
+    #endif
     if (r != 0) { return 0; }
 
+    #ifdef CYRIUS_TARGET_AGNOS
+    var nodename = &uts + 16;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
     var nodename = &uts + UTSNAME_NODENAME_OFFSET;
+    #endif
     var nlen = strlen(nodename);
     if (nlen == 0) { return 0; }
 
