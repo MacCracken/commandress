@@ -264,6 +264,19 @@ fn file_write_all_r(path, buf, len): Result {
 # Read environment variable by name. Returns pointer to value or 0 if not found.
 # Reads from /proc/self/environ (null-separated KEY=VALUE pairs).
 fn getenv(name): i64 {
+    # agnos has no /proc/self/environ; the kernel stages envp on the exec init
+    # stack (agnos 1.43.2). Delegate to args_agnos.cyr's _agnos_getenv, which
+    # owns the _agnos_init_rsp capture (forward fn ref — io.cyr precedes args in
+    # the stdlib include order). See ABI §4.6. v6.0.87.
+    #ifdef CYRIUS_TARGET_AGNOS
+    return _agnos_getenv(name);
+    #endif
+    # The /proc/self/environ reader (and its 8 KB var buf) must stay out of the
+    # agnos frame entirely: a function-local var[] in a statically-dead region
+    # after the early agnos return still reserves stack at the prologue, and
+    # agnos hands ring-3 only ~12 KB of init stack — an 8 KB phantom frame
+    # overflows it (agnoshi_147 #PF). See CHANGELOG [6.1.12].
+    #ifndef CYRIUS_TARGET_AGNOS
     var buf[8192];
     var fd = file_open("/proc/self/environ", 0, 0);
     if (fd < 0) { return 0; }
@@ -297,4 +310,5 @@ fn getenv(name): i64 {
         pos = pos + 1;
     }
     return 0;
+    #endif
 }

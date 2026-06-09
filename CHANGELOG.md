@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-06-08 (agnos argv fix)
+
+### Changed
+
+- cyrius toolchain pin 6.0.56 → 6.1.14.
+
+### Fixed
+
+- **agnos: command-line args weren't seen.** Call `main` from a bare top-level statement (`_agnos_entry();`) instead of `var r = main();`. The latter runs `main` as a module-global initializer, *before* cyrius's init-stack capture, so `argc()`/`argv()` read 0/null. cyrius issue: agnos argv init-rsp capture.
+
 ## [1.1.0] — 2026-06-06 (AGNOS as a build target — builds on both Linux and agnos)
 
 ### Added

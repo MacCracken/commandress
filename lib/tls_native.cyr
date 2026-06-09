@@ -4,17 +4,22 @@
 #           (crypto primitives: ChaCha20-Poly1305, AES-GCM, HKDF, SHA-2,
 #            X25519, ECDSA, X.509)
 #
-# **Status: v6.0.10 SCAFFOLD — public API + types + error codes only.**
-# Every fn here returns TLS_ERR_NOT_IMPLEMENTED until the protocol-layer
-# slots land:
-#   .11 — record layer (ContentType / fragmentation / sequence numbers)
-#   .12 — handshake message framing
-#   .13 — TLS 1.3 key schedule (HKDF tree)
-#   .14 — ciphersuite negotiation
-#   .15-.22 — TLS 1.3 client
-#   .23-.28 — TLS 1.3 server
-#   .29-.34 — TLS 1.2 backport
-#   .35-.37 — consumer wiring + arc closeout
+# **Status (corrected 2026-06-04 — the prior "v6.0.10 SCAFFOLD / every fn
+# returns NOT_IMPLEMENTED" header was stale and false; the stack works):**
+#   IMPLEMENTED — TLS 1.3 client + server: record layer, handshake framing,
+#     1.3 key schedule (HKDF tree), ciphersuite negotiation (slots .11–.28).
+#     Interops with OpenSSL 3.x (client↔server CONNECTED). A working 1.3 stack.
+#   KNOWN HOLES — three PUBLIC fns still `return TLS_ERR_NOT_IMPLEMENTED`:
+#     `tls_native_set_alpn`, `tls_native_set_version_range`, `tls_native_close`
+#     (no clean close_notify). A consumer hits these silently. Tracked:
+#     issues/2026-06-04-shipped-broken-functionality-found-by-consumers.md.
+#   IN PROGRESS — TLS 1.2 backport (Mini-arc D). .72 landed the 1.2 AEAD
+#     record layer (record_seal_12 / _open_12: 13-byte AAD, GCM explicit
+#     nonce per RFC 5288, ChaCha20-Poly1305 implicit nonce per RFC 7905;
+#     legacy CBC intentionally skipped). Still ahead: 1.2 handshake +
+#     PRF key derivation + cert/Finished + ciphersuites + e2e.
+#   NOT YET DONE — consumer wiring/closeout (Mini-arc E); pinned in
+#     roadmap.md (v6.0.x). Per-slot landing history in CHANGELOG.
 #
 # **Why a sovereign stack** (vs the existing `lib/tls.cyr` libssl
 # wrapper):
@@ -132,6 +137,34 @@ enum TlsCipherSuite {
     TLS_AES_128_GCM_SHA256 = 0x1301;
     TLS_AES_256_GCM_SHA384 = 0x1302;
     TLS_CHACHA20_POLY1305_SHA256 = 0x1303;
+}
+
+# ================================================================
+# TLS 1.2 ciphersuites (IANA — RFC 5289 §3.2 GCM + RFC 7905 ChaCha)
+# ================================================================
+# Modern AEAD-only set: ECDHE key exchange, ECDSA/RSA auth, AES-GCM
+# or ChaCha20-Poly1305. The 2-byte WIRE id is distinct from the
+# internal AEAD-identity (the 1.3 0x130x consts) the .72/.73 record +
+# PRF layer dispatches on — tls_native_12_cipher_aead_identity maps
+# wire -> identity. Completable today: 0xC02C + 0xCCA9 only (ECDSA
+# auth + a sigil-backed AEAD). AES-128 (0x1301) is unbacked in sigil
+# AND has no aead_encrypt branch; RSA-auth suites await sigil RSA
+# sign/verify. See CHANGELOG [6.0.74].
+enum Tls12CipherSuite {
+    TLS12_ECDHE_ECDSA_AES128_GCM_SHA256 = 0xC02B;
+    TLS12_ECDHE_ECDSA_AES256_GCM_SHA384 = 0xC02C;
+    TLS12_ECDHE_RSA_AES128_GCM_SHA256   = 0xC02F;
+    TLS12_ECDHE_RSA_AES256_GCM_SHA384   = 0xC030;
+    TLS12_ECDHE_RSA_CHACHA20_SHA256     = 0xCCA8;   # RSA = LOWER last byte
+    TLS12_ECDHE_ECDSA_CHACHA20_SHA256   = 0xCCA9;
+}
+
+# Authentication algorithm a 1.2 ciphersuite requires of the server's
+# certificate / signature. The AEAD-identity collapse erases this
+# (0xC02B and 0xC02F both -> 0x1301), so it is a separate lookup.
+enum Tls12AuthAlgo {
+    TLS12_AUTH_ECDSA = 0;
+    TLS12_AUTH_RSA   = 1;
 }
 
 # ================================================================
@@ -973,6 +1006,7 @@ fn tls_native_cipher_tag_len(cipher): i64 {
 fn tls_native_cipher_supported(cipher): i64 {
     if (cipher == TLS_AES_256_GCM_SHA384)       { return 1; }
     if (cipher == TLS_CHACHA20_POLY1305_SHA256) { return 1; }
+    if (cipher == TLS_AES_128_GCM_SHA256)       { return 1; }   # See CHANGELOG [6.0.83]
     return 0;
 }
 
@@ -1004,6 +1038,85 @@ fn tls_native_cipher_select(client_offers, n_offers, server_prefs, n_prefs): i64
     return 0;
 }
 
+# ================================================================
+# TLS 1.2 ciphersuite registry (wire-id lookups)
+# ================================================================
+# The .72/.73 record + PRF layer dispatches on the internal AEAD
+# identity (the 1.3 0x130x consts), NOT the 1.2 wire id. These map a
+# 1.2 wire ciphersuite onto that identity + its auth algo + its PRF
+# hash, so the protocol layer can negotiate by wire id while the
+# crypto layer stays identity-driven. See CHANGELOG [6.0.74].
+
+# Map a 1.2 wire ciphersuite to the internal AEAD-identity const used
+# by every .72/.73 helper (key_len / iv_len_12 / tag_len / hash_algo /
+# is_gcm / aead_encrypt / 12_prf). Returns -1 for an unknown id. The
+# value MUST be stored at TLS_CTX_OFF_CIPHER (never the wire id) — a
+# wire id there makes all those lookups return -1/0 and silently
+# mis-derives the whole key schedule.
+fn tls_native_12_cipher_aead_identity(wire_id): i64 {
+    if (wire_id == TLS12_ECDHE_ECDSA_AES128_GCM_SHA256) { return TLS_AES_128_GCM_SHA256; }
+    if (wire_id == TLS12_ECDHE_RSA_AES128_GCM_SHA256)   { return TLS_AES_128_GCM_SHA256; }
+    if (wire_id == TLS12_ECDHE_ECDSA_AES256_GCM_SHA384) { return TLS_AES_256_GCM_SHA384; }
+    if (wire_id == TLS12_ECDHE_RSA_AES256_GCM_SHA384)   { return TLS_AES_256_GCM_SHA384; }
+    if (wire_id == TLS12_ECDHE_ECDSA_CHACHA20_SHA256)   { return TLS_CHACHA20_POLY1305_SHA256; }
+    if (wire_id == TLS12_ECDHE_RSA_CHACHA20_SHA256)     { return TLS_CHACHA20_POLY1305_SHA256; }
+    return 0 - 1;
+}
+
+# Map a 1.2 wire ciphersuite to the server-auth algorithm (TLS12_AUTH_*).
+# Drives the ServerKeyExchange signer + the client's sig-verify path.
+# Returns -1 for an unknown id.
+fn tls_native_12_cipher_auth(wire_id): i64 {
+    if (wire_id == TLS12_ECDHE_ECDSA_AES128_GCM_SHA256) { return TLS12_AUTH_ECDSA; }
+    if (wire_id == TLS12_ECDHE_ECDSA_AES256_GCM_SHA384) { return TLS12_AUTH_ECDSA; }
+    if (wire_id == TLS12_ECDHE_ECDSA_CHACHA20_SHA256)   { return TLS12_AUTH_ECDSA; }
+    if (wire_id == TLS12_ECDHE_RSA_AES128_GCM_SHA256)   { return TLS12_AUTH_RSA; }
+    if (wire_id == TLS12_ECDHE_RSA_AES256_GCM_SHA384)   { return TLS12_AUTH_RSA; }
+    if (wire_id == TLS12_ECDHE_RSA_CHACHA20_SHA256)     { return TLS12_AUTH_RSA; }
+    return 0 - 1;
+}
+
+# Map a 1.2 wire ciphersuite to its PRF + transcript hash (TLS_HASH_*).
+# Answers for all six registered suites (even unsupported ones).
+# Consumers: transcript_init + verify_data's handshake-hash length.
+# (NOT 12_prf, which derives its hash from the identity internally.)
+# Returns -1 for an unknown id.
+fn tls_native_12_cipher_hash(wire_id): i64 {
+    if (wire_id == TLS12_ECDHE_ECDSA_AES256_GCM_SHA384) { return TLS_HASH_SHA384; }
+    if (wire_id == TLS12_ECDHE_RSA_AES256_GCM_SHA384)   { return TLS_HASH_SHA384; }
+    if (wire_id == TLS12_ECDHE_ECDSA_AES128_GCM_SHA256) { return TLS_HASH_SHA256; }
+    if (wire_id == TLS12_ECDHE_RSA_AES128_GCM_SHA256)   { return TLS_HASH_SHA256; }
+    if (wire_id == TLS12_ECDHE_ECDSA_CHACHA20_SHA256)   { return TLS_HASH_SHA256; }
+    if (wire_id == TLS12_ECDHE_RSA_CHACHA20_SHA256)     { return TLS_HASH_SHA256; }
+    return 0 - 1;
+}
+
+# Capability: 1 if cyrius can complete a 1.2 handshake using this wire
+# ciphersuite, 0 otherwise. EXPLICIT allowlist (so unregistered ids
+# default unsupported). ECDHE_ECDSA + ECDHE_RSA over AES-128-GCM /
+# AES-256-GCM / ChaCha20-Poly1305 — RSA-auth (SKE verify) and AES-128-GCM
+# both wired in .83. See CHANGELOG [6.0.83].
+fn tls_native_12_cipher_supported(wire_id): i64 {
+    if (wire_id == TLS12_ECDHE_ECDSA_AES256_GCM_SHA384) { return 1; }
+    if (wire_id == TLS12_ECDHE_ECDSA_CHACHA20_SHA256)   { return 1; }
+    if (wire_id == TLS12_ECDHE_ECDSA_AES128_GCM_SHA256) { return 1; }
+    if (wire_id == TLS12_ECDHE_RSA_AES256_GCM_SHA384)   { return 1; }
+    if (wire_id == TLS12_ECDHE_RSA_AES128_GCM_SHA256)   { return 1; }
+    if (wire_id == TLS12_ECDHE_RSA_CHACHA20_SHA256)     { return 1; }
+    return 0;
+}
+
+# Reverse map: pick the 1.2 wire ciphersuite to put in the ServerHello
+# for a chosen AEAD identity + auth algo. Only the two supported
+# (ECDSA) suites are emitted; returns -1 otherwise. 2-of-our-3-arg.
+fn tls_native_aead_to_wire_12(aead_id, auth): i64 {
+    if (auth == TLS12_AUTH_ECDSA) {
+        if (aead_id == TLS_AES_256_GCM_SHA384)       { return TLS12_ECDHE_ECDSA_AES256_GCM_SHA384; }
+        if (aead_id == TLS_CHACHA20_POLY1305_SHA256) { return TLS12_ECDHE_ECDSA_CHACHA20_SHA256; }
+    }
+    return 0 - 1;
+}
+
 # ----------------------------------------------------------------
 # AEAD encrypt / decrypt (RFC 8446 §5.2)
 # ----------------------------------------------------------------
@@ -1017,6 +1130,12 @@ fn tls_native_aead_encrypt(cipher, key, iv12, aad, aad_len,
 pt, pt_len, ct_out, tag_out): i64 {
     if (cipher == TLS_AES_256_GCM_SHA384) {
         aes_gcm_encrypt(key, iv12, aad, aad_len, pt, pt_len, ct_out, tag_out);
+        return TLS_OK;
+    }
+    if (cipher == TLS_AES_128_GCM_SHA256) {
+        # AES-128 = nr=10; aes_gcm_encrypt hardcodes nr=14 (AES-256) and would
+        # run a 14-round schedule over a 16-byte key. See CHANGELOG [6.0.83].
+        aes_128_gcm_encrypt(key, iv12, aad, aad_len, pt, pt_len, ct_out, tag_out);
         return TLS_OK;
     }
     if (cipher == TLS_CHACHA20_POLY1305_SHA256) {
@@ -1033,6 +1152,11 @@ ct, ct_len, tag, pt_out): i64 {
     if (cipher == TLS_AES_256_GCM_SHA384) {
         var r = aes_gcm_decrypt(key, iv12, aad, aad_len, ct, ct_len, tag, pt_out);
         if (r != 0) { return TLS_ERR_DECRYPT; }
+        return TLS_OK;
+    }
+    if (cipher == TLS_AES_128_GCM_SHA256) {
+        var r3 = aes_128_gcm_decrypt(key, iv12, aad, aad_len, ct, ct_len, tag, pt_out);
+        if (r3 != 0) { return TLS_ERR_DECRYPT; }
         return TLS_OK;
     }
     if (cipher == TLS_CHACHA20_POLY1305_SHA256) {
@@ -1065,7 +1189,7 @@ ct, ct_len, tag, pt_out): i64 {
 # control block; +136..+255 is reserved for the read/write key
 # material, sequence numbers, and I/O buffers Mini-arcs B-D append.
 
-var TLS_CTX_LEN          = 448;   # 56 i64 slots; room for B-D growth
+var TLS_CTX_LEN          = 456;   # 57 i64 slots; room for B-D growth
 var TLS_CTX_OFF_ROLE       = 0;   # TlsRole (CLIENT/SERVER)
 var TLS_CTX_OFF_STATE      = 8;   # TlsState
 var TLS_CTX_OFF_VERSION    = 16;  # negotiated TlsProtocolVersion (0 until SH)
@@ -1124,6 +1248,23 @@ var TLS_CTX_OFF_CLI_APP_IV    = 384; # client application-traffic static IV ptr
 var TLS_CTX_OFF_SRV_APP_SEQ   = 392; # inline 8-byte server app-record sequence
 var TLS_CTX_OFF_CLI_APP_SEQ   = 400; # inline 8-byte client app-record sequence
 var TLS_CTX_OFF_CA_ROOT       = 408; # client: parsed trust-anchor cert (.29)
+var TLS_CTX_OFF_MASTER12      = 416; # TLS 1.2: ptr to the 48-byte master_secret (.74)
+# — 1.2 has no HKDF keysched object, so both
+# Finished verify_data computations need a home
+# for the master here. 432/440 stay free
+# within TLS_CTX_LEN=448.
+var TLS_CTX_OFF_USE_EMS       = 424; # TLS 1.2 Extended Master Secret (RFC 7627, .77):
+# 1 = EMS negotiated, 0 = legacy. READ by
+# derive_keys; SET/cleared by the CH/SH parsers.
+# Zeroed by the new_ctx loop → defaults to legacy.
+var TLS_CTX_OFF_ALPN_OFFER    = 432; # ALPN (RFC 7301, .78): ptr to [be16 len][protos]
+# offered list (OpenSSL-style 1-byte-len-prefixed protos), or 0.
+# SET by set_alpn; READ by the CH builders.
+var TLS_CTX_OFF_ALPN_SEL      = 440; # ALPN: ptr to [u8 len][proto] the peer selected, or 0.
+# SET by the SH/EE parsers; READ by get_alpn_selected.
+var TLS_CTX_OFF_SERVER_INTERS = 448; # client: ptr to [count][interm0 ptr]... the server's
+# intermediate certs in TLS (leaf→root) order, or 0. SET by the cert-chain parser;
+# READ (reversed) by verify_chain. (.78 trust-store + intermediate-chain walk)
 
 # Handshake state-machine events. The protocol-message build/parse
 # that fires each event lands in .16-.19; this slot validates the
@@ -1295,7 +1436,11 @@ fn tls_native_client_build_hello(ctx, out, out_max): i64 {
     if (host != 0) {
         if (host_len > 0) { sni_ext = 4 + 2 + 1 + 2 + host_len; }
     }
-    var ext_block = 7 + 8 + 12 + 42 + sni_ext;       # sv + sg + sa + key_share + SNI
+    var alpn = load64(ctx + TLS_CTX_OFF_ALPN_OFFER);
+    var apl = 0;
+    var alpn_ext = 0;
+    if (alpn != 0) { apl = _tn_be16_r(alpn); alpn_ext = 6 + apl; }   # 4 hdr + 2 list-len + protos
+    var ext_block = 7 + 8 + 16 + 42 + sni_ext + alpn_ext;   # sv+sg+sa(5)+key_share+SNI+ALPN; CHANGELOG [6.0.83]
     var body_len = 2 + 32 + 1 + 2 + 6 + 2 + 2 + ext_block;
     var total = TLS_HANDSHAKE_HEADER_LEN + body_len;
     if (total > out_max) { return _tn_ctx_fail(ctx, TLS_ERR_BUFFER_FULL); }
@@ -1327,10 +1472,12 @@ fn tls_native_client_build_hello(ctx, out, out_max): i64 {
     _tn_be16_w(p, 2); p = p + 2;                       # groups list length
     _tn_be16_w(p, TLS_GROUP_X25519); p = p + 2;
     _tn_be16_w(p, 13); p = p + 2;                      # signature_algorithms
-    _tn_be16_w(p, 8); p = p + 2;
-    _tn_be16_w(p, 6); p = p + 2;                       # sig algs list length
+    _tn_be16_w(p, 12); p = p + 2;                      # ext_data len (2 + 5*2); see CHANGELOG [6.0.83]
+    _tn_be16_w(p, 10); p = p + 2;                      # sig algs list length (5 schemes)
     _tn_be16_w(p, TLS_SIG_ECDSA_SECP256R1_SHA256); p = p + 2;
     _tn_be16_w(p, TLS_SIG_ECDSA_SECP384R1_SHA384); p = p + 2;
+    _tn_be16_w(p, TLS_SIG_RSA_PSS_RSAE_SHA256); p = p + 2;   # RSA-cert servers
+    _tn_be16_w(p, TLS_SIG_RSA_PSS_RSAE_SHA384); p = p + 2;
     _tn_be16_w(p, TLS_SIG_ED25519); p = p + 2;
     _tn_be16_w(p, TLS_EXT_KEY_SHARE); p = p + 2;
     _tn_be16_w(p, 38); p = p + 2;
@@ -1338,6 +1485,12 @@ fn tls_native_client_build_hello(ctx, out, out_max): i64 {
     _tn_be16_w(p, TLS_GROUP_X25519); p = p + 2;
     _tn_be16_w(p, 32); p = p + 2;
     memcpy(p, epub, 32); p = p + 32;
+    if (alpn != 0) {
+        _tn_be16_w(p, TLS_EXT_ALPN); p = p + 2;
+        _tn_be16_w(p, 2 + apl); p = p + 2;             # extension_data length
+        _tn_be16_w(p, apl); p = p + 2;                  # ProtocolNameList length
+        memcpy(p, alpn + 2, apl); p = p + apl;          # the offered protocols
+    }
     var chbuf = alloc(total);
     if (chbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     memcpy(chbuf, out, total);
@@ -1464,6 +1617,90 @@ fn tls_native_client_open_handshake(ctx, record, record_len, out, out_max, out_c
 # server Finished message is stashed for .27 (the transcript stays at
 # CH..CertificateVerify). Returns TLS_OK, TLS_ERR_AUTHN on a bad
 # signature, or another negative TLS_ERR_* (ctx → ERROR).
+# Verify a DER-encoded ECDSA-P384 signature (SHA-384). sigil ships
+# ecdsa_p384_verify on RAW r||s (96 bytes), so parse the DER SEQUENCE { r, s }
+# into a 96-byte buffer (each left-padded to 48) with sigil's _ecdsa_der_int_w.
+# `pk` is the 96-byte affine Qx||Qy. Returns 1 (valid) / 0 (invalid/malformed).
+fn _tn_ecdsa_p384_verify_der(pk, msg, msg_len, sig_der, sig_der_len): i64 {
+    var raw = alloc(96);
+    if (raw == 0) { return 0; }
+    memset(raw, 0, 96);
+    var off = _ecdsa_der_int_w(sig_der, 2, sig_der_len, raw, 48);
+    if (off < 0) { return 0; }
+    off = _ecdsa_der_int_w(sig_der, off, sig_der_len, raw + 48, 48);
+    if (off < 0) { return 0; }
+    return ecdsa_p384_verify(pk, msg, msg_len, raw);
+}
+
+# Verify an RSA signature over `msg` with the leaf cert's RSA pubkey, dispatched
+# by the TLS SignatureScheme: PKCS#1 v1.5 (1.2 ServerKeyExchange) + PSS (1.2 + 1.3
+# CertificateVerify), SHA-256/384. Returns 1 (valid), 0 (invalid — incl. an RSA
+# scheme on a non-RSA cert), or -1 if `scheme` is not an RSA scheme (caller tries
+# the EC/EdDSA algos). The RSA modulus/exponent live in sigil's 544-byte side
+# block (cert+248: n[512] | e@512 | n_len@528 | e_len@536). See CHANGELOG [6.0.83].
+fn _tn_rsa_verify_scheme(scheme, leaf, msg, msg_len, sig, sig_len): i64 {
+    var is_rsa = 0;
+    if (scheme == TLS_SIG_RSA_PSS_RSAE_SHA256) { is_rsa = 1; }
+    if (scheme == TLS_SIG_RSA_PSS_RSAE_SHA384) { is_rsa = 1; }
+    if (scheme == TLS_SIG_RSA_PKCS1_SHA256)    { is_rsa = 1; }
+    if (scheme == TLS_SIG_RSA_PKCS1_SHA384)    { is_rsa = 1; }
+    if (is_rsa == 0) { return 0 - 1; }
+    var rblk = x509_cert_rsa_pubkey(leaf);
+    if (rblk == 0) { return 0; }                       # RSA scheme, non-RSA cert → invalid
+    var rn = rblk;
+    var rnl = load64(rblk + 528);
+    var re = rblk + 512;
+    var rel = load64(rblk + 536);
+    if (scheme == TLS_SIG_RSA_PSS_RSAE_SHA256) {
+        return rsa_pss_verify_sha256(rn, rnl, re, rel, msg, msg_len, sig, sig_len);
+    }
+    if (scheme == TLS_SIG_RSA_PSS_RSAE_SHA384) {
+        return rsa_pss_verify_sha384(rn, rnl, re, rel, msg, msg_len, sig, sig_len);
+    }
+    if (scheme == TLS_SIG_RSA_PKCS1_SHA256) {
+        return rsa_pkcs1v15_verify_sha256(rn, rnl, re, rel, msg, msg_len, sig, sig_len);
+    }
+    return rsa_pkcs1v15_verify_sha384(rn, rnl, re, rel, msg, msg_len, sig, sig_len);
+}
+
+# Verify a server handshake signature (1.3 CertificateVerify / 1.2
+# ServerKeyExchange) over `msg` by SignatureScheme. Derives the cert's affine
+# EC pubkey for ECDSA/EdDSA; RSA pulls n/e from the cert side block. Returns
+# 1 (valid), 0 (invalid), or -1 (unsupported scheme → caller maps to
+# KEY_UNSUPPORTED). NOTE: a 1.3 caller MUST reject the PKCS#1 v1.5 schemes
+# (0x0401/0x0501) before calling — RFC 8446 §4.2.3 forbids them in the 1.3
+# handshake; this helper accepts them for the 1.2 SKE. See CHANGELOG [6.0.83].
+fn _tn_verify_sig_scheme(scheme, leaf, msg, msg_len, sig, sig_len): i64 {
+    var pk = x509_cert_pubkey(leaf);
+    if (scheme == TLS_SIG_ECDSA_SECP256R1_SHA256) {
+        return ecdsa_p256_verify_der(pk, msg, msg_len, sig, sig_len);
+    }
+    if (scheme == TLS_SIG_ECDSA_SECP384R1_SHA384) {
+        return _tn_ecdsa_p384_verify_der(pk, msg, msg_len, sig, sig_len);
+    }
+    if (scheme == TLS_SIG_ED25519) {
+        return ed25519_verify(pk, msg, msg_len, sig);
+    }
+    return _tn_rsa_verify_scheme(scheme, leaf, msg, msg_len, sig, sig_len);
+}
+
+# True (1) iff buf[0..len] holds a COMPLETE server flight — a run of handshake
+# messages (4-byte header + body) ending in a fully-present `end_type` message
+# (Finished/20 for the 1.3 encrypted flight; ServerHelloDone/14 for the 1.2
+# plaintext flight). 0 = more record bytes still needed. Drives both clients'
+# reassembly of a flight a real server fragments across TLS records.
+fn _tn_flight_complete(buf, len, end_type): i64 {
+    var pos = 0;
+    while (pos + TLS_HANDSHAKE_HEADER_LEN <= len) {
+        var ml = _tn_be24_r(buf + pos + 1);
+        if (pos + TLS_HANDSHAKE_HEADER_LEN + ml > len) { return 0; }
+        var mt = load8(buf + pos) & 0xFF;
+        pos = pos + TLS_HANDSHAKE_HEADER_LEN + ml;
+        if (mt == end_type) { return 1; }
+    }
+    return 0;
+}
+
 fn tls_native_client_recv_flight(ctx, record, record_len): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
     if (load64(ctx + TLS_CTX_OFF_ROLE) != TLS_ROLE_CLIENT) {
@@ -1472,12 +1709,35 @@ fn tls_native_client_recv_flight(ctx, record, record_len): i64 {
     var ts = load64(ctx + TLS_CTX_OFF_TRANSCRIPT);
     if (ts == 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
     var hlen = _tn_hash_len(load64(ts));
-    var plain = alloc(TLS_RECORD_MAX_PLAINTEXT + 16);
+    # The server flight (EncryptedExtensions, Certificate, CertificateVerify,
+    # Finished) can span MULTIPLE TLS records — a real server fragments a large
+    # Certificate (chain + SCTs) across record boundaries, or splits the flight
+    # arbitrarily (RFC 8446 §5.1). Decrypt the first record, then keep reading +
+    # decrypting handshake records into ONE plaintext buffer until the flight is
+    # complete (through Finished). Each open_handshake advances the read seq.
+    var pcap = 65536;
+    var plain = alloc(pcap);
     if (plain == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     var ct = 0;
-    var plen = tls_native_client_open_handshake(ctx, record, record_len, plain, TLS_RECORD_MAX_PLAINTEXT + 16, &ct);
+    var plen = tls_native_client_open_handshake(ctx, record, record_len, plain, pcap, &ct);
     if (plen < 0) { return plen; }
     if (ct != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+    var fd = load64(ctx + TLS_CTX_OFF_SOCK_FD);
+    var rcap = TLS_RECORD_MAX_CIPHERTEXT + TLS_RECORD_HEADER_LEN;
+    var rdone = _tn_flight_complete(plain, plen, TLS_HS_FINISHED);
+    while (rdone == 0) {
+        if (plen >= pcap) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }   # flight too large
+        var inbuf = alloc(rcap);
+        if (inbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+        var rl = _tn_sock_read_record_skip_ccs(fd, inbuf, rcap);
+        if (rl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+        var ct2 = 0;
+        var more = tls_native_client_open_handshake(ctx, inbuf, rl, plain + plen, pcap - plen, &ct2);
+        if (more < 0) { return more; }
+        if (ct2 != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+        plen = plen + more;
+        rdone = _tn_flight_complete(plain, plen, TLS_HS_FINISHED);
+    }
     var pos = 0;
     var mt = 0;
     var ml = 0;
@@ -1486,6 +1746,19 @@ fn tls_native_client_recv_flight(ctx, record, record_len): i64 {
         return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE);
     }
     if (mt != TLS_HS_ENCRYPTED_EXTENSIONS) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    # EncryptedExtensions carries the server's ALPN selection (RFC 7301 / 8446
+    # §4.3.1). Parse it before the transcript-feed; lenient on malformed exts.
+    var eebody = plain + pos + TLS_HANDSHAKE_HEADER_LEN;
+    if (ml >= 2) {
+        var ee_ext_total = _tn_be16_r(eebody);
+        if (ee_ext_total + 2 <= ml) {
+            var ap = 0;
+            var al = 0;
+            if (_tn_find_ext(eebody + 2, ee_ext_total, TLS_EXT_ALPN, &ap, &al) == 1) {
+                _tn_store_alpn_selected(ctx, ap, al);
+            }
+        }
+    }
     var ee_total = TLS_HANDSHAKE_HEADER_LEN + ml;
     tls_native_transcript_update(ts, plain + pos, ee_total);
     pos = pos + ee_total;
@@ -1498,15 +1771,52 @@ fn tls_native_client_recv_flight(ctx, record, record_len): i64 {
     var cbody = plain + pos + TLS_HANDSHAKE_HEADER_LEN;
     var crc = load8(cbody) & 0xFF;
     var cp = 1 + crc;
-    if (cp + 6 > ml) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
-    cp = cp + 3;                                       # certificate_list length
+    if (cp + 3 > ml) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    var clist_len = _tn_be24_r(cbody + cp);            # certificate_list length
+    cp = cp + 3;
+    var clist_end = cp + clist_len;
+    if (clist_end > ml) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    # First CertificateEntry = the leaf.
+    if (cp + 3 > clist_end) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
     var cert_len = _tn_be24_r(cbody + cp);
     cp = cp + 3;
-    if (cp + cert_len > ml) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    if (cp + cert_len > clist_end) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
     var leaf = x509_cert_alloc();
     if (leaf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     if (x509_parse(cbody + cp, cert_len, leaf) != 1) { return _tn_ctx_fail(ctx, TLS_ERR_CERT_INVALID); }
     store64(ctx + TLS_CTX_OFF_SERVER_CERT, leaf);
+    cp = cp + cert_len;
+    if (cp + 2 <= clist_end) { cp = cp + 2 + _tn_be16_r(cbody + cp); }   # skip leaf entry extensions
+    # Remaining CertificateEntries = intermediates (TLS order: leaf-signer
+    # first → top intermediate last). Capture up to 16 for verify_chain.
+    var inters = alloc(8 + 16 * 8);
+    if (inters == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var nint = 0;
+    var idone = 0;
+    while (idone == 0) {
+        if (cp + 3 > clist_end) { idone = 1; }
+        if (idone == 0) {
+            var ilen = _tn_be24_r(cbody + cp);
+            cp = cp + 3;
+            if (cp + ilen > clist_end) { idone = 1; }
+            if (idone == 0) {
+                if (nint < 16) {
+                    var icert = x509_cert_alloc();
+                    if (icert != 0) {
+                        if (x509_parse(cbody + cp, ilen, icert) == 1) {
+                            store64(inters + 8 + nint * 8, icert);
+                            nint = nint + 1;
+                        }
+                    }
+                }
+                cp = cp + ilen;
+                if (cp + 2 > clist_end) { idone = 1; }
+                if (idone == 0) { cp = cp + 2 + _tn_be16_r(cbody + cp); }
+            }
+        }
+    }
+    store64(inters, nint);
+    store64(ctx + TLS_CTX_OFF_SERVER_INTERS, inters);
     tls_native_transcript_update(ts, plain + pos, cert_total);
     pos = pos + cert_total;
     # Transcript-hash through Certificate (the CertificateVerify input).
@@ -1532,17 +1842,12 @@ fn tls_native_client_recv_flight(ctx, record, record_len): i64 {
     store8(content + 97, 0);
     memcpy(content + 98, th, hlen);
     var content_len = 98 + hlen;
-    var pk = x509_cert_pubkey(leaf);
-    var ok = 0;
-    if (scheme == TLS_SIG_ECDSA_SECP256R1_SHA256) {
-        ok = ecdsa_p256_verify_der(pk, content, content_len, sig, sig_len);
-    } else {
-        if (scheme == TLS_SIG_ED25519) {
-            ok = ed25519_verify(pk, content, content_len, sig);
-        } else {
-            return _tn_ctx_fail(ctx, TLS_ERR_KEY_UNSUPPORTED);
-        }
-    }
+    # RFC 8446 §4.2.3: the 1.3 CertificateVerify forbids the rsa_pkcs1_* schemes
+    # (list-only for backward compat) — accept ECDSA / EdDSA / RSA-PSS only.
+    if (scheme == TLS_SIG_RSA_PKCS1_SHA256) { return _tn_ctx_fail(ctx, TLS_ERR_KEY_UNSUPPORTED); }
+    if (scheme == TLS_SIG_RSA_PKCS1_SHA384) { return _tn_ctx_fail(ctx, TLS_ERR_KEY_UNSUPPORTED); }
+    var ok = _tn_verify_sig_scheme(scheme, leaf, content, content_len, sig, sig_len);
+    if (ok < 0) { return _tn_ctx_fail(ctx, TLS_ERR_KEY_UNSUPPORTED); }
     if (ok != 1) { return _tn_ctx_fail(ctx, TLS_ERR_AUTHN); }
     tls_native_transcript_update(ts, plain + pos, cv_total);
     pos = pos + cv_total;
@@ -1712,8 +2017,14 @@ fn tls_native_install_app_keys(ctx): i64 {
 # Seal application data into a protected record under THIS side's
 # application-traffic key (client writes with the client key, server
 # with the server key). Returns the record length.
-fn tls_native_seal_app(ctx, buf, len, out, out_max): i64 {
+# Seal `len` bytes of `buf` as a protected record of content type `ct`
+# (application_data=23 or alert=21) under this role's WRITE key/iv/seq.
+# Shared by seal_app (app data) and the close_notify path (alert).
+fn _tn_seal_ct(ctx, ct, buf, len, out, out_max): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (load64(ctx + TLS_CTX_OFF_VERSION) == TLS_VERSION_1_2) {
+        return tls_native_12_seal(ctx, ct, buf, len, out, out_max);
+    }
     var key = load64(ctx + TLS_CTX_OFF_SRV_APP_KEY);
     var iv = load64(ctx + TLS_CTX_OFF_SRV_APP_IV);
     var seqoff = TLS_CTX_OFF_SRV_APP_SEQ;
@@ -1724,7 +2035,11 @@ fn tls_native_seal_app(ctx, buf, len, out, out_max): i64 {
     }
     if (key == 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
     return tls_native_record_seal(load64(ctx + TLS_CTX_OFF_CIPHER), key, iv,
-    ctx + seqoff, TLS_CT_APPLICATION_DATA, buf, len, out, out_max);
+    ctx + seqoff, ct, buf, len, out, out_max);
+}
+
+fn tls_native_seal_app(ctx, buf, len, out, out_max): i64 {
+    return _tn_seal_ct(ctx, TLS_CT_APPLICATION_DATA, buf, len, out, out_max);
 }
 
 # Open a protected application-data record from the peer (read with the
@@ -1734,6 +2049,19 @@ fn tls_native_seal_app(ctx, buf, len, out, out_max): i64 {
 # handling later), or a negative error (TLS_ERR_DECRYPT on a bad tag).
 fn tls_native_open_app(ctx, record, record_len, out, out_max): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (load64(ctx + TLS_CTX_OFF_VERSION) == TLS_VERSION_1_2) {
+        var oct12 = 0;
+        var n12 = tls_native_12_open(ctx, record, record_len, out, out_max, &oct12);
+        if (n12 < 0) { return n12; }
+        if (oct12 == TLS_CT_APPLICATION_DATA) { return n12; }
+        if (oct12 == TLS_CT_ALERT) {
+            # close_notify (description byte 0) = clean shutdown → EOF (0); any
+            # other alert is an error.
+            if (n12 >= 2) { if ((load8(out + 1) & 0xFF) == 0) { return 0; } }
+            return TLS_ERR_ALERT;
+        }
+        return 0;
+    }
     var key = load64(ctx + TLS_CTX_OFF_CLI_APP_KEY);
     var iv = load64(ctx + TLS_CTX_OFF_CLI_APP_IV);
     var seqoff = TLS_CTX_OFF_CLI_APP_SEQ;
@@ -1748,7 +2076,12 @@ fn tls_native_open_app(ctx, record, record_len, out, out_max): i64 {
     ctx + seqoff, record, record_len, out, out_max, &oct);
     if (n < 0) { return n; }
     if (oct == TLS_CT_APPLICATION_DATA) { return n; }
-    if (oct == TLS_CT_ALERT) { return TLS_ERR_ALERT; }
+    if (oct == TLS_CT_ALERT) {
+        # close_notify (description byte 0) = clean shutdown → EOF (0); any
+        # other alert is an error.
+        if (n >= 2) { if ((load8(out + 1) & 0xFF) == 0) { return 0; } }
+        return TLS_ERR_ALERT;
+    }
     return 0;
 }
 
@@ -1900,9 +2233,17 @@ fn tls_native_get_key_algo(ctx): i64 {
 # that does. Crypto (x25519, CSPRNG via getrandom) is sigil/syscalls;
 # this is the protocol wiring.
 
+var TLS_EXT_SERVER_NAME        = 0;
 var TLS_EXT_SUPPORTED_GROUPS   = 10;
+var TLS_EXT_EC_POINT_FORMATS   = 11;   # 1.2 ECDHE (RFC 8422 §5.1.2)
+var TLS_EXT_SIGNATURE_ALGORITHMS = 13;
 var TLS_EXT_SUPPORTED_VERSIONS = 43;
 var TLS_EXT_KEY_SHARE          = 51;
+var TLS_EXT_ALPN               = 16;   # 0x0010, RFC 7301 application_layer_protocol_negotiation
+var TLS_EXT_RENEGOTIATION_INFO = 0xFF01;   # RFC 5746 (empty in initial 1.2 SH)
+var TLS_EXT_EXTENDED_MASTER_SECRET = 23;   # 0x0017, RFC 7627 §5.1 — empty ext. The
+# value coincides with TLS_GROUP_SECP256R1
+# (0x0017); disjoint namespaces, benign.
 var TLS_X25519_KEY_LEN = 32;
 var TLS_RANDOM_LEN     = 32;
 
@@ -2843,6 +3184,1397 @@ fn tls_native_record_open(cipher, key, static_iv, seq8, record, record_len, out,
     return idx;
 }
 
+# ================================================================
+# TLS 1.2 record-layer protection (Mini-arc D, .72)
+# ================================================================
+# TLS 1.2 AEAD records differ from 1.3 in three ways (RFC 5246
+# §6.2.3.3, RFC 5288 for AES-GCM, RFC 7905 for ChaCha20-Poly1305):
+#   1. No TLSInnerPlaintext — the real content type rides the OUTER
+#      record header; there is no inner-type byte and no padding.
+#   2. AAD is the classic 13 bytes: seq_num(8) ‖ type(1) ‖ version(2)
+#      ‖ length(2), where length is the PLAINTEXT length.
+#   3. AES-GCM carries an 8-byte explicit nonce on the wire (we use the
+#      sequence number, RFC 5288 §3); the 12-byte GCM nonce is
+#      salt(4, from the key block) ‖ explicit(8). ChaCha20-Poly1305
+#      (RFC 7905) instead reuses the 1.3-style implicit nonce
+#      (iv XOR seq) with NO explicit field.
+# Legacy CBC suites are intentionally NOT implemented (modern-peer set
+# only). See CHANGELOG [6.0.72].
+
+# 1 if `cipher` is an AES-GCM suite (explicit nonce on the wire under
+# TLS 1.2), 0 for ChaCha20-Poly1305 (implicit nonce) — RFC 5288 vs 7905.
+fn _tn_cipher_is_gcm(cipher): i64 {
+    if (cipher == TLS_AES_128_GCM_SHA256) { return 1; }
+    if (cipher == TLS_AES_256_GCM_SHA384) { return 1; }
+    return 0;
+}
+
+# Build the 12-byte TLS-1.2 AES-GCM nonce: salt(4) ‖ explicit(8)
+# (RFC 5288 §3). `salt4` is the 4-byte implicit IV from the key block;
+# `explicit8` is the 8-byte explicit nonce (the value sent on the wire).
+fn tls_native_aead_nonce_12_gcm(salt4, explicit8, nonce_out12): i64 {
+    memcpy(nonce_out12, salt4, 4);
+    memcpy(nonce_out12 + 4, explicit8, 8);
+    return TLS_OK;
+}
+
+# Build the 13-byte TLS-1.2 AEAD additional-data:
+#   seq_num(8) ‖ type(1) ‖ version(2) ‖ length(2)
+# `length` is the plaintext length (RFC 5246 §6.2.3.3). `seq8` is the
+# 8-byte BE sequence buffer; copied verbatim.
+fn tls_native_record_aad_12(seq8, ct, version, length, aad_out13): i64 {
+    memcpy(aad_out13, seq8, 8);
+    store8(aad_out13 + 8, ct & 0xFF);
+    _tn_be16_w(aad_out13 + 9, version);
+    _tn_be16_w(aad_out13 + 11, length);
+    return 13;
+}
+
+# Seal `plain` (real content type `ct`) into a TLS 1.2 AEAD record at
+# `out`. `iv` is the GCM 4-byte salt or the ChaCha 12-byte IV per the
+# cipher. Increments `seq8`. Returns the total record length, or a
+# negative TLS_ERR_*.
+fn tls_native_record_seal_12(cipher, key, iv, seq8, ct, plain, plain_len, out, out_max): i64 {
+    var tag_len = tls_native_cipher_tag_len(cipher);
+    if (tag_len < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    var is_gcm = _tn_cipher_is_gcm(cipher);
+    var explicit_len = 0;
+    if (is_gcm != 0) { explicit_len = 8; }
+    # RFC 5246 §6.2.1: TLSPlaintext.fragment is capped at 2^14 (16384)
+    # independent of AEAD expansion. Defend the cap at the record layer —
+    # the ciphertext-total cap below would otherwise let a ChaCha fragment
+    # (explicit_len 0) reach 16624 before tripping, emitting an over-length
+    # record a strict peer rejects with record_overflow. See CHANGELOG [6.0.72].
+    if (plain_len > TLS_RECORD_MAX_PLAINTEXT) { return TLS_ERR_RECORD_OVERFLOW; }
+    var rec_len = explicit_len + plain_len + tag_len;
+    if (rec_len > TLS_RECORD_MAX_CIPHERTEXT) { return TLS_ERR_RECORD_OVERFLOW; }
+    var total = TLS_RECORD_HEADER_LEN + rec_len;
+    if (total > out_max) { return TLS_ERR_BUFFER_FULL; }
+    var aad[13];
+    tls_native_record_aad_12(seq8, ct, 0x0303, plain_len, &aad);
+    var nonce[12];
+    if (is_gcm != 0) {
+        tls_native_aead_nonce_12_gcm(iv, seq8, &nonce);
+    } else {
+        tls_native_aead_nonce(iv, seq8, &nonce);
+    }
+    var wh = tls_native_record_write_header(out, ct, 0x0303, rec_len);
+    if (wh < 0) { return wh; }
+    var body = out + TLS_RECORD_HEADER_LEN;
+    if (is_gcm != 0) {
+        memcpy(body, seq8, 8);
+        body = body + 8;
+    }
+    var tag_out = body + plain_len;
+    var er = tls_native_aead_encrypt(cipher, key, &nonce, &aad, 13, plain, plain_len, body, tag_out);
+    if (er != TLS_OK) { return er; }
+    tls_native_seq_increment(seq8);
+    return total;
+}
+
+# Open a TLS 1.2 AEAD record. Writes plaintext to `out`, the record's
+# content type to `out_ct`, increments `seq8`. Returns the plaintext
+# length, or a negative TLS_ERR_* (TLS_ERR_DECRYPT on a bad tag).
+fn tls_native_record_open_12(cipher, key, iv, seq8, record, record_len, out, out_max, out_ct): i64 {
+    var tag_len = tls_native_cipher_tag_len(cipher);
+    if (tag_len < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    var is_gcm = _tn_cipher_is_gcm(cipher);
+    var explicit_len = 0;
+    if (is_gcm != 0) { explicit_len = 8; }
+    if (record_len < TLS_RECORD_HEADER_LEN + explicit_len + tag_len) { return TLS_ERR_BAD_RECORD; }
+    var rct = 0;
+    var ver = 0;
+    var len = 0;
+    if (tls_native_record_read_header(record, record_len, &rct, &ver, &len) < 0) {
+        return TLS_ERR_BAD_RECORD;
+    }
+    if (TLS_RECORD_HEADER_LEN + len > record_len) { return TLS_ERR_BAD_RECORD; }
+    var pt_len = len - explicit_len - tag_len;
+    if (pt_len < 0) { return TLS_ERR_BAD_RECORD; }
+    # RFC 5246 §6.2.3: a received fragment exceeding 2^14 is a
+    # record_overflow condition — reject before decrypt (incoming-DoS
+    # defense + symmetry with seal_12's cap). See CHANGELOG [6.0.72].
+    if (pt_len > TLS_RECORD_MAX_PLAINTEXT) { return TLS_ERR_RECORD_OVERFLOW; }
+    if (pt_len > out_max) { return TLS_ERR_BUFFER_FULL; }
+    var body = record + TLS_RECORD_HEADER_LEN;
+    var nonce[12];
+    if (is_gcm != 0) {
+        tls_native_aead_nonce_12_gcm(iv, body, &nonce);
+        body = body + 8;
+    } else {
+        tls_native_aead_nonce(iv, seq8, &nonce);
+    }
+    var aad[13];
+    tls_native_record_aad_12(seq8, rct, ver, pt_len, &aad);
+    var tag_in = body + pt_len;
+    var dr = tls_native_aead_decrypt(cipher, key, &nonce, &aad, 13, body, pt_len, tag_in, out);
+    if (dr != TLS_OK) { return dr; }
+    store64(out_ct, rct & 0xFF);
+    tls_native_seq_increment(seq8);
+    return pt_len;
+}
+
+# ================================================================
+# TLS 1.2 PRF + key derivation (Mini-arc D, .73)
+# ================================================================
+# TLS 1.2 derives all key material from one PRF (RFC 5246 §5):
+#   PRF(secret, label, seed) = P_<hash>(secret, label ‖ seed)
+# where <hash> is the ciphersuite's hash (SHA-256 or SHA-384) and
+# P_hash is the HMAC expansion. sigil's tls12_prf_sha{256,384} implement
+# P_hash and concatenate label ‖ seed internally, so these wrappers just
+# select the hash and assemble the two-random seed. The outputs feed the
+# .72 record layer (the key + the GCM 4-byte salt / ChaCha 12-byte IV).
+# See CHANGELOG [6.0.72]/[6.0.73].
+
+var TLS12_MASTER_SECRET_LEN = 48;       # RFC 5246 §8.1 (fixed 48 bytes)
+var TLS12_VERIFY_DATA_LEN   = 12;       # RFC 5246 §7.4.9 (default 12)
+var TLS12_RANDOM_LEN        = 32;       # client/server Random (RFC 5246 §7.4.1.2)
+
+# TLS 1.2 "fixed_iv_length" per ciphersuite — distinct from the 1.3
+# 12-byte IV: AES-GCM uses a 4-byte implicit salt (the 8-byte explicit
+# nonce rides the wire, RFC 5288 §3); ChaCha20-Poly1305 uses the full
+# 12-byte IV with no explicit nonce (RFC 7905). Returns -1 for unknown.
+fn tls_native_cipher_iv_len_12(cipher): i64 {
+    if (cipher == TLS_AES_128_GCM_SHA256)       { return 4; }
+    if (cipher == TLS_AES_256_GCM_SHA384)       { return 4; }
+    if (cipher == TLS_CHACHA20_POLY1305_SHA256) { return 12; }
+    return 0 - 1;
+}
+
+# The TLS 1.2 PRF: dispatch to sigil's P_hash by the ciphersuite hash.
+# (`sec` not `secret` — `secret` is the reserved zeroise keyword.)
+# sigil's tls12_prf_* returns `out_len` on success and 0 if the assembled
+# `label ‖ seed` exceeds its 256-byte seed cap (writing nothing) — propagate
+# that 0 as an error so a derive call can't silently report TLS_OK with an
+# uninitialized output buffer. Unreachable for the fixed-size internal seeds
+# (≤77 B) but verify_data's handshake-hash arg is caller-supplied.
+fn tls_native_12_prf(cipher, sec, secret_len, label, label_len, seed, seed_len, out, out_len): i64 {
+    var algo = tls_native_cipher_hash_algo(cipher);
+    if (algo == TLS_HASH_SHA384) {
+        if (tls12_prf_sha384(sec, secret_len, label, label_len, seed, seed_len, out, out_len) == 0) {
+            return TLS_ERR_INVALID_PARAM;
+        }
+        return TLS_OK;
+    }
+    if (algo == TLS_HASH_SHA256) {
+        if (tls12_prf_sha256(sec, secret_len, label, label_len, seed, seed_len, out, out_len) == 0) {
+            return TLS_ERR_INVALID_PARAM;
+        }
+        return TLS_OK;
+    }
+    return TLS_ERR_CIPHER_NOT_SUPPORTED;
+}
+
+# master_secret = PRF(pre_master_secret, "master secret",
+#                     client_random ‖ server_random)[0..48]  (RFC 5246 §8.1).
+# `client_random` / `server_random` are 32 bytes each; `out48` gets 48 bytes.
+fn tls_native_12_master_secret(cipher, pre_master, pm_len, client_random, server_random, out48): i64 {
+    var seed[64];
+    memcpy(&seed,                     client_random, TLS12_RANDOM_LEN);
+    memcpy(&seed + TLS12_RANDOM_LEN,  server_random, TLS12_RANDOM_LEN);
+    return tls_native_12_prf(cipher, pre_master, pm_len, "master secret", 13,
+    &seed, 64, out48, TLS12_MASTER_SECRET_LEN);
+}
+
+# Extended Master Secret variant (RFC 7627 §4): when EMS is negotiated,
+# master = PRF(pre_master, "extended master secret", session_hash)[0..47].
+# The label is 22 bytes (NOT the legacy 13) and the seed is the session_hash
+# ALONE — NOT client_random ‖ server_random. session_hash = Hash(CH..CKE)
+# under the ciphersuite PRF hash (sh_len = 32 SHA-256 / 48 SHA-384). EMS binds
+# the master to the full handshake transcript, closing the triple-handshake
+# class of attacks. See CHANGELOG [6.0.77].
+fn tls_native_12_master_secret_ems(cipher, pre_master, pm_len, session_hash, sh_len, out48): i64 {
+    return tls_native_12_prf(cipher, pre_master, pm_len, "extended master secret", 22,
+    session_hash, sh_len, out48, TLS12_MASTER_SECRET_LEN);
+}
+
+# key_block = PRF(master_secret, "key expansion",
+#                 server_random ‖ client_random)  (RFC 5246 §6.3).
+# NOTE the random order is REVERSED vs master_secret (server first here).
+# Caller sizes `out` via tls_native_12_key_block_len.
+fn tls_native_12_key_block(cipher, master48, client_random, server_random, out, out_len): i64 {
+    var seed[64];
+    memcpy(&seed,                     server_random, TLS12_RANDOM_LEN);
+    memcpy(&seed + TLS12_RANDOM_LEN,  client_random, TLS12_RANDOM_LEN);
+    return tls_native_12_prf(cipher, master48, TLS12_MASTER_SECRET_LEN, "key expansion", 13,
+    &seed, 64, out, out_len);
+}
+
+# Bytes of key_block an AEAD suite needs: 2*key_len + 2*iv_len (no MAC
+# keys for AEAD — RFC 5288/7905). Returns -1 for unknown cipher.
+fn tls_native_12_key_block_len(cipher): i64 {
+    var kl = tls_native_cipher_key_len(cipher);
+    var il = tls_native_cipher_iv_len_12(cipher);
+    if (kl < 0) { return 0 - 1; }
+    if (il < 0) { return 0 - 1; }
+    return kl + kl + il + il;
+}
+
+# Partition a TLS 1.2 AEAD key_block (RFC 5246 §6.3, AEAD has zero MAC
+# keys) into client_write_key ‖ server_write_key ‖ client_write_IV ‖
+# server_write_IV. Each `*_key` gets cipher_key_len bytes; each `*_iv`
+# gets cipher_iv_len_12 bytes.
+fn tls_native_12_partition_keys(cipher, key_block, cw_key, sw_key, cw_iv, sw_iv): i64 {
+    var kl = tls_native_cipher_key_len(cipher);
+    var il = tls_native_cipher_iv_len_12(cipher);
+    if (kl < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    if (il < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    var p = key_block;
+    memcpy(cw_key, p, kl); p = p + kl;
+    memcpy(sw_key, p, kl); p = p + kl;
+    memcpy(cw_iv,  p, il); p = p + il;
+    memcpy(sw_iv,  p, il);
+    return TLS_OK;
+}
+
+# Finished verify_data = PRF(master_secret, finished_label,
+#                           Hash(handshake_messages))[0..12]  (RFC 5246
+# §7.4.9). `label` is "client finished" or "server finished" (15 bytes);
+# `handshake_hash` is the ciphersuite-hash digest of the handshake
+# transcript. Writes 12 bytes to `out12`.
+fn tls_native_12_verify_data(cipher, master48, label, label_len, handshake_hash, hh_len, out12): i64 {
+    return tls_native_12_prf(cipher, master48, TLS12_MASTER_SECRET_LEN,
+    label, label_len, handshake_hash, hh_len, out12, TLS12_VERIFY_DATA_LEN);
+}
+
+# ================================================================
+# TLS 1.2 handshake messages (Mini-arc D, .74)
+# ================================================================
+# Pure byte-buffer builders/parsers for the 1.2 (ECDHE) handshake.
+# Wire formats per RFC 5246 (handshake) + RFC 8422 (ECC: ECDHE
+# ServerKeyExchange / ClientKeyExchange / named curves). All work on
+# RAW handshake-message bytes (4-byte header + body) — record-layer
+# wrapping (plaintext ct=22 pre-CCS, AEAD-sealed post-CCS) is the
+# connect_12/accept_12 I/O layer. The transcript hash (reused
+# transcript object) feeds on these raw bytes, CCS excluded.
+# See CHANGELOG [6.0.74].
+
+# Build a TLS 1.2 ClientHello into `out`. legacy_version=0x0303, a
+# full 32-byte random (no gmt_unix_time split), empty session_id, the
+# supported 1.2 wire ciphersuites (descending), null compression, and
+# the extensions a 1.2 ECDHE handshake needs: SNI (when a host is
+# set), supported_groups(x25519), ec_point_formats(uncompressed), and
+# signature_algorithms. NO supported_versions / key_share (those are
+# 1.3 — and the client's ECDHE share rides ClientKeyExchange, not the
+# hello). Buffers the message into CH_BUF/CH_LEN for the retroactive
+# transcript init. Returns the message length or a negative TLS_ERR_*.
+fn tls_native_12_build_client_hello(ctx, out, out_max): i64 {
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (load64(ctx + TLS_CTX_OFF_ROLE) != TLS_ROLE_CLIENT) {
+        return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+    }
+    var crand = alloc(TLS_RANDOM_LEN);
+    if (crand == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    if (sys_getrandom(crand, TLS_RANDOM_LEN, 0) != TLS_RANDOM_LEN) {
+        return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL);
+    }
+    store64(ctx + TLS_CTX_OFF_CLIENT_RANDOM, crand);
+    var host = load64(ctx + TLS_CTX_OFF_HOST);
+    var host_len = load64(ctx + TLS_CTX_OFF_HOST_LEN);
+    var sni_ext = 0;
+    if (host != 0) {
+        if (host_len > 0) { sni_ext = 4 + 2 + 1 + 2 + host_len; }
+    }
+    # ext_block = SNI + supported_groups(8) + ec_point_formats(6)
+    #           + signature_algorithms(20, seven schemes — .83 added RSA PSS+PKCS1)
+    #           + renegotiation_info(5, empty — RFC 5746 §3.4)
+    #           + extended_master_secret(4, empty — RFC 7627 §5.1)
+    #           + ALPN(6+protos, RFC 7301) when offered
+    var alpn = load64(ctx + TLS_CTX_OFF_ALPN_OFFER);
+    var apl = 0;
+    var alpn_ext = 0;
+    if (alpn != 0) { apl = _tn_be16_r(alpn); alpn_ext = 6 + apl; }
+    var ext_block = sni_ext + 8 + 6 + 20 + 5 + 4 + alpn_ext;
+    # cipher_suites = 2-byte len + six supported suites (12 bytes; .83 added RSA + AES-128)
+    var body_len = 2 + 32 + 1 + 2 + 12 + 2 + 2 + ext_block;
+    var total = TLS_HANDSHAKE_HEADER_LEN + body_len;
+    if (total > out_max) { return _tn_ctx_fail(ctx, TLS_ERR_BUFFER_FULL); }
+    tls_native_handshake_write_header(out, TLS_HS_CLIENT_HELLO, body_len);
+    var p = out + TLS_HANDSHAKE_HEADER_LEN;
+    _tn_be16_w(p, 0x0303); p = p + 2;
+    memcpy(p, crand, 32); p = p + 32;
+    store8(p, 0); p = p + 1;                          # legacy_session_id (empty)
+    _tn_be16_w(p, 12); p = p + 2;                      # cipher_suites length (6 suites); see CHANGELOG [6.0.83]
+    _tn_be16_w(p, TLS12_ECDHE_ECDSA_AES256_GCM_SHA384); p = p + 2;
+    _tn_be16_w(p, TLS12_ECDHE_ECDSA_CHACHA20_SHA256); p = p + 2;
+    _tn_be16_w(p, TLS12_ECDHE_ECDSA_AES128_GCM_SHA256); p = p + 2;
+    _tn_be16_w(p, TLS12_ECDHE_RSA_AES256_GCM_SHA384); p = p + 2;
+    _tn_be16_w(p, TLS12_ECDHE_RSA_AES128_GCM_SHA256); p = p + 2;
+    _tn_be16_w(p, TLS12_ECDHE_RSA_CHACHA20_SHA256); p = p + 2;
+    store8(p, 1); p = p + 1; store8(p, 0); p = p + 1;  # legacy_compression null
+    _tn_be16_w(p, ext_block); p = p + 2;
+    if (sni_ext > 0) {
+        _tn_be16_w(p, TLS_EXT_SERVER_NAME); p = p + 2;
+        _tn_be16_w(p, 2 + 1 + 2 + host_len); p = p + 2;
+        _tn_be16_w(p, 1 + 2 + host_len); p = p + 2;    # server_name_list length
+        store8(p, 0); p = p + 1;                       # name_type host_name(0)
+        _tn_be16_w(p, host_len); p = p + 2;
+        memcpy(p, host, host_len); p = p + host_len;
+    }
+    _tn_be16_w(p, TLS_EXT_SUPPORTED_GROUPS); p = p + 2;
+    _tn_be16_w(p, 4); p = p + 2;
+    _tn_be16_w(p, 2); p = p + 2;                       # named_curve_list length
+    _tn_be16_w(p, TLS_GROUP_X25519); p = p + 2;
+    _tn_be16_w(p, TLS_EXT_EC_POINT_FORMATS); p = p + 2;
+    _tn_be16_w(p, 2); p = p + 2;
+    store8(p, 1); p = p + 1;                           # ec_point_format_list length (1 BYTE)
+    store8(p, 0); p = p + 1;                           # uncompressed(0)
+    _tn_be16_w(p, TLS_EXT_SIGNATURE_ALGORITHMS); p = p + 2;
+    _tn_be16_w(p, 16); p = p + 2;                      # ext_data len (2 + 7*2); see CHANGELOG [6.0.83]
+    _tn_be16_w(p, 14); p = p + 2;                      # supported_signature_algorithms len (7 schemes)
+    _tn_be16_w(p, TLS_SIG_ECDSA_SECP256R1_SHA256); p = p + 2;
+    _tn_be16_w(p, TLS_SIG_ECDSA_SECP384R1_SHA384); p = p + 2;
+    _tn_be16_w(p, TLS_SIG_RSA_PSS_RSAE_SHA256); p = p + 2;   # RSA-cert 1.2 servers
+    _tn_be16_w(p, TLS_SIG_RSA_PSS_RSAE_SHA384); p = p + 2;
+    _tn_be16_w(p, TLS_SIG_RSA_PKCS1_SHA256); p = p + 2;
+    _tn_be16_w(p, TLS_SIG_RSA_PKCS1_SHA384); p = p + 2;
+    _tn_be16_w(p, TLS_SIG_ED25519); p = p + 2;
+    _tn_be16_w(p, TLS_EXT_RENEGOTIATION_INFO); p = p + 2;   # RFC 5746 secure renegotiation
+    _tn_be16_w(p, 1); p = p + 2;                       # ext_data length
+    store8(p, 0); p = p + 1;                           # renegotiated_connection<0> (empty)
+    _tn_be16_w(p, TLS_EXT_EXTENDED_MASTER_SECRET); p = p + 2;   # RFC 7627 — always offer
+    _tn_be16_w(p, 0); p = p + 2;                       # empty extension_data
+    store64(ctx + TLS_CTX_OFF_USE_EMS, 1);             # offered; SH parser clears it if not echoed
+    if (alpn != 0) {
+        _tn_be16_w(p, TLS_EXT_ALPN); p = p + 2;
+        _tn_be16_w(p, 2 + apl); p = p + 2;             # extension_data length
+        _tn_be16_w(p, apl); p = p + 2;                  # ProtocolNameList length
+        memcpy(p, alpn + 2, apl); p = p + apl;          # offered protocols
+    }
+    var chbuf = alloc(total);
+    if (chbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    memcpy(chbuf, out, total);
+    store64(ctx + TLS_CTX_OFF_CH_BUF, chbuf);
+    store64(ctx + TLS_CTX_OFF_CH_LEN, total);
+    return total;
+}
+
+# Build a TLS 1.2 ServerHello into `out`. server_version=0x0303, the
+# ctx server_random, an (echoed/empty) session_id, the chosen WIRE
+# ciphersuite, null compression, and the minimal extensions a 1.2 peer
+# expects: an empty renegotiation_info (RFC 5746) and, when
+# `want_ecpf`, ec_point_formats(uncompressed). Requires SERVER_RANDOM
+# + CIPHER (identity) set. Returns the message length or
+# TLS_ERR_BUFFER_FULL. (CIPHER holds the AEAD identity; the wire id to
+# emit comes from the reverse map.)
+fn _tn_build_server_hello_12(ctx, out, out_max, want_ecpf): i64 {
+    var identity = load64(ctx + TLS_CTX_OFF_CIPHER);
+    var wire = tls_native_aead_to_wire_12(identity, TLS12_AUTH_ECDSA);
+    if (wire < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    var sid_len = load64(ctx + TLS_CTX_OFF_SESSION_ID_LEN);
+    var ems = load64(ctx + TLS_CTX_OFF_USE_EMS);
+    var ecpf_ext = 0;
+    if (want_ecpf == 1) { ecpf_ext = 6; }
+    var ems_ext = 0;
+    if (ems == 1) { ems_ext = 4; }                     # RFC 7627 — echo iff client offered
+    var ext_block = 5 + ecpf_ext + ems_ext;            # renegotiation_info(5) + ec_point_formats + EMS
+    var body_len = 2 + 32 + 1 + sid_len + 2 + 1 + 2 + ext_block;
+    var total = TLS_HANDSHAKE_HEADER_LEN + body_len;
+    if (total > out_max) { return TLS_ERR_BUFFER_FULL; }
+    tls_native_handshake_write_header(out, TLS_HS_SERVER_HELLO, body_len);
+    var p = out + TLS_HANDSHAKE_HEADER_LEN;
+    _tn_be16_w(p, 0x0303); p = p + 2;
+    memcpy(p, load64(ctx + TLS_CTX_OFF_SERVER_RANDOM), 32); p = p + 32;
+    store8(p, sid_len & 0xFF); p = p + 1;
+    if (sid_len > 0) {
+        memcpy(p, load64(ctx + TLS_CTX_OFF_SESSION_ID), sid_len);
+        p = p + sid_len;
+    }
+    _tn_be16_w(p, wire); p = p + 2;
+    store8(p, 0); p = p + 1;                            # compression null
+    _tn_be16_w(p, ext_block); p = p + 2;
+    _tn_be16_w(p, TLS_EXT_RENEGOTIATION_INFO); p = p + 2;
+    _tn_be16_w(p, 1); p = p + 2;                        # ext_data length
+    store8(p, 0); p = p + 1;                            # renegotiated_connection<0> (empty)
+    if (want_ecpf == 1) {
+        _tn_be16_w(p, TLS_EXT_EC_POINT_FORMATS); p = p + 2;
+        _tn_be16_w(p, 2); p = p + 2;
+        store8(p, 1); p = p + 1;                        # list length (1 BYTE)
+        store8(p, 0); p = p + 1;                        # uncompressed(0)
+    }
+    if (ems == 1) {
+        _tn_be16_w(p, TLS_EXT_EXTENDED_MASTER_SECRET); p = p + 2;   # RFC 7627 echo (empty)
+        _tn_be16_w(p, 0); p = p + 2;
+    }
+    return total;
+}
+
+# Probe a ServerHello for a supported_versions extension carrying
+# 0x0304 (RFC 8446 §4.2.1) — the authoritative 1.3 signal. Returns 1
+# (1.3), 0 (absent → 1.2), or -1 (malformed). The connect dispatcher
+# uses this to route a parsed SH to the 1.2-vs-1.3 path; the legacy
+# version field stays 0x0303 in both, so the extension is the only
+# reliable discriminator.
+fn _tn_sh_is_tls13(sh, sh_len): i64 {
+    var ht = 0;
+    var blen = 0;
+    if (tls_native_handshake_read_header(sh, sh_len, &ht, &blen) < 0) { return 0 - 1; }
+    if (ht != TLS_HS_SERVER_HELLO) { return 0 - 1; }
+    if (TLS_HANDSHAKE_HEADER_LEN + blen > sh_len) { return 0 - 1; }
+    var body = sh + TLS_HANDSHAKE_HEADER_LEN;
+    var pos = 2 + 32;                                  # version + random
+    if (pos + 1 > blen) { return 0 - 1; }
+    var sid_len = load8(body + pos) & 0xFF;
+    pos = pos + 1 + sid_len;
+    pos = pos + 2 + 1;                                 # cipher_suite + compression
+    if (pos > blen) { return 0 - 1; }
+    if (pos == blen) { return 0; }                     # no extensions → 1.2
+    if (pos + 2 > blen) { return 0 - 1; }
+    var ext_total = _tn_be16_r(body + pos);
+    pos = pos + 2;
+    if (pos + ext_total > blen) { return 0 - 1; }
+    var dp = 0;
+    var dl = 0;
+    var found = _tn_find_ext(body + pos, ext_total, TLS_EXT_SUPPORTED_VERSIONS, &dp, &dl);
+    if (found == 0 - 1) { return 0 - 1; }
+    if (found == 0) { return 0; }
+    if (dl != 2) { return 0 - 1; }
+    if (_tn_be16_r(dp) == 0x0304) { return 1; }
+    return 0;
+}
+
+# Client: parse a TLS 1.2 ServerHello (RFC 5246 §7.4.1.3). Validates
+# the legacy_version (0x0303), asserts supported_versions is ABSENT
+# (its presence means a 1.3 server — a protocol error on this path),
+# validates the secure-renegotiation echo (RFC 5746), and reverse-maps
+# the chosen wire ciphersuite to the internal AEAD identity (rejecting
+# unsupported), storing the identity at OFF_CIPHER plus the server
+# random and version 0x0303. (No RFC 8446 §4.1.3 downgrade-sentinel
+# check — a 1.2-pinned client never offered 1.3, so there is nothing to
+# downgrade from.) Returns TLS_OK or a negative TLS_ERR_* (ctx → ERROR).
+fn tls_native_client_parse_server_hello_12(ctx, sh, sh_len): i64 {
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (load64(ctx + TLS_CTX_OFF_ROLE) != TLS_ROLE_CLIENT) {
+        return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+    }
+    var ht = 0;
+    var blen = 0;
+    if (tls_native_handshake_read_header(sh, sh_len, &ht, &blen) < 0) {
+        return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE);
+    }
+    if (ht != TLS_HS_SERVER_HELLO) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    if (TLS_HANDSHAKE_HEADER_LEN + blen > sh_len) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    var body = sh + TLS_HANDSHAKE_HEADER_LEN;
+    if (blen < 2 + 32 + 1 + 2 + 1) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    if (_tn_be16_r(body) != 0x0303) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+    var rnd = body + 2;
+    # No RFC 8446 §4.1.3 downgrade-sentinel check here: this path is only
+    # reached on a 1.2-pinned client (max_ver==1.2), which never offered
+    # 1.3, so there is no downgrade to detect — and a 1.3-capable peer that
+    # legitimately negotiates 1.2 sets the sentinel, so checking it would
+    # wrongly abort conformant servers.
+    var srand = alloc(TLS_RANDOM_LEN);
+    if (srand == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    memcpy(srand, rnd, 32);
+    store64(ctx + TLS_CTX_OFF_SERVER_RANDOM, srand);
+    var pos = 2 + 32;
+    var sid_len = load8(body + pos) & 0xFF;
+    pos = pos + 1 + sid_len;
+    if (pos + 2 + 1 > blen) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    var wire = _tn_be16_r(body + pos);
+    pos = pos + 2;
+    var comp = load8(body + pos) & 0xFF;
+    pos = pos + 1;
+    if (comp != 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+    var identity = tls_native_12_cipher_aead_identity(wire);
+    if (identity < 0) { return _tn_ctx_fail(ctx, TLS_ERR_HANDSHAKE_FAILED); }
+    if (tls_native_12_cipher_supported(wire) != 1) { return _tn_ctx_fail(ctx, TLS_ERR_CIPHER_NOT_SUPPORTED); }
+    # EMS (RFC 7627): the client always offered it (flag set to 1 in
+    # build_client_hello). Default to legacy fallback — clear the flag now, then
+    # set it back to 1 only if the server echoes the extension below. A legacy
+    # server (no extension block, or a block without EMS) thus falls back to 0.
+    store64(ctx + TLS_CTX_OFF_USE_EMS, 0);
+    # Extensions: supported_versions MUST be absent (else a 1.3 server).
+    if (pos < blen) {
+        if (pos + 2 > blen) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+        var ext_total = _tn_be16_r(body + pos);
+        pos = pos + 2;
+        if (pos + ext_total > blen) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+        var dp = 0;
+        var dl = 0;
+        var sv = _tn_find_ext(body + pos, ext_total, TLS_EXT_SUPPORTED_VERSIONS, &dp, &dl);
+        if (sv == 0 - 1) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+        if (sv == 1) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+        # Secure renegotiation (RFC 5746 §3.4): on an initial handshake the
+        # server's renegotiation_info, if present, MUST carry an empty
+        # renegotiated_connection (a single 0x00 length byte).
+        var rp = 0;
+        var rl2 = 0;
+        var rn = _tn_find_ext(body + pos, ext_total, TLS_EXT_RENEGOTIATION_INFO, &rp, &rl2);
+        if (rn == 0 - 1) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+        if (rn == 1) {
+            if (rl2 != 1) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+            if ((load8(rp) & 0xFF) != 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+        }
+        # Extended Master Secret echo (RFC 7627 §5.1): a present echo MUST be
+        # empty; record EMS active. Absent → leave the flag at 0 (legacy
+        # fallback; the §5.2 SHOULD-abort is relaxed to keep legacy-server
+        # interop — OpenSSL 3.x always echoes it, so the abort path is moot).
+        var ep = 0;
+        var el = 0;
+        var ems = _tn_find_ext(body + pos, ext_total, TLS_EXT_EXTENDED_MASTER_SECRET, &ep, &el);
+        if (ems == 0 - 1) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+        if (ems == 1) {
+            if (el != 0) { return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL); }
+            store64(ctx + TLS_CTX_OFF_USE_EMS, 1);
+        }
+        # ALPN selection (RFC 7301): the 1.2 server returns it in the SH.
+        var alpn_ad = 0;
+        var alpn_al = 0;
+        if (_tn_find_ext(body + pos, ext_total, TLS_EXT_ALPN, &alpn_ad, &alpn_al) == 1) {
+            _tn_store_alpn_selected(ctx, alpn_ad, alpn_al);
+        }
+    }
+    store64(ctx + TLS_CTX_OFF_CIPHER, identity);
+    store64(ctx + TLS_CTX_OFF_VERSION, TLS_VERSION_1_2);
+    store64(ctx + TLS_CTX_OFF_GROUP, TLS_GROUP_X25519);
+    return TLS_OK;
+}
+
+# Build a TLS 1.2 Certificate message (RFC 5246 §7.4.2): a 3-byte
+# certificate_list length, then 3-byte-length-prefixed cert DER. NO
+# certificate_request_context byte and NO per-entry extensions — those
+# are TLS 1.3-only (contrast _tn_build_certificate). Single-leaf scope.
+# Returns the message length or a negative TLS_ERR_*.
+fn _tn_build_certificate_12(ctx, out, out_max): i64 {
+    var cert = load64(ctx + TLS_CTX_OFF_CERT_CHAIN);
+    var cert_len = load64(ctx + TLS_CTX_OFF_CERT_LEN);
+    if (cert == 0) { return TLS_ERR_CERT_INVALID; }
+    if (cert_len <= 0) { return TLS_ERR_CERT_INVALID; }
+    if (cert_len > 0xFFFFFF - 6) { return TLS_ERR_CERT_INVALID; }
+    var list_len = 3 + cert_len;
+    var body_len = 3 + list_len;
+    var total = TLS_HANDSHAKE_HEADER_LEN + body_len;
+    if (total > out_max) { return TLS_ERR_BUFFER_FULL; }
+    tls_native_handshake_write_header(out, TLS_HS_CERTIFICATE, body_len);
+    var p = out + TLS_HANDSHAKE_HEADER_LEN;
+    _tn_be24_w(p, list_len); p = p + 3;
+    _tn_be24_w(p, cert_len); p = p + 3;
+    memcpy(p, cert, cert_len);
+    return total;
+}
+
+# Client: parse a TLS 1.2 Certificate body (header already stripped).
+# Explicit ordered bounds checks; rejects an empty certificate_list
+# (the server MUST authenticate) and a zero inner cert length; bounds
+# the cert against the list, not just the message. Parses the leaf via
+# sigil x509 and stores it at OFF_SERVER_CERT. Chain path-validation
+# is not performed in .74 (single-leaf only). Returns TLS_OK or a
+# negative TLS_ERR_*.
+fn _tn_parse_certificate_12(ctx, body, blen): i64 {
+    if (blen < 3) { return TLS_ERR_BAD_HANDSHAKE; }
+    var list_len = _tn_be24_r(body);
+    if (list_len == 0) { return TLS_ERR_CERT_INVALID; }
+    var cp = 3;
+    if (cp + list_len > blen) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (cp + 3 > blen) { return TLS_ERR_BAD_HANDSHAKE; }
+    var cert_len = _tn_be24_r(body + cp);
+    cp = cp + 3;
+    if (cert_len == 0) { return TLS_ERR_CERT_INVALID; }
+    if (cert_len > list_len - 3) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (cp + cert_len > blen) { return TLS_ERR_BAD_HANDSHAKE; }
+    var leaf = x509_cert_alloc();
+    if (leaf == 0) { return TLS_ERR_OOM; }
+    if (x509_parse(body + cp, cert_len, leaf) != 1) { return TLS_ERR_CERT_INVALID; }
+    store64(ctx + TLS_CTX_OFF_SERVER_CERT, leaf);
+    return TLS_OK;
+}
+
+# Sign the ServerKeyExchange ECDHE params. The signed content is the
+# RAW concatenation client_random ‖ server_random ‖ ServerECDHParams
+# (`params36`, the exact 36 wire bytes) = 100 bytes (RFC 8422 §5.4) —
+# NOT a transcript hash and NOT the 1.3 CertificateVerify content (no
+# 0x20*64 prefix, no context string). Dispatches on the loaded private
+# key algorithm (ECDSA → DER sig, sigil hashes internally; Ed25519 →
+# 64-byte PureEdDSA). Writes the TLS SignatureScheme via `scheme_out`;
+# returns the signature length (>0) or a negative TLS_ERR_*.
+fn _tn_12_sign_kex_params(ctx, params36, sig_out, sig_max, scheme_out): i64 {
+    var content = alloc(100);
+    if (content == 0) { return TLS_ERR_OOM; }
+    memcpy(content,      load64(ctx + TLS_CTX_OFF_CLIENT_RANDOM), 32);
+    memcpy(content + 32, load64(ctx + TLS_CTX_OFF_SERVER_RANDOM), 32);
+    memcpy(content + 64, params36, 36);
+    var algo = load64(ctx + TLS_CTX_OFF_KEY_ALGO);
+    var kmat = load64(ctx + TLS_CTX_OFF_KEY_MAT);
+    if (kmat == 0) { return TLS_ERR_KEY_UNSUPPORTED; }
+    var sig_len = 0;
+    if (algo == SIG_PRIVKEY_ECDSA_P256) {
+        sig_len = ecdsa_p256_sign_der(kmat, content, 100, sig_out, sig_max);
+        store64(scheme_out, TLS_SIG_ECDSA_SECP256R1_SHA256);
+    } else {
+        if (algo == SIG_PRIVKEY_ECDSA_P384) {
+            sig_len = ecdsa_p384_sign_der(kmat, content, 100, sig_out, sig_max);
+            store64(scheme_out, TLS_SIG_ECDSA_SECP384R1_SHA384);
+        } else {
+            if (algo == SIG_PRIVKEY_ED25519) {
+                var sk64 = alloc(64);
+                var pk32 = alloc(32);
+                if (sk64 == 0) { return TLS_ERR_OOM; }
+                if (pk32 == 0) { return TLS_ERR_OOM; }
+                ed25519_keypair(kmat, sk64, pk32);
+                if (ed25519_sign(sk64, content, 100, sig_out) != 0) { return TLS_ERR_AUTHN; }
+                sig_len = 64;
+                store64(scheme_out, TLS_SIG_ED25519);
+            } else {
+                return TLS_ERR_KEY_UNSUPPORTED;   # RSA-PSS awaits sigil
+            }
+        }
+    }
+    if (sig_len <= 0) { return TLS_ERR_AUTHN; }
+    return sig_len;
+}
+
+# Build a TLS 1.2 ECDHE ServerKeyExchange (RFC 8422 §5.4). Body =
+# ServerECDHParams { curve_type=named_curve(3), namedcurve=x25519,
+# ECPoint{ len=32, EPH_PUB } } (36 bytes) ‖ SignatureScheme(2) ‖
+# signature<2-byte len>. Requires EPH_PUB + the randoms + loaded
+# creds. Returns the message length or a negative TLS_ERR_*.
+fn _tn_12_build_server_kex(ctx, out, out_max): i64 {
+    # Worst case: 4 (hdr) + 36 (params) + 2 (scheme) + 2 (siglen) + 128 (sig cap).
+    if (TLS_HANDSHAKE_HEADER_LEN + 40 + 128 > out_max) { return TLS_ERR_BUFFER_FULL; }
+    var epub = load64(ctx + TLS_CTX_OFF_EPH_PUB);
+    if (epub == 0) { return TLS_ERR_PROTOCOL; }
+    var body = out + TLS_HANDSHAKE_HEADER_LEN;
+    store8(body, 3);                                   # curve_type named_curve(3)
+    _tn_be16_w(body + 1, TLS_GROUP_X25519);            # namedcurve
+    store8(body + 3, 32);                              # ECPoint length
+    memcpy(body + 4, epub, 32);                        # raw 32-byte u-coord
+    var sig = alloc(128);
+    if (sig == 0) { return TLS_ERR_OOM; }
+    var scheme = 0;
+    var sig_len = _tn_12_sign_kex_params(ctx, body, sig, 128, &scheme);
+    if (sig_len < 0) { return sig_len; }
+    var body_len = 36 + 2 + 2 + sig_len;
+    _tn_be16_w(body + 36, scheme);
+    _tn_be16_w(body + 38, sig_len);
+    memcpy(body + 40, sig, sig_len);
+    tls_native_handshake_write_header(out, TLS_HS_SERVER_KEY_EXCHANGE, body_len);
+    return TLS_HANDSHAKE_HEADER_LEN + body_len;
+}
+
+# Client: parse + verify a TLS 1.2 ECDHE ServerKeyExchange body
+# (header stripped). Validates curve_type/namedcurve/point_len, copies
+# the server's ephemeral pubkey into OWNED storage at OFF_PEER_PUB
+# (the record buffer is transient), reconstructs the 100-byte signed
+# content, and verifies the signature against the parsed server-cert
+# pubkey (ECDSA-P256 / Ed25519; P-384 verify is a sigil gap — returns
+# TLS_ERR_KEY_UNSUPPORTED, mirroring the 1.3 client). Returns TLS_OK
+# or a negative TLS_ERR_*.
+fn _tn_12_parse_server_kex(ctx, body, body_len): i64 {
+    if (body_len < 36 + 4) { return TLS_ERR_BAD_HANDSHAKE; }
+    if ((load8(body) & 0xFF) != 3) { return TLS_ERR_HANDSHAKE_FAILED; }
+    if (_tn_be16_r(body + 1) != TLS_GROUP_X25519) { return TLS_ERR_HANDSHAKE_FAILED; }
+    var point_len = load8(body + 3) & 0xFF;
+    if (point_len != 32) { return TLS_ERR_HANDSHAKE_FAILED; }
+    var peer = alloc(32);
+    if (peer == 0) { return TLS_ERR_OOM; }
+    memcpy(peer, body + 4, 32);
+    store64(ctx + TLS_CTX_OFF_PEER_PUB, peer);
+    var scheme = _tn_be16_r(body + 36);
+    var sig_len = _tn_be16_r(body + 38);
+    if (40 + sig_len > body_len) { return TLS_ERR_BAD_HANDSHAKE; }
+    var sig = body + 40;
+    var content = alloc(100);
+    if (content == 0) { return TLS_ERR_OOM; }
+    memcpy(content,      load64(ctx + TLS_CTX_OFF_CLIENT_RANDOM), 32);
+    memcpy(content + 32, load64(ctx + TLS_CTX_OFF_SERVER_RANDOM), 32);
+    memcpy(content + 64, body, 36);
+    var leaf = load64(ctx + TLS_CTX_OFF_SERVER_CERT);
+    if (leaf == 0) { return TLS_ERR_CERT_INVALID; }
+    # 1.2 SKE allows ECDSA (P-256/P-384), EdDSA, and RSA (PKCS#1 v1.5 or PSS,
+    # per the SKE's SignatureAndHashAlgorithm). See CHANGELOG [6.0.83].
+    var ok = _tn_verify_sig_scheme(scheme, leaf, content, 100, sig, sig_len);
+    if (ok < 0) { return TLS_ERR_KEY_UNSUPPORTED; }
+    if (ok != 1) { return TLS_ERR_AUTHN; }
+    return TLS_OK;
+}
+
+# Build a ServerHelloDone (RFC 5246 §7.4.5): a bare handshake header,
+# type 14, zero-length body. Returns 4 or TLS_ERR_BUFFER_FULL.
+fn tls_native_12_build_server_hello_done(out, out_max): i64 {
+    if (out_max < TLS_HANDSHAKE_HEADER_LEN) { return TLS_ERR_BUFFER_FULL; }
+    tls_native_handshake_write_header(out, TLS_HS_SERVER_HELLO_DONE, 0);
+    return TLS_HANDSHAKE_HEADER_LEN;
+}
+
+# Parse + validate a ServerHelloDone. Requires type 14 and an exactly
+# empty body. Returns TLS_OK or TLS_ERR_BAD_HANDSHAKE.
+fn tls_native_12_parse_server_hello_done(msg, msg_len): i64 {
+    var ht = 0;
+    var blen = 0;
+    if (tls_native_handshake_read_header(msg, msg_len, &ht, &blen) < 0) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (ht != TLS_HS_SERVER_HELLO_DONE) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (blen != 0) { return TLS_ERR_BAD_HANDSHAKE; }
+    return TLS_OK;
+}
+
+# Build a TLS 1.2 ECDHE ClientKeyExchange (RFC 8422 §5.7): body =
+# ECPoint{ length=32, client_eph_pub } — a 1-BYTE length prefix
+# (not 2) and a raw 32-byte u-coord (no 0x04 prefix). Returns 37 or
+# TLS_ERR_BUFFER_FULL.
+fn tls_native_12_build_client_key_exchange(client_eph_pub, out, out_max): i64 {
+    var body_len = 1 + 32;
+    var total = TLS_HANDSHAKE_HEADER_LEN + body_len;
+    if (total > out_max) { return TLS_ERR_BUFFER_FULL; }
+    tls_native_handshake_write_header(out, TLS_HS_CLIENT_KEY_EXCHANGE, body_len);
+    var p = out + TLS_HANDSHAKE_HEADER_LEN;
+    store8(p, 32); p = p + 1;
+    memcpy(p, client_eph_pub, 32);
+    return total;
+}
+
+# Server: parse a TLS 1.2 ECDHE ClientKeyExchange. Requires type 16
+# and a body of EXACTLY 1 + 32 = 33 bytes (rejects trailing garbage),
+# with a 32-byte point. Copies the client's ephemeral pubkey to
+# `peer_pub_out32`. Returns TLS_OK or a negative TLS_ERR_*.
+fn tls_native_12_parse_client_key_exchange(msg, msg_len, peer_pub_out32): i64 {
+    var ht = 0;
+    var blen = 0;
+    if (tls_native_handshake_read_header(msg, msg_len, &ht, &blen) < 0) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (ht != TLS_HS_CLIENT_KEY_EXCHANGE) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (TLS_HANDSHAKE_HEADER_LEN + blen > msg_len) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (blen != 33) { return TLS_ERR_BAD_HANDSHAKE; }
+    var body = msg + TLS_HANDSHAKE_HEADER_LEN;
+    if ((load8(body) & 0xFF) != 32) { return TLS_ERR_HANDSHAKE_FAILED; }
+    memcpy(peer_pub_out32, body + 1, 32);
+    return TLS_OK;
+}
+
+# Write a ChangeCipherSpec record (RFC 5246 §7.1): ContentType
+# change_cipher_spec(20), version 0x0303, a single 0x01 body byte =
+# `14 03 03 00 01 01`. CCS is NOT a handshake message — it is never
+# fed to the transcript and never AEAD-sealed; it is the plaintext
+# marker that the sender's next records are protected. Returns 6.
+fn tls_native_ccs_record_write(out): i64 {
+    tls_native_record_write_header(out, TLS_CT_CHANGE_CIPHER_SPEC, 0x0303, 1);
+    store8(out + TLS_RECORD_HEADER_LEN, 1);
+    return TLS_RECORD_HEADER_LEN + 1;
+}
+
+# ----------------------------------------------------------------
+# TLS 1.2 key-schedule glue (.74)
+# ----------------------------------------------------------------
+
+# Generate an ephemeral x25519 keypair, storing priv + pub in the ctx
+# but computing NO shared secret (unlike _tn_gen_ephemeral_x25519,
+# which eagerly DHs against PEER_PUB). The 1.2 ordering needs this: the
+# server makes its keypair at ServerKeyExchange (before the client's
+# pub is known) and the client at ClientKeyExchange (server pub known
+# but the DH happens later, in compute_premaster). Returns TLS_OK or an error.
+fn _tn_gen_ephemeral_x25519_pub_only(ctx): i64 {
+    var priv = alloc(32);
+    var epub = alloc(32);
+    if (priv == 0) { return TLS_ERR_OOM; }
+    if (epub == 0) { return TLS_ERR_OOM; }
+    if (sys_getrandom(priv, 32, 0) != 32) { return TLS_ERR_INTERNAL; }
+    x25519_base(priv, epub);
+    store64(ctx + TLS_CTX_OFF_EPH_PRIV, priv);
+    store64(ctx + TLS_CTX_OFF_EPH_PUB, epub);
+    return TLS_OK;
+}
+
+# Compute the TLS 1.2 ECDHE pre-master secret: x25519(our EPH_PRIV,
+# peer ephemeral pub) → 32 raw bytes (RFC 8422 §5.11 — used directly,
+# no truncation/hash). MUST reject the all-zero shared secret (sigil's
+# x25519 always returns 0 and never signals a contributory-behavior
+# failure, so the check is ours). Writes 32 bytes to `out32`. Returns
+# TLS_OK or TLS_ERR_HANDSHAKE_FAILED on an all-zero result.
+fn tls_native_12_compute_premaster(ctx, peer_eph_pub32, out32): i64 {
+    var priv = load64(ctx + TLS_CTX_OFF_EPH_PRIV);
+    if (priv == 0) { return TLS_ERR_PROTOCOL; }
+    x25519(priv, peer_eph_pub32, out32);
+    var acc = 0;
+    var i = 0;
+    while (i < 32) {
+        acc = acc | (load8(out32 + i) & 0xFF);
+        i = i + 1;
+    }
+    if (acc == 0) { return TLS_ERR_HANDSHAKE_FAILED; }
+    return TLS_OK;
+}
+
+# Derive + install the full TLS 1.2 key material from the pre-master
+# secret: master_secret (PRF over client‖server random), the key_block
+# (PRF over server‖client random — the .73 fns take natural order and
+# swap internally), partitioned into client/server write key+IV (AEAD,
+# no MAC keys). Stores the master at OFF_MASTER12 (for both Finished
+# verify_data) and the keys in the REUSED 1.3 application-traffic ctx
+# slots (single 1.2 epoch): client-write → CLI_APP, server-write →
+# SRV_APP, so seal_app/open_app's role logic stays correct. Resets
+# both record sequences to 0 (the post-CCS epoch starts at seq 0).
+# Returns TLS_OK or a negative TLS_ERR_*.
+fn tls_native_12_derive_keys(ctx, premaster, pm_len): i64 {
+    var identity = load64(ctx + TLS_CTX_OFF_CIPHER);
+    var master = alloc(TLS12_MASTER_SECRET_LEN);
+    if (master == 0) { return TLS_ERR_OOM; }
+    if (load64(ctx + TLS_CTX_OFF_USE_EMS) == 1) {
+        # Extended Master Secret (RFC 7627): master derives from the
+        # session_hash (Hash(CH..CKE)), NOT the randoms. The transcript already
+        # covers CH..CKE at this point (the server feeds CKE before deriving;
+        # the client reorder in connect_12 ensures the same). transcript_digest
+        # is non-destructive, so the running transcript the later Finished
+        # verify_data needs stays intact.
+        var ts = load64(ctx + TLS_CTX_OFF_TRANSCRIPT);
+        if (ts == 0) { return TLS_ERR_PROTOCOL; }
+        var shbuf[48];
+        var sh_len = tls_native_transcript_digest(ts, &shbuf);
+        if (sh_len < 0) { return TLS_ERR_INTERNAL; }
+        if (tls_native_12_master_secret_ems(identity, premaster, pm_len, &shbuf, sh_len, master) != TLS_OK) {
+            return TLS_ERR_INTERNAL;
+        }
+    } else {
+        var crl = load64(ctx + TLS_CTX_OFF_CLIENT_RANDOM);
+        var srl = load64(ctx + TLS_CTX_OFF_SERVER_RANDOM);
+        if (crl == 0) { return TLS_ERR_PROTOCOL; }
+        if (srl == 0) { return TLS_ERR_PROTOCOL; }
+        if (tls_native_12_master_secret(identity, premaster, pm_len, crl, srl, master) != TLS_OK) {
+            return TLS_ERR_INTERNAL;
+        }
+    }
+    store64(ctx + TLS_CTX_OFF_MASTER12, master);
+    # The key_block (RFC 5246 §6.3) uses the randoms in BOTH EMS and legacy
+    # modes — re-load them at function scope for the key_block call below.
+    var cr = load64(ctx + TLS_CTX_OFF_CLIENT_RANDOM);
+    var sr = load64(ctx + TLS_CTX_OFF_SERVER_RANDOM);
+    var kb_len = tls_native_12_key_block_len(identity);
+    if (kb_len < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    var kb = alloc(kb_len);
+    if (kb == 0) { return TLS_ERR_OOM; }
+    if (tls_native_12_key_block(identity, master, cr, sr, kb, kb_len) != TLS_OK) {
+        return TLS_ERR_INTERNAL;
+    }
+    var key_len = tls_native_cipher_key_len(identity);
+    var iv_len = tls_native_cipher_iv_len_12(identity);
+    if (key_len < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    if (iv_len < 0) { return TLS_ERR_CIPHER_NOT_SUPPORTED; }
+    var cw_key = alloc(key_len);
+    var sw_key = alloc(key_len);
+    var cw_iv = alloc(iv_len);
+    var sw_iv = alloc(iv_len);
+    if (cw_key == 0) { return TLS_ERR_OOM; }
+    if (sw_key == 0) { return TLS_ERR_OOM; }
+    if (cw_iv == 0) { return TLS_ERR_OOM; }
+    if (sw_iv == 0) { return TLS_ERR_OOM; }
+    if (tls_native_12_partition_keys(identity, kb, cw_key, sw_key, cw_iv, sw_iv) != TLS_OK) {
+        return TLS_ERR_INTERNAL;
+    }
+    store64(ctx + TLS_CTX_OFF_CLI_APP_KEY, cw_key);
+    store64(ctx + TLS_CTX_OFF_CLI_APP_IV,  cw_iv);
+    store64(ctx + TLS_CTX_OFF_SRV_APP_KEY, sw_key);
+    store64(ctx + TLS_CTX_OFF_SRV_APP_IV,  sw_iv);
+    tls_native_seq_init(ctx + TLS_CTX_OFF_CLI_APP_SEQ);
+    tls_native_seq_init(ctx + TLS_CTX_OFF_SRV_APP_SEQ);
+    return TLS_OK;
+}
+
+# Build a TLS 1.2 Finished (RFC 5246 §7.4.9). verify_data =
+# PRF(master, label, Hash(handshake_messages))[0..12] — ALWAYS 12
+# bytes (do NOT mirror the 1.3 path's hlen-sized verify_data). `label`
+# is "client finished" / "server finished" (15 bytes). The handshake
+# hash is the live transcript snapshot (CCS excluded). Feeds the built
+# 16-byte Finished into the transcript (so the peer's later Finished
+# covers it). Returns 16 (the inner plaintext — the caller AEAD-seals
+# it) or a negative TLS_ERR_*.
+fn tls_native_12_build_finished(ctx, label, out, out_max): i64 {
+    if (out_max < TLS_HANDSHAKE_HEADER_LEN + TLS12_VERIFY_DATA_LEN) { return TLS_ERR_BUFFER_FULL; }
+    var ts = load64(ctx + TLS_CTX_OFF_TRANSCRIPT);
+    var identity = load64(ctx + TLS_CTX_OFF_CIPHER);
+    var master = load64(ctx + TLS_CTX_OFF_MASTER12);
+    if (ts == 0) { return TLS_ERR_PROTOCOL; }
+    if (master == 0) { return TLS_ERR_PROTOCOL; }
+    var hh = alloc(TLS_MAX_DIGEST_LEN);
+    if (hh == 0) { return TLS_ERR_OOM; }
+    var hh_len = tls_native_transcript_digest(ts, hh);
+    if (hh_len < 0) { return TLS_ERR_INTERNAL; }
+    tls_native_handshake_write_header(out, TLS_HS_FINISHED, TLS12_VERIFY_DATA_LEN);
+    if (tls_native_12_verify_data(identity, master, label, 15, hh, hh_len,
+    out + TLS_HANDSHAKE_HEADER_LEN) != TLS_OK) {
+        return TLS_ERR_INTERNAL;
+    }
+    var total = TLS_HANDSHAKE_HEADER_LEN + TLS12_VERIFY_DATA_LEN;
+    tls_native_transcript_update(ts, out, total);
+    return total;
+}
+
+# Verify a peer's TLS 1.2 Finished. Requires type 20 + an exactly
+# 12-byte verify_data; recomputes the expected verify_data from the
+# live transcript + master and constant-time compares. On success,
+# feeds the 16-byte Finished into the transcript (ONLY after a good
+# compare — RFC 5246 §7.4.9 ordering). Returns TLS_OK or a negative
+# TLS_ERR_* (TLS_ERR_AUTHN on mismatch).
+fn tls_native_12_verify_finished(ctx, msg, msg_len, label): i64 {
+    var ht = 0;
+    var blen = 0;
+    if (tls_native_handshake_read_header(msg, msg_len, &ht, &blen) < 0) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (ht != TLS_HS_FINISHED) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (blen != TLS12_VERIFY_DATA_LEN) { return TLS_ERR_BAD_HANDSHAKE; }
+    if (TLS_HANDSHAKE_HEADER_LEN + blen > msg_len) { return TLS_ERR_BAD_HANDSHAKE; }
+    var ts = load64(ctx + TLS_CTX_OFF_TRANSCRIPT);
+    var identity = load64(ctx + TLS_CTX_OFF_CIPHER);
+    var master = load64(ctx + TLS_CTX_OFF_MASTER12);
+    if (ts == 0) { return TLS_ERR_PROTOCOL; }
+    if (master == 0) { return TLS_ERR_PROTOCOL; }
+    var hh = alloc(TLS_MAX_DIGEST_LEN);
+    if (hh == 0) { return TLS_ERR_OOM; }
+    var hh_len = tls_native_transcript_digest(ts, hh);
+    if (hh_len < 0) { return TLS_ERR_INTERNAL; }
+    var expected[12];
+    if (tls_native_12_verify_data(identity, master, label, 15, hh, hh_len, &expected) != TLS_OK) {
+        return TLS_ERR_INTERNAL;
+    }
+    if (_tn_ct_eq(&expected, msg + TLS_HANDSHAKE_HEADER_LEN, TLS12_VERIFY_DATA_LEN) != 1) {
+        return TLS_ERR_AUTHN;
+    }
+    tls_native_transcript_update(ts, msg, TLS_HANDSHAKE_HEADER_LEN + TLS12_VERIFY_DATA_LEN);
+    return TLS_OK;
+}
+
+# ----------------------------------------------------------------
+# TLS 1.2 record seal/open wrappers (single post-CCS epoch)
+# ----------------------------------------------------------------
+# Seal `plain` (content type `ct`) under THIS side's write key into a
+# 1.2 AEAD record (RFC 5288/7905). Used for the protected Finished
+# (ct=22) and post-handshake application data (ct=23). Client writes
+# with the client-write key (stored in the CLI_APP slots), server with
+# the server-write key (SRV_APP slots). Returns the record length.
+fn tls_native_12_seal(ctx, ct, plain, plain_len, out, out_max): i64 {
+    var key = load64(ctx + TLS_CTX_OFF_SRV_APP_KEY);
+    var iv = load64(ctx + TLS_CTX_OFF_SRV_APP_IV);
+    var seqoff = TLS_CTX_OFF_SRV_APP_SEQ;
+    if (load64(ctx + TLS_CTX_OFF_ROLE) == TLS_ROLE_CLIENT) {
+        key = load64(ctx + TLS_CTX_OFF_CLI_APP_KEY);
+        iv = load64(ctx + TLS_CTX_OFF_CLI_APP_IV);
+        seqoff = TLS_CTX_OFF_CLI_APP_SEQ;
+    }
+    if (key == 0) { return TLS_ERR_PROTOCOL; }
+    return tls_native_record_seal_12(load64(ctx + TLS_CTX_OFF_CIPHER), key, iv,
+    ctx + seqoff, ct, plain, plain_len, out, out_max);
+}
+
+# Open a peer 1.2 AEAD record with the PEER's write key, returning the
+# plaintext length + the inner content type via `out_ct`. Client reads
+# with the server-write key, server with the client-write key.
+fn tls_native_12_open(ctx, record, record_len, out, out_max, out_ct): i64 {
+    var key = load64(ctx + TLS_CTX_OFF_CLI_APP_KEY);
+    var iv = load64(ctx + TLS_CTX_OFF_CLI_APP_IV);
+    var seqoff = TLS_CTX_OFF_CLI_APP_SEQ;
+    if (load64(ctx + TLS_CTX_OFF_ROLE) == TLS_ROLE_CLIENT) {
+        key = load64(ctx + TLS_CTX_OFF_SRV_APP_KEY);
+        iv = load64(ctx + TLS_CTX_OFF_SRV_APP_IV);
+        seqoff = TLS_CTX_OFF_SRV_APP_SEQ;
+    }
+    if (key == 0) { return TLS_ERR_PROTOCOL; }
+    return tls_native_record_open_12(load64(ctx + TLS_CTX_OFF_CIPHER), key, iv,
+    ctx + seqoff, record, record_len, out, out_max, out_ct);
+}
+
+# ----------------------------------------------------------------
+# TLS 1.2 connect/accept drivers (.74)
+# ----------------------------------------------------------------
+
+# Classify a ClientHello as TLS 1.3 vs 1.2 for the accept() dispatcher.
+# Returns 1 (1.3), 0 (1.2), or -1 (malformed). A 1.3 ClientHello always
+# carries a key_share extension (RFC 8446 §4.1.2) and normally also a
+# supported_versions=0x0304; a 1.2 ClientHello carries NEITHER (its
+# ECDHE share rides ClientKeyExchange). So the presence of EITHER
+# signals 1.3 — robust even against a (non-conforming) 1.3 client that
+# omits supported_versions but still sends a key_share.
+fn _tn_ch_is_tls13(ch_msg, ch_len): i64 {
+    var ht = 0;
+    var blen = 0;
+    if (tls_native_handshake_read_header(ch_msg, ch_len, &ht, &blen) < 0) { return 0 - 1; }
+    if (ht != TLS_HS_CLIENT_HELLO) { return 0 - 1; }
+    if (TLS_HANDSHAKE_HEADER_LEN + blen > ch_len) { return 0 - 1; }
+    var body = ch_msg + TLS_HANDSHAKE_HEADER_LEN;
+    var pos = 2 + 32;
+    if (pos + 1 > blen) { return 0 - 1; }
+    var sid_len = load8(body + pos) & 0xFF;
+    pos = pos + 1 + sid_len;
+    if (pos + 2 > blen) { return 0 - 1; }
+    var cs_len = _tn_be16_r(body + pos);
+    pos = pos + 2 + cs_len;
+    if (pos + 1 > blen) { return 0 - 1; }
+    var comp_len = load8(body + pos) & 0xFF;
+    pos = pos + 1 + comp_len;
+    if (pos == blen) { return 0; }
+    if (pos + 2 > blen) { return 0 - 1; }
+    var ext_total = _tn_be16_r(body + pos);
+    pos = pos + 2;
+    if (pos + ext_total > blen) { return 0 - 1; }
+    var ksp = 0;
+    var ksl = 0;
+    if (_tn_find_ext(body + pos, ext_total, TLS_EXT_KEY_SHARE, &ksp, &ksl) == 1) { return 1; }
+    var dp = 0;
+    var dl = 0;
+    var found = _tn_find_ext(body + pos, ext_total, TLS_EXT_SUPPORTED_VERSIONS, &dp, &dl);
+    if (found == 0 - 1) { return 0 - 1; }
+    if (found == 0) { return 0; }
+    if (dl < 1) { return 0 - 1; }
+    var n = load8(dp) & 0xFF;
+    if (1 + n > dl) { return 0 - 1; }
+    var i = 0;
+    while (i + 2 <= n) {
+        if (_tn_be16_r(dp + 1 + i) == 0x0304) { return 1; }
+        i = i + 2;
+    }
+    return 0;
+}
+
+# Server: parse a TLS 1.2 ClientHello body — capture client_random and
+# pick the first offered ciphersuite we support, storing its AEAD
+# identity at OFF_CIPHER. (x25519 supported_groups is assumed — the
+# only group cyrius offers; a non-x25519-only client surfaces later as
+# an ECDHE failure.) Returns the chosen WIRE ciphersuite (>0) or a
+# negative TLS_ERR_*.
+fn _tn_12_parse_client_hello(ctx, body, blen): i64 {
+    if (blen < 2 + 32 + 1) { return TLS_ERR_BAD_HANDSHAKE; }
+    var crand = alloc(TLS_RANDOM_LEN);
+    if (crand == 0) { return TLS_ERR_OOM; }
+    memcpy(crand, body + 2, 32);
+    store64(ctx + TLS_CTX_OFF_CLIENT_RANDOM, crand);
+    var pos = 2 + 32;
+    var sid_len = load8(body + pos) & 0xFF;
+    pos = pos + 1 + sid_len;
+    if (pos + 2 > blen) { return TLS_ERR_BAD_HANDSHAKE; }
+    var cs_len = _tn_be16_r(body + pos);
+    pos = pos + 2;
+    if (pos + cs_len > blen) { return TLS_ERR_BAD_HANDSHAKE; }
+    var chosen = 0;
+    var j = 0;
+    while (j + 2 <= cs_len) {
+        var w = _tn_be16_r(body + pos + j);
+        if (tls_native_12_cipher_supported(w) == 1) {
+            chosen = w;
+            j = cs_len;
+        } else {
+            j = j + 2;
+        }
+    }
+    # Detect the client's extended_master_secret offer (RFC 7627). Walk past
+    # cipher_suites + compression_methods to the extensions block. All reads
+    # bounds-checked vs blen (untrusted CH); lenient — a malformed/absent ext
+    # block leaves EMS=0 and never fails the handshake. (The cipher loop used
+    # pos+j indexing and did not mutate pos, so pos is still at cipher_suites.)
+    pos = pos + cs_len;
+    if (pos + 1 <= blen) {
+        var cm_len = load8(body + pos) & 0xFF;
+        pos = pos + 1 + cm_len;
+        if (pos + 2 <= blen) {
+            var ext_total = _tn_be16_r(body + pos);
+            pos = pos + 2;
+            if (pos + ext_total <= blen) {
+                var ep = 0;
+                var el = 0;
+                var got = _tn_find_ext(body + pos, ext_total, TLS_EXT_EXTENDED_MASTER_SECRET, &ep, &el);
+                if (got == 1) { store64(ctx + TLS_CTX_OFF_USE_EMS, 1); }
+            }
+        }
+    }
+    if (chosen == 0) { return TLS_ERR_HANDSHAKE_FAILED; }
+    store64(ctx + TLS_CTX_OFF_CIPHER, tls_native_12_cipher_aead_identity(chosen));
+    return chosen;
+}
+
+# Server: build the coalesced flight ServerHello ‖ Certificate ‖
+# ServerKeyExchange ‖ ServerHelloDone into `out`, feeding each raw
+# handshake message into the transcript. Requires the transcript
+# initialized + the ClientHello already fed, plus CIPHER, SERVER_RANDOM,
+# EPH_PUB, and loaded creds. Returns the total length or a negative
+# TLS_ERR_*.
+fn tls_native_12_build_server_flight(ctx, out, out_max): i64 {
+    var ts = load64(ctx + TLS_CTX_OFF_TRANSCRIPT);
+    if (ts == 0) { return TLS_ERR_PROTOCOL; }
+    var pos = 0;
+    var n = _tn_build_server_hello_12(ctx, out + pos, out_max - pos, 1);
+    if (n < 0) { return n; }
+    tls_native_transcript_update(ts, out + pos, n);
+    pos = pos + n;
+    n = _tn_build_certificate_12(ctx, out + pos, out_max - pos);
+    if (n < 0) { return n; }
+    tls_native_transcript_update(ts, out + pos, n);
+    pos = pos + n;
+    n = _tn_12_build_server_kex(ctx, out + pos, out_max - pos);
+    if (n < 0) { return n; }
+    tls_native_transcript_update(ts, out + pos, n);
+    pos = pos + n;
+    n = tls_native_12_build_server_hello_done(out + pos, out_max - pos);
+    if (n < 0) { return n; }
+    tls_native_transcript_update(ts, out + pos, n);
+    pos = pos + n;
+    return pos;
+}
+
+# Client: consume the coalesced server flight (one plaintext record's
+# worth of SH ‖ Cert ‖ SKE ‖ SHD). Parses the ServerHello (fixing the
+# cipher), retroactively initializes the transcript and feeds the
+# buffered ClientHello + ServerHello, then parses + verifies the
+# Certificate (leaf), ServerKeyExchange (signature + ephemeral pub),
+# and ServerHelloDone, feeding each into the transcript. Returns TLS_OK
+# or a negative TLS_ERR_*.
+fn _tn_12_client_consume_flight(ctx, flight, flight_len): i64 {
+    var ht = 0;
+    var blen = 0;
+    # ServerHello. CRITICAL: handshake_read_header only checks buflen>=4
+    # and never validates the 24-bit body length, so each sub-message's
+    # claimed length MUST be bounded against the remaining flight buffer
+    # before it feeds the transcript or a parser — otherwise a hostile
+    # server's oversized length drives an OOB read in sha*_update.
+    if (tls_native_handshake_read_header(flight, flight_len, &ht, &blen) < 0) { return TLS_ERR_BAD_HANDSHAKE; }
+    var sh_len = TLS_HANDSHAKE_HEADER_LEN + blen;
+    if (sh_len > flight_len) { return TLS_ERR_BAD_HANDSHAKE; }
+    var pr = tls_native_client_parse_server_hello_12(ctx, flight, sh_len);
+    if (pr != TLS_OK) { return pr; }
+    var identity = load64(ctx + TLS_CTX_OFF_CIPHER);
+    var ts = tls_native_transcript_init(tls_native_cipher_hash_algo(identity));
+    if (ts == 0) { return TLS_ERR_INTERNAL; }
+    store64(ctx + TLS_CTX_OFF_TRANSCRIPT, ts);
+    var chbuf = load64(ctx + TLS_CTX_OFF_CH_BUF);
+    if (chbuf == 0) { return TLS_ERR_PROTOCOL; }
+    tls_native_transcript_update(ts, chbuf, load64(ctx + TLS_CTX_OFF_CH_LEN));
+    tls_native_transcript_update(ts, flight, sh_len);
+    var pos = sh_len;
+    if (tls_native_handshake_read_header(flight + pos, flight_len - pos, &ht, &blen) < 0) {
+        return TLS_ERR_BAD_HANDSHAKE;
+    }
+    if (ht != TLS_HS_CERTIFICATE) { return TLS_ERR_BAD_HANDSHAKE; }
+    var cert_msg_len = TLS_HANDSHAKE_HEADER_LEN + blen;
+    if (cert_msg_len > flight_len - pos) { return TLS_ERR_BAD_HANDSHAKE; }
+    var cr2 = _tn_parse_certificate_12(ctx, flight + pos + TLS_HANDSHAKE_HEADER_LEN, blen);
+    if (cr2 != TLS_OK) { return cr2; }
+    tls_native_transcript_update(ts, flight + pos, cert_msg_len);
+    pos = pos + cert_msg_len;
+    if (tls_native_handshake_read_header(flight + pos, flight_len - pos, &ht, &blen) < 0) {
+        return TLS_ERR_BAD_HANDSHAKE;
+    }
+    if (ht != TLS_HS_SERVER_KEY_EXCHANGE) { return TLS_ERR_BAD_HANDSHAKE; }
+    var ske_msg_len = TLS_HANDSHAKE_HEADER_LEN + blen;
+    if (ske_msg_len > flight_len - pos) { return TLS_ERR_BAD_HANDSHAKE; }
+    var sr2 = _tn_12_parse_server_kex(ctx, flight + pos + TLS_HANDSHAKE_HEADER_LEN, blen);
+    if (sr2 != TLS_OK) { return sr2; }
+    tls_native_transcript_update(ts, flight + pos, ske_msg_len);
+    pos = pos + ske_msg_len;
+    if (tls_native_handshake_read_header(flight + pos, flight_len - pos, &ht, &blen) < 0) {
+        return TLS_ERR_BAD_HANDSHAKE;
+    }
+    var shd_msg_len = TLS_HANDSHAKE_HEADER_LEN + blen;
+    if (shd_msg_len > flight_len - pos) { return TLS_ERR_BAD_HANDSHAKE; }
+    var dr = tls_native_12_parse_server_hello_done(flight + pos, shd_msg_len);
+    if (dr != TLS_OK) { return dr; }
+    tls_native_transcript_update(ts, flight + pos, shd_msg_len);
+    return TLS_OK;
+}
+
+# Client-side TLS 1.2 handshake driver over a connected socket. Sends a
+# plaintext ClientHello, consumes the server flight, computes the ECDHE
+# shared secret + derives keys, sends ClientKeyExchange + ChangeCipherSpec
+# + a sealed Finished, then verifies the server's sealed Finished →
+# CONNECTED. Returns TLS_OK or a negative TLS_ERR_* (ctx → ERROR).
+# Reached via tls_native_connect when the ctx is pinned to max 1.2.
+fn tls_native_connect_12(ctx, sock_fd): i64 {
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    store64(ctx + TLS_CTX_OFF_SOCK_FD, sock_fd);
+    var ch = alloc(2048);
+    if (ch == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var chn = tls_native_12_build_client_hello(ctx, ch, 2048);
+    if (chn < 0) { return chn; }
+    var chrec = alloc(chn + TLS_RECORD_HEADER_LEN);
+    if (chrec == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    tls_native_record_write_header(chrec, TLS_CT_HANDSHAKE, 0x0303, chn);
+    memcpy(chrec + TLS_RECORD_HEADER_LEN, ch, chn);
+    if (_tn_sock_write_all(sock_fd, chrec, chn + TLS_RECORD_HEADER_LEN) < 0) {
+        return _tn_ctx_fail(ctx, TLS_ERR_IO);
+    }
+    var cap = TLS_RECORD_MAX_CIPHERTEXT + TLS_RECORD_HEADER_LEN;
+    var inbuf = alloc(cap);
+    if (inbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    # The 1.2 server flight (ServerHello, Certificate, ServerKeyExchange,
+    # ServerHelloDone) is plaintext, but a real server fragments it across
+    # records (a large RSA Certificate especially). Reassemble the handshake
+    # bytes until ServerHelloDone (type 14), then consume. See CHANGELOG [6.0.83].
+    var fbuf = alloc(65536);
+    if (fbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var flen = 0;
+    var fdone = 0;
+    while (fdone == 0) {
+        var rl = _tn_sock_read_record_skip_ccs(sock_fd, inbuf, cap);
+        if (rl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+        if ((load8(inbuf) & 0xFF) != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+        var paylen = rl - TLS_RECORD_HEADER_LEN;
+        # A zero-length handshake record makes no progress; reject it so a peer
+        # streaming empty records can't spin this loop forever. See CHANGELOG [6.0.83].
+        if (paylen <= 0) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+        if (flen + paylen > 65536) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+        memcpy(fbuf + flen, inbuf + TLS_RECORD_HEADER_LEN, paylen);
+        flen = flen + paylen;
+        fdone = _tn_flight_complete(fbuf, flen, TLS_HS_SERVER_HELLO_DONE);
+    }
+    var cf = _tn_12_client_consume_flight(ctx, fbuf, flen);
+    if (cf != TLS_OK) { return _tn_ctx_fail(ctx, cf); }
+    var er = _tn_gen_ephemeral_x25519_pub_only(ctx);
+    if (er != TLS_OK) { return _tn_ctx_fail(ctx, er); }
+    var pm = alloc(32);
+    if (pm == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var pr = tls_native_12_compute_premaster(ctx, load64(ctx + TLS_CTX_OFF_PEER_PUB), pm);
+    if (pr != TLS_OK) { return _tn_ctx_fail(ctx, pr); }
+    # Build the ClientKeyExchange + feed it into the transcript BEFORE deriving
+    # keys, so the EMS session_hash (RFC 7627) covers CH..CKE. The legacy master
+    # ignores the transcript, so this reorder is safe in both modes; the CKE
+    # record-wrap + socket-send stay below (the wire bytes are order-independent).
+    # The server (_tn_12_server_drive) already feeds CKE before deriving — it
+    # needs no reorder.
+    var cke = alloc(64);
+    if (cke == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var cken = tls_native_12_build_client_key_exchange(load64(ctx + TLS_CTX_OFF_EPH_PUB), cke, 64);
+    if (cken < 0) { return _tn_ctx_fail(ctx, cken); }
+    var ts = load64(ctx + TLS_CTX_OFF_TRANSCRIPT);
+    tls_native_transcript_update(ts, cke, cken);
+    var dk = tls_native_12_derive_keys(ctx, pm, 32);
+    if (dk != TLS_OK) { return _tn_ctx_fail(ctx, dk); }
+    var ckerec = alloc(cken + TLS_RECORD_HEADER_LEN);
+    if (ckerec == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    tls_native_record_write_header(ckerec, TLS_CT_HANDSHAKE, 0x0303, cken);
+    memcpy(ckerec + TLS_RECORD_HEADER_LEN, cke, cken);
+    if (_tn_sock_write_all(sock_fd, ckerec, cken + TLS_RECORD_HEADER_LEN) < 0) {
+        return _tn_ctx_fail(ctx, TLS_ERR_IO);
+    }
+    var ccs = alloc(8);
+    if (ccs == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var ccsn = tls_native_ccs_record_write(ccs);
+    if (_tn_sock_write_all(sock_fd, ccs, ccsn) < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    var fin = alloc(64);
+    if (fin == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var finn = tls_native_12_build_finished(ctx, "client finished", fin, 64);
+    if (finn < 0) { return _tn_ctx_fail(ctx, finn); }
+    var finrec = alloc(finn + 64);
+    if (finrec == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var finreclen = tls_native_12_seal(ctx, TLS_CT_HANDSHAKE, fin, finn, finrec, finn + 64);
+    if (finreclen < 0) { return _tn_ctx_fail(ctx, finreclen); }
+    if (_tn_sock_write_all(sock_fd, finrec, finreclen) < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    var srl = _tn_sock_read_record_skip_ccs(sock_fd, inbuf, cap);
+    if (srl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    var sfin = alloc(64);
+    if (sfin == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var sct = 0;
+    var sfinlen = tls_native_12_open(ctx, inbuf, srl, sfin, 64, &sct);
+    if (sfinlen < 0) { return _tn_ctx_fail(ctx, sfinlen); }
+    if (sct != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+    var vr = tls_native_12_verify_finished(ctx, sfin, sfinlen, "server finished");
+    if (vr != TLS_OK) { return _tn_ctx_fail(ctx, vr); }
+    store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_CONNECTED);
+    return TLS_OK;
+}
+
+# Server-side TLS 1.2 handshake, given the already-read ClientHello
+# message (`ch_msg`/`ch_len`). Loads creds, negotiates, sends the
+# coalesced flight (SH+Cert+SKE+SHD), reads ClientKeyExchange, derives
+# keys, verifies the client's sealed Finished, then sends its own
+# ChangeCipherSpec + sealed Finished → CONNECTED. Returns TLS_OK or a
+# negative TLS_ERR_*.
+fn _tn_12_server_drive(ctx, sock_fd, ch_msg, ch_len): i64 {
+    store64(ctx + TLS_CTX_OFF_SOCK_FD, sock_fd);
+    if (load64(ctx + TLS_CTX_OFF_CREDS_LOADED) != 1) {
+        var lr = tls_native_server_load_creds(ctx);
+        if (lr != TLS_OK) { return lr; }
+    }
+    var ht = 0;
+    var blen = 0;
+    if (tls_native_handshake_read_header(ch_msg, ch_len, &ht, &blen) < 0) {
+        return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE);
+    }
+    if (ht != TLS_HS_CLIENT_HELLO) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    if (TLS_HANDSHAKE_HEADER_LEN + blen > ch_len) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    var chosen = _tn_12_parse_client_hello(ctx, ch_msg + TLS_HANDSHAKE_HEADER_LEN, blen);
+    if (chosen < 0) { return _tn_ctx_fail(ctx, chosen); }
+    store64(ctx + TLS_CTX_OFF_VERSION, TLS_VERSION_1_2);
+    store64(ctx + TLS_CTX_OFF_GROUP, TLS_GROUP_X25519);
+    var srand = alloc(TLS_RANDOM_LEN);
+    if (srand == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    if (sys_getrandom(srand, TLS_RANDOM_LEN, 0) != TLS_RANDOM_LEN) {
+        return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL);
+    }
+    store64(ctx + TLS_CTX_OFF_SERVER_RANDOM, srand);
+    var er = _tn_gen_ephemeral_x25519_pub_only(ctx);
+    if (er != TLS_OK) { return _tn_ctx_fail(ctx, er); }
+    var identity = load64(ctx + TLS_CTX_OFF_CIPHER);
+    var ts = tls_native_transcript_init(tls_native_cipher_hash_algo(identity));
+    if (ts == 0) { return _tn_ctx_fail(ctx, TLS_ERR_INTERNAL); }
+    store64(ctx + TLS_CTX_OFF_TRANSCRIPT, ts);
+    tls_native_transcript_update(ts, ch_msg, TLS_HANDSHAKE_HEADER_LEN + blen);
+    var flight = alloc(4096);
+    if (flight == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var fl = tls_native_12_build_server_flight(ctx, flight, 4096);
+    if (fl < 0) { return _tn_ctx_fail(ctx, fl); }
+    var flrec = alloc(fl + TLS_RECORD_HEADER_LEN);
+    if (flrec == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    tls_native_record_write_header(flrec, TLS_CT_HANDSHAKE, 0x0303, fl);
+    memcpy(flrec + TLS_RECORD_HEADER_LEN, flight, fl);
+    if (_tn_sock_write_all(sock_fd, flrec, fl + TLS_RECORD_HEADER_LEN) < 0) {
+        return _tn_ctx_fail(ctx, TLS_ERR_IO);
+    }
+    var cap = TLS_RECORD_MAX_CIPHERTEXT + TLS_RECORD_HEADER_LEN;
+    var inbuf = alloc(cap);
+    if (inbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var rl = _tn_sock_read_record_skip_ccs(sock_fd, inbuf, cap);
+    if (rl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    if ((load8(inbuf) & 0xFF) != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+    var cke_msg = inbuf + TLS_RECORD_HEADER_LEN;
+    var cke_len = rl - TLS_RECORD_HEADER_LEN;
+    var client_pub = alloc(32);
+    if (client_pub == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var cr2 = tls_native_12_parse_client_key_exchange(cke_msg, cke_len, client_pub);
+    if (cr2 != TLS_OK) { return _tn_ctx_fail(ctx, cr2); }
+    # Feed the EXACT 37-byte ClientKeyExchange message (4-byte header +
+    # 33-byte body), not the record payload — a peer that pads/coalesces
+    # the record would otherwise desync the transcript vs the client.
+    tls_native_transcript_update(ts, cke_msg, TLS_HANDSHAKE_HEADER_LEN + 33);
+    var pm = alloc(32);
+    if (pm == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var pr2 = tls_native_12_compute_premaster(ctx, client_pub, pm);
+    if (pr2 != TLS_OK) { return _tn_ctx_fail(ctx, pr2); }
+    var dk = tls_native_12_derive_keys(ctx, pm, 32);
+    if (dk != TLS_OK) { return _tn_ctx_fail(ctx, dk); }
+    var crl = _tn_sock_read_record_skip_ccs(sock_fd, inbuf, cap);
+    if (crl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    var cfin = alloc(64);
+    if (cfin == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var fct = 0;
+    var cfinlen = tls_native_12_open(ctx, inbuf, crl, cfin, 64, &fct);
+    if (cfinlen < 0) { return _tn_ctx_fail(ctx, cfinlen); }
+    if (fct != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+    var vr = tls_native_12_verify_finished(ctx, cfin, cfinlen, "client finished");
+    if (vr != TLS_OK) { return _tn_ctx_fail(ctx, vr); }
+    var ccs = alloc(8);
+    if (ccs == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var ccsn = tls_native_ccs_record_write(ccs);
+    if (_tn_sock_write_all(sock_fd, ccs, ccsn) < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    var fin = alloc(64);
+    if (fin == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var finn = tls_native_12_build_finished(ctx, "server finished", fin, 64);
+    if (finn < 0) { return _tn_ctx_fail(ctx, finn); }
+    var finrec = alloc(finn + 64);
+    if (finrec == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var finreclen = tls_native_12_seal(ctx, TLS_CT_HANDSHAKE, fin, finn, finrec, finn + 64);
+    if (finreclen < 0) { return _tn_ctx_fail(ctx, finreclen); }
+    if (_tn_sock_write_all(sock_fd, finrec, finreclen) < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_CONNECTED);
+    return TLS_OK;
+}
+
+# Server-side TLS 1.2 handshake driver: read the ClientHello record,
+# then drive the 1.2 server handshake. Public entry for a 1.2-only
+# server; tls_native_accept auto-routes here when the ClientHello does
+# not offer 1.3. Returns TLS_OK or a negative TLS_ERR_*.
+fn tls_native_accept_12(ctx, sock_fd): i64 {
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    var cap = TLS_RECORD_MAX_CIPHERTEXT + TLS_RECORD_HEADER_LEN;
+    var inbuf = alloc(cap);
+    if (inbuf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    var rl = _tn_sock_read_record_skip_ccs(sock_fd, inbuf, cap);
+    if (rl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
+    if ((load8(inbuf) & 0xFF) != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
+    return _tn_12_server_drive(ctx, sock_fd, inbuf + TLS_RECORD_HEADER_LEN, rl - TLS_RECORD_HEADER_LEN);
+}
+
 # Derive + install the server and client handshake-traffic key/IV from
 # the key schedule, and reset both direction sequence numbers. Call
 # after the handshake secret is derived (.18).
@@ -2916,7 +4648,39 @@ fn tls_native_server_open_handshake(ctx, record, record_len, out, out_max, out_c
 # "\x08http/1.1\x02h2", protos_len = 13). Returns TLS_OK on success,
 # TLS_ERR_INVALID_PARAM on malformed input.
 fn tls_native_set_alpn(ctx, protos, protos_len): i64 {
-    return TLS_ERR_NOT_IMPLEMENTED;
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (protos == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (protos_len <= 0) { return TLS_ERR_INVALID_PARAM; }
+    if (protos_len > 255) { return TLS_ERR_INVALID_PARAM; }   # one CH record's worth
+    # Store a length-prefixed copy [be16 protos_len][protos] so the CH builder
+    # can emit it without re-counting. The protos bytes are the wire-format
+    # ProtocolNameList contents (1-byte-len-prefixed protocol names).
+    var buf = alloc(2 + protos_len);
+    if (buf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+    _tn_be16_w(buf, protos_len);
+    memcpy(buf + 2, protos, protos_len);
+    store64(ctx + TLS_CTX_OFF_ALPN_OFFER, buf);
+    return TLS_OK;
+}
+
+# Parse a server-sent ALPN extension body (RFC 7301 §3.1: a 2-byte
+# ProtocolNameList length, then exactly ONE 1-byte-len-prefixed protocol)
+# and store the selected protocol on the ctx as [u8 len][proto]. `ext_data`
+# points at the extension_data; `ext_len` is its length. Lenient: a malformed
+# ALPN ext is ignored (selected stays unset). Returns TLS_OK always.
+fn _tn_store_alpn_selected(ctx, ext_data, ext_len): i64 {
+    if (ext_len < 3) { return TLS_OK; }
+    var list_len = _tn_be16_r(ext_data);
+    if (list_len + 2 > ext_len) { return TLS_OK; }
+    var plen = load8(ext_data + 2) & 0xFF;
+    if (plen == 0) { return TLS_OK; }
+    if (plen + 1 > list_len) { return TLS_OK; }
+    var sel = alloc(1 + plen);
+    if (sel == 0) { return TLS_OK; }
+    store8(sel, plen);
+    memcpy(sel + 1, ext_data + 3, plen);
+    store64(ctx + TLS_CTX_OFF_ALPN_SEL, sel);
+    return TLS_OK;
 }
 
 # Set the peer-cert verification mode (see TlsVerifyMode). Default
@@ -2941,27 +4705,79 @@ fn tls_native_set_verify(ctx, mode): i64 {
 # a concatenated PEM file (or DER if `is_der != 0`); each cert in the
 # bundle is treated as a trust root. Defaults to the system bundle
 # (Linux: /etc/ssl/certs/ca-certificates.crt or platform equivalent).
+# CA_ROOT holds a trust-anchor SET: a ptr to [count][root0 ptr]...[rootN-1 ptr].
+# (.78: was a single root; now a set so system bundles + multi-root PEM work.)
+var TLS_CA_MAX_ROOTS = 300;
+
 fn tls_native_set_ca_bundle(ctx, pem_bundle, bundle_len, is_der): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
     if (pem_bundle == 0) { return TLS_ERR_INVALID_PARAM; }
     if (bundle_len <= 0) { return TLS_ERR_INVALID_PARAM; }
-    var root = x509_cert_alloc();
-    if (root == 0) { return TLS_ERR_OOM; }
     if (is_der != 0) {
+        # Single DER trust anchor → a one-element set.
+        var root = x509_cert_alloc();
+        if (root == 0) { return TLS_ERR_OOM; }
         if (x509_parse(pem_bundle, bundle_len, root) != 1) { return TLS_ERR_CERT_INVALID; }
-    } else {
-        # PEM bundle: decode the first certificate as the trust anchor.
-        # (Multi-root bundles store >1 root — that refinement comes with
-        # the system-store path; .29 takes the first.)
-        var chain[16];
-        var n = pem_decode_certs(pem_bundle, bundle_len, &chain, 1);
-        if (n < 1) { return TLS_ERR_CERT_INVALID; }
-        if (x509_parse(load64(&chain), load64(&chain + 8), root) != 1) {
-            return TLS_ERR_CERT_INVALID;
-        }
+        var set1 = alloc(16);
+        if (set1 == 0) { return TLS_ERR_OOM; }
+        store64(set1, 1);
+        store64(set1 + 8, root);
+        store64(ctx + TLS_CTX_OFF_CA_ROOT, set1);
+        return TLS_OK;
     }
-    store64(ctx + TLS_CTX_OFF_CA_ROOT, root);
+    # PEM bundle: decode EVERY certificate as a trust anchor (OS stores carry
+    # hundreds). A cert sigil can't parse is skipped, not fatal.
+    var chain = alloc(TLS_CA_MAX_ROOTS * 16);
+    if (chain == 0) { return TLS_ERR_OOM; }
+    var n = pem_decode_certs(pem_bundle, bundle_len, chain, TLS_CA_MAX_ROOTS);
+    if (n < 1) { return TLS_ERR_CERT_INVALID; }
+    var set = alloc(8 + n * 8);
+    if (set == 0) { return TLS_ERR_OOM; }
+    var i = 0;
+    var stored = 0;
+    while (i < n) {
+        var r = x509_cert_alloc();
+        if (r != 0) {
+            if (x509_parse(load64(chain + i * 16), load64(chain + i * 16 + 8), r) == 1) {
+                store64(set + 8 + stored * 8, r);
+                stored = stored + 1;
+            }
+        }
+        i = i + 1;
+    }
+    if (stored < 1) { return TLS_ERR_CERT_INVALID; }
+    store64(set, stored);
+    store64(ctx + TLS_CTX_OFF_CA_ROOT, set);
     return TLS_OK;
+}
+
+# Load the OS trust store — a single concatenated-PEM CA bundle — as the ctx's
+# trust anchors. Tries the standard bundle locations across distros + macOS
+# (the path is NOT the same everywhere: Debian/Ubuntu use
+# /etc/ssl/certs/ca-certificates.crt, RHEL/Fedora /etc/pki/..., macOS/Arch
+# /etc/ssl/cert.pem). Returns TLS_OK, TLS_ERR_IO if no bundle is readable, or a
+# parse error.
+fn tls_native_set_ca_system(ctx): i64 {
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    var cap = 1048576;                          # 1 MiB; system bundles are ~250 KB
+    var buf = alloc(cap);
+    if (buf == 0) { return TLS_ERR_OOM; }
+    var fd = sys_open("/etc/ssl/cert.pem", 0, 0);                          # macOS, Arch
+    if (fd < 0) { fd = sys_open("/etc/ssl/certs/ca-certificates.crt", 0, 0); }   # Debian/Ubuntu
+    if (fd < 0) { fd = sys_open("/etc/pki/tls/certs/ca-bundle.crt", 0, 0); }     # RHEL/Fedora
+    if (fd < 0) { fd = sys_open("/etc/ssl/ca-bundle.pem", 0, 0); }               # openSUSE
+    if (fd < 0) { return TLS_ERR_IO; }
+    var total = 0;
+    var rdone = 0;
+    while (rdone == 0) {
+        var r = sys_read(fd, buf + total, cap - total);
+        if (r > 0) { total = total + r; }
+        if (r <= 0) { rdone = 1; }
+        if (total >= cap) { rdone = 1; }
+    }
+    sys_close(fd);
+    if (total <= 0) { return TLS_ERR_IO; }
+    return tls_native_set_ca_bundle(ctx, buf, total, 0);
 }
 
 # Client: verify the server's certificate chain against the configured
@@ -2974,13 +4790,36 @@ fn tls_native_set_ca_bundle(ctx, pem_bundle, bundle_len, is_der): i64 {
 fn tls_native_client_verify_chain(ctx, now_unix): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
     var leaf = load64(ctx + TLS_CTX_OFF_SERVER_CERT);
-    var root = load64(ctx + TLS_CTX_OFF_CA_ROOT);
+    var rootset = load64(ctx + TLS_CTX_OFF_CA_ROOT);
     if (leaf == 0) { return _tn_ctx_fail(ctx, TLS_ERR_CERT_INVALID); }
-    if (root == 0) { return _tn_ctx_fail(ctx, TLS_ERR_CERT_INVALID); }
-    if (x509_verify_chain(leaf, 0, 0, root, now_unix) != 1) {
-        return _tn_ctx_fail(ctx, TLS_ERR_CERT_INVALID);
+    if (rootset == 0) { return _tn_ctx_fail(ctx, TLS_ERR_CERT_INVALID); }
+    # Reverse the server's intermediates: TLS order (leaf-signer..top) → the
+    # order x509_verify_chain wants (root-signed first..leaf-signer last).
+    var inters = load64(ctx + TLS_CTX_OFF_SERVER_INTERS);
+    var ni = 0;
+    var rev = 0;
+    if (inters != 0) {
+        ni = load64(inters);
+        if (ni > 0) {
+            rev = alloc(ni * 8);
+            if (rev == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
+            var k = 0;
+            while (k < ni) {
+                store64(rev + k * 8, load64(inters + 8 + (ni - 1 - k) * 8));
+                k = k + 1;
+            }
+        }
     }
-    return TLS_OK;
+    # Try each trusted root until one validates leaf←intermediates←root.
+    var rcount = load64(rootset);
+    var ri = 0;
+    while (ri < rcount) {
+        if (x509_verify_chain(leaf, rev, ni, load64(rootset + 8 + ri * 8), now_unix) == 1) {
+            return TLS_OK;
+        }
+        ri = ri + 1;
+    }
+    return _tn_ctx_fail(ctx, TLS_ERR_CERT_INVALID);
 }
 
 # ================================================================
@@ -3154,10 +4993,22 @@ fn tls_native_client_verify_hostname(ctx): i64 {
 }
 
 # Set the minimum + maximum TLS protocol version. Both args use the
-# TlsProtocolVersion enum. Default is 1.2 .. 1.3; setting min=1.3
-# refuses 1.2-only peers. Setting max=1.2 disables 1.3.
+# TlsProtocolVersion enum (TLS_VERSION_1_2 / TLS_VERSION_1_3). Default
+# is 1.2 .. 1.3; setting both to 1.2 forces the TLS 1.2 path (so
+# connect()/accept() dispatch to the 1.2 drivers); setting both to 1.3
+# forces 1.3. Returns TLS_OK or TLS_ERR_INVALID_PARAM.
 fn tls_native_set_version_range(ctx, min_ver, max_ver): i64 {
-    return TLS_ERR_NOT_IMPLEMENTED;
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    if (min_ver != TLS_VERSION_1_2) {
+        if (min_ver != TLS_VERSION_1_3) { return TLS_ERR_INVALID_PARAM; }
+    }
+    if (max_ver != TLS_VERSION_1_2) {
+        if (max_ver != TLS_VERSION_1_3) { return TLS_ERR_INVALID_PARAM; }
+    }
+    if (min_ver > max_ver) { return TLS_ERR_INVALID_PARAM; }
+    store64(ctx + TLS_CTX_OFF_MIN_VER, min_ver);
+    store64(ctx + TLS_CTX_OFF_MAX_VER, max_ver);
+    return TLS_OK;
 }
 
 # Client-side: perform the handshake over `sock_fd` (caller-managed
@@ -3165,6 +5016,10 @@ fn tls_native_set_version_range(ctx, min_ver, max_ver): i64 {
 # handshake completes, or a negative TLS_ERR_* on failure.
 fn tls_native_connect(ctx, sock_fd): i64 {
     if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    # A 1.2-pinned ctx (max_ver == 1.2) routes to the TLS 1.2 driver.
+    if (load64(ctx + TLS_CTX_OFF_MAX_VER) == TLS_VERSION_1_2) {
+        return tls_native_connect_12(ctx, sock_fd);
+    }
     store64(ctx + TLS_CTX_OFF_SOCK_FD, sock_fd);
     # Send ClientHello as a plaintext handshake record.
     var ch = alloc(2048);
@@ -3282,10 +5137,25 @@ fn tls_native_accept(ctx, sock_fd): i64 {
     var rl = _tn_sock_read_record_skip_ccs(sock_fd, inbuf, cap);
     if (rl < 0) { return _tn_ctx_fail(ctx, TLS_ERR_IO); }
     if ((load8(inbuf) & 0xFF) != TLS_CT_HANDSHAKE) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_RECORD); }
-    var sh = alloc(2048);
-    if (sh == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     var ch_msg = inbuf + TLS_RECORD_HEADER_LEN;
     var ch_len = rl - TLS_RECORD_HEADER_LEN;
+    # Version dispatch: route to the TLS 1.2 server when the ClientHello
+    # is a 1.2 hello (no key_share / supported_versions), or when this
+    # ctx is pinned to max 1.2. A 1.3-only ctx (min_ver 1.3) rejects a
+    # 1.2 client.
+    var is13 = _tn_ch_is_tls13(ch_msg, ch_len);
+    if (is13 == 0 - 1) { return _tn_ctx_fail(ctx, TLS_ERR_BAD_HANDSHAKE); }
+    if (is13 == 0) {
+        if (load64(ctx + TLS_CTX_OFF_MIN_VER) == TLS_VERSION_1_3) {
+            return _tn_ctx_fail(ctx, TLS_ERR_PROTOCOL);
+        }
+        return _tn_12_server_drive(ctx, sock_fd, ch_msg, ch_len);
+    }
+    if (load64(ctx + TLS_CTX_OFF_MAX_VER) == TLS_VERSION_1_2) {
+        return _tn_12_server_drive(ctx, sock_fd, ch_msg, ch_len);
+    }
+    var sh = alloc(2048);
+    if (sh == 0) { return _tn_ctx_fail(ctx, TLS_ERR_OOM); }
     var sh_len = tls_native_server_respond_hello(ctx, ch_msg, ch_len, sh, 2048);
     if (sh_len < 0) { return sh_len; }
     if (tls_native_server_sent_hrr(ctx) == 1) { return _tn_ctx_fail(ctx, TLS_ERR_HANDSHAKE_FAILED); }
@@ -3366,11 +5236,34 @@ fn tls_native_read(ctx, buf, maxlen): i64 {
     return tls_native_open_app(ctx, inbuf, rl, buf, maxlen);
 }
 
-# Send a close_notify alert, then close + free the context. After
-# tls_native_close, the ctx handle MUST NOT be reused. Returns
-# TLS_OK regardless of close_notify success (best-effort).
+# Send a close_notify alert (RFC 5246 §7.2.1 / RFC 8446 §6.1), then mark the
+# context closed. After tls_native_close the handle MUST NOT be reused.
+# Returns TLS_OK regardless of close_notify success (best-effort, per the
+# contract). Idempotent — a second call is a no-op.
+#
+# Memory note: the ctx is bump-allocated (no per-object free), so this does
+# NOT free the ctx storage — that is reclaimed at arena/process teardown. The
+# caller owns the socket fd (TLS_CTX_OFF_SOCK_FD) and closes it after this
+# returns. The lib/tls.cyr wrapper frees its own shim struct.
 fn tls_native_close(ctx): i64 {
-    return TLS_ERR_NOT_IMPLEMENTED;
+    if (ctx == 0) { return TLS_ERR_INVALID_PARAM; }
+    var state = load64(ctx + TLS_CTX_OFF_STATE);
+    if (state == TLS_STATE_CLOSED) { return TLS_OK; }   # idempotent
+    # close_notify is only sealable once CONNECTED (app-traffic keys exist).
+    if (state == TLS_STATE_CONNECTED) {
+        var alert[2];
+        store8(&alert, TLS_ALERT_WARNING);              # level (ignored in 1.3)
+        store8(&alert + 1, 0);                          # description 0 = close_notify
+        var rec = alloc(64);
+        if (rec != 0) {
+            var rn = _tn_seal_ct(ctx, TLS_CT_ALERT, &alert, 2, rec, 64);
+            if (rn > 0) {
+                _tn_sock_write_all(load64(ctx + TLS_CTX_OFF_SOCK_FD), rec, rn);
+            }
+        }
+    }
+    store64(ctx + TLS_CTX_OFF_STATE, TLS_STATE_CLOSED);
+    return TLS_OK;
 }
 
 # Get the ALPN protocol the peer selected (for clients) or that we
@@ -3378,14 +5271,58 @@ fn tls_native_close(ctx): i64 {
 # (up to `bufmax`) and returns the byte count, or 0 if no ALPN
 # was negotiated.
 fn tls_native_get_alpn_selected(ctx, buf, bufmax): i64 {
-    return 0;
+    if (ctx == 0) { return 0; }
+    var sel = load64(ctx + TLS_CTX_OFF_ALPN_SEL);
+    if (sel == 0) { return 0; }                       # no ALPN negotiated
+    var plen = load8(sel) & 0xFF;
+    if (plen == 0) { return 0; }
+    if (plen > bufmax) { return 0; }                  # caller's buffer too small
+    memcpy(buf, sel + 1, plen);
+    return plen;
 }
 
 # Get the peer's leaf certificate in DER form. Writes to `buf` (up
 # to `bufmax`); returns DER length, 0 if no peer cert was sent, or
-# negative TLS_ERR_BUFFER_FULL if bufmax is too small.
+# negative TLS_ERR_BUFFER_FULL if bufmax is too small. The leaf's DER
+# ptr+len live in sigil's parsed x509 struct (`+0`/`+8`).
 fn tls_native_get_peer_cert_der(ctx, buf, bufmax): i64 {
-    return 0;
+    if (ctx == 0) { return 0; }
+    var leaf = load64(ctx + TLS_CTX_OFF_SERVER_CERT);
+    if (leaf == 0) { return 0; }
+    var der = load64(leaf);
+    var der_len = load64(leaf + 8);
+    if (der == 0) { return 0; }
+    if (der_len <= 0) { return 0; }
+    if (der_len > bufmax) { return TLS_ERR_BUFFER_FULL; }
+    memcpy(buf, der, der_len);
+    return der_len;
+}
+
+# Get the peer leaf's SubjectPublicKeyInfo (SPKI) in DER form — the HPKP
+# pin target (consumers SHA-256 it). Writes to `buf` (up to `bufmax`);
+# returns SPKI length, 0 on no cert / parse failure, or TLS_ERR_BUFFER_FULL.
+# The SPKI is the TLV immediately after the subject in the TBSCertificate;
+# sigil's parsed x509 struct stores the subject span at `+64`/`+72`, and we
+# walk one SEQUENCE past it with sigil's der_walk.
+fn tls_native_get_peer_spki_der(ctx, buf, bufmax): i64 {
+    if (ctx == 0) { return 0; }
+    var leaf = load64(ctx + TLS_CTX_OFF_SERVER_CERT);
+    if (leaf == 0) { return 0; }
+    var der = load64(leaf);
+    var der_len = load64(leaf + 8);
+    var subj_off = load64(leaf + 64);
+    var subj_len = load64(leaf + 72);
+    if (der == 0) { return 0; }
+    if (subj_off <= 0) { return 0; }
+    var spki_start = subj_off + subj_len;
+    var spki_cp = 0;
+    var spki_np = 0;
+    if (der_walk(der, der_len, spki_start, DER_TAG_SEQUENCE, &spki_cp, &spki_np) < 0) { return 0; }
+    var spki_len = spki_np - spki_start;
+    if (spki_len <= 0) { return 0; }
+    if (spki_len > bufmax) { return TLS_ERR_BUFFER_FULL; }
+    memcpy(buf, der + spki_start, spki_len);
+    return spki_len;
 }
 
 # Get the current state-machine state (TlsState enum). Useful for
