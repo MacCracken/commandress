@@ -5,7 +5,7 @@
 
 ## Version
 
-**1.0.1** — released 2026-05-21. **Toolchain refresh** patch — Cyrius pin `5.11.64` → `6.0.1`, clearing the wrapper/manifest drift (`cyrius --version` had been printing `manifest-pin: 5.11.64 (drift — wrapper is 6.0.1)`). No source changes; suite remains 279/279 green. Public API per [ADR 0007](../adr/0007-schema-freeze.md) unchanged. Prior: **1.0.0** tagged 2026-05-18 (M9 — v1.0 freeze + tag, doc roll only; all v1.0 criteria from [`roadmap.md`](roadmap.md) closed in M1–M8). Next: **post-v1 cadence** — multi-palette, `rust-toolchain.toml` once Cyrius single-bracket TOML lands, the parked file-first language shellouts, agnoshi adoption.
+**1.1.2** — released 2026-06-19. **Toolchain refresh** patch — Cyrius pin `6.1.14` → `6.2.24`, clearing the wrapper/manifest drift (`cyrius --version` had been printing `manifest-pin: 6.1.14 (drift — wrapper is 6.2.24)`). No source changes; suite remains 279/279 green; binary 204,688 B → 210,144 B (+5,456 B, toolchain). Public API per [ADR 0007](../adr/0007-schema-freeze.md) unchanged. Prior: **1.1.1** (2026-06-08) agnos argv fix; **1.1.0** (2026-06-06) AGNOS as a build target; **1.0.1** (2026-05-21) Cyrius pin `5.11.64` → `6.0.1`; **1.0.0** tagged 2026-05-18 (M9 — v1.0 freeze + tag). Next: **post-v1 cadence** — multi-palette, `rust-toolchain.toml` once Cyrius single-bracket TOML lands, the parked file-first language shellouts, agnoshi adoption.
 
 ## Role
 
@@ -13,7 +13,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 
 ## Toolchain
 
-- **Cyrius pin**: `5.11.64` (in `cyrius.cyml [package].cyrius`)
+- **Cyrius pin**: `6.2.24` (in `cyrius.cyml [package].cyrius`)
 
 ## Source
 

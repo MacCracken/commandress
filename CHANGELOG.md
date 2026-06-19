@@ -6,6 +6,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-06-19 (toolchain refresh)
+
+**Toolchain refresh.** Patch release lifting the Cyrius pin from `6.1.14` to `6.2.24` to clear the wrapper/manifest drift (`cyrius --version` reported `manifest-pin: 6.1.14 (drift — wrapper is 6.2.24)` before this bump). No source changes. Suite remains **279 passed, 0 failed**; binary moves from **204,688 B** to **210,144 B** (+5,456 B, attributable entirely to the toolchain change). Public API per [ADR 0007](docs/adr/0007-schema-freeze.md) unaffected.
+
+### Changed
+
+- cyrius toolchain pin 6.1.14 → 6.2.24.
+
 ## [1.1.1] — 2026-06-08 (agnos argv fix)
 
 ### Changed
