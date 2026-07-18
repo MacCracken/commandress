@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-07-17 (toolchain refresh + stdlib resync)
+
+**Toolchain refresh + dependency resync.** Patch release lifting the Cyrius pin from `6.2.24` to `6.4.66` (clearing the `manifest-pin: 6.2.24 (drift — wrapper is 6.4.66)` drift) and re-vendoring the bundled stdlib snapshot to match the new pin. No `src/` changes. Suite remains **279 passed, 0 failed**; binary drops **210,144 B → 147,600 B** (−62,544 B, −29.8 %) — most of it a bss collapse (59,296 B → 2,464 B) from the 6.4.66 toolchain's global layout, the rest tighter codegen. `render_prompt (default cwd+vcs+exit)` benches **8.848 µs avg** (min 8.700 µs, max 10.272 µs; was ~9 µs), still ~0.2 % of the 5 ms cold-start budget ([architecture/001-prompt-render-budget.md](docs/architecture/001-prompt-render-budget.md)). Public API per [ADR 0007](docs/adr/0007-schema-freeze.md) unaffected.
+
+### Changed
+
+- **`VERSION`** — `1.1.2` → `1.1.3`.
+- **`cyrius.cyml`** — `[package].cyrius` pin `6.2.24` → `6.4.66`.
+- **Vendored stdlib snapshot resynced to the 6.4.66 pin** (`cyrius lib sync --full`): **60 bundled libs updated, 19 added, 0 removed**. Headline version bumps: `sakshi` 2.2.4 → 2.4.6, `niyama` 1.0.2 → 1.0.6, `sigil` 3.7.7 → 3.12.1, `sandhi` 1.4.4 → 1.9.0, `yukti` 2.2.3 → 2.2.9, `patra` 1.10.3 → 1.12.12, `vani` 0.9.3 → 1.1.1, `mabda` 3.0.1 → 4.0.7, `sankoch` 2.2.5 → 2.5.1. Clears the `./lib/ shadows version-pinned …/6.4.66/lib — 9 bundled lib(s) differ` build warning. `[deps]` in `cyrius.cyml` is unchanged — the declared stdlib surface is the same; only the vendored implementations advanced.
+
+### Fixed
+
+- **`scripts/bench-gate.sh` couldn't parse the 6.4.x bench output.** The Cyrius 6.4.x bench harness prints sub-µs averages as decimals (`8.848us avg`) where 6.2.x printed integers (`9us avg`); the gate's integer-only regex (`[0-9]+`) then mis-parsed the line and died with `unrecognized avg unit '(default'`, failing CI regardless of the actual timing. The regex now accepts an optional fraction, and the µs normalization + budget comparison moved to `awk` (bash `(( ))` arithmetic can't handle decimals). ns/ms unit handling and the malformed-line guard are preserved; verified against real output, a forced over-budget case, ns/ms lines, and a no-match line.
+
 ## [1.1.2] — 2026-06-19 (toolchain refresh)
 
 **Toolchain refresh.** Patch release lifting the Cyrius pin from `6.1.14` to `6.2.24` to clear the wrapper/manifest drift (`cyrius --version` reported `manifest-pin: 6.1.14 (drift — wrapper is 6.2.24)` before this bump). No source changes. Suite remains **279 passed, 0 failed**; binary moves from **204,688 B** to **210,144 B** (+5,456 B, attributable entirely to the toolchain change). Public API per [ADR 0007](docs/adr/0007-schema-freeze.md) unaffected.

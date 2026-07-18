@@ -5,7 +5,7 @@
 
 ## Version
 
-**1.1.2** — released 2026-06-19. **Toolchain refresh** patch — Cyrius pin `6.1.14` → `6.2.24`, clearing the wrapper/manifest drift (`cyrius --version` had been printing `manifest-pin: 6.1.14 (drift — wrapper is 6.2.24)`). No source changes; suite remains 279/279 green; binary 204,688 B → 210,144 B (+5,456 B, toolchain). Public API per [ADR 0007](../adr/0007-schema-freeze.md) unchanged. Prior: **1.1.1** (2026-06-08) agnos argv fix; **1.1.0** (2026-06-06) AGNOS as a build target; **1.0.1** (2026-05-21) Cyrius pin `5.11.64` → `6.0.1`; **1.0.0** tagged 2026-05-18 (M9 — v1.0 freeze + tag). Next: **post-v1 cadence** — multi-palette, `rust-toolchain.toml` once Cyrius single-bracket TOML lands, the parked file-first language shellouts, agnoshi adoption.
+**1.1.3** — released 2026-07-17. **Toolchain refresh + stdlib resync** patch — Cyrius pin `6.2.24` → `6.4.66`, clearing the wrapper/manifest drift (`cyrius --version` had been printing `manifest-pin: 6.2.24 (drift — wrapper is 6.4.66)`), plus a full re-vendor of the bundled stdlib snapshot to match (`cyrius lib sync --full` — 60 libs updated, 19 added; headline bumps sigil `3.7.7 → 3.12.1`, sandhi `1.4.4 → 1.9.0`, mabda `3.0.1 → 4.0.7`, sankoch `2.2.5 → 2.5.1`, patra `1.10.3 → 1.12.12`, sakshi `2.2.4 → 2.4.6`, vani `0.9.3 → 1.1.1`, yukti `2.2.3 → 2.2.9`, niyama `1.0.2 → 1.0.6`). No `src/` changes; suite remains 279/279 green; binary 210,144 B → 147,600 B (−62,544 B, −29.8 % — mostly a bss collapse from the new toolchain). Also fixed `scripts/bench-gate.sh`, which the 6.4.x bench harness's decimal averages broke. Public API per [ADR 0007](../adr/0007-schema-freeze.md) unchanged. Prior: **1.1.2** (2026-06-19) Cyrius pin `6.1.14` → `6.2.24`; **1.1.1** (2026-06-08) agnos argv fix; **1.1.0** (2026-06-06) AGNOS as a build target; **1.0.1** (2026-05-21) Cyrius pin `5.11.64` → `6.0.1`; **1.0.0** tagged 2026-05-18 (M9 — v1.0 freeze + tag). Next: **post-v1 cadence** — multi-palette, `rust-toolchain.toml` once Cyrius single-bracket TOML lands, the parked file-first language shellouts, agnoshi adoption.
 
 ## Role
 
@@ -13,7 +13,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 
 ## Toolchain
 
-- **Cyrius pin**: `6.2.24` (in `cyrius.cyml [package].cyrius`)
+- **Cyrius pin**: `6.4.66` (in `cyrius.cyml [package].cyrius`)
 
 ## Source
 
@@ -42,7 +42,8 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 ## Binary
 
 - `cmdrs` (output in `build/cmdrs` after `cyrius build`)
-- Size: **202,561 B** on Cyrius 5.11.64, x86_64 (text 143,265 B; bss 59,296 B). Up from 200,667 B at the 0.7.0 baseline by **+1,894 B** for the M8 audit fixes — F-1 sanitization helper, F-3 cache-dir mode-verify, F-4 O_NOFOLLOW, F-5 atomic temp+rename, F-7 parse_last_exit, F-8 absolute-only PATH walker. Text +1,710 B; bss +184 B. Net win vs 0.3.0 baseline (395,115 B): **−192,554 B**.
+- Size: **147,600 B** on Cyrius 6.4.66, x86_64 (text 141,329 B; bss 2,464 B). Down from 210,144 B on 6.2.24 by **−62,544 B (−29.8 %)** at the 1.1.3 toolchain refresh — almost entirely a bss collapse (59,296 B → 2,464 B) from the 6.4.66 global layout, plus tighter codegen. No `src/` change caused it. Net win vs the 0.3.0 baseline (395,115 B): **−247,515 B**.
+- Historical: **202,561 B** on Cyrius 5.11.64 (text 143,265 B; bss 59,296 B) was the v1.0.x figure — 200,667 B at the 0.7.0 baseline + **1,894 B** for the M8 audit fixes (F-1 sanitization helper, F-3 cache-dir mode-verify, F-4 O_NOFOLLOW, F-5 atomic temp+rename, F-7 parse_last_exit, F-8 absolute-only PATH walker).
 
 ## Benchmarks
 
@@ -76,6 +77,8 @@ Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../a
 Direct (declared in `cyrius.cyml`):
 
 - stdlib — `string`, `fmt`, `alloc`, `io`, `vec`, `str`, `syscalls`, `assert` (and via includes: `cyml`, `toml`, `fnptr`, `bench`).
+
+The declared `[deps]` surface is stable across releases; the **vendored `lib/` snapshot** is re-synced to the pinned toolchain per refresh (`cyrius lib sync --full`). Last resync: **1.1.3 → the 6.4.66 pin** (60 libs updated, 19 added, 0 removed). A stale snapshot surfaces at build time as a `./lib/ shadows version-pinned …/lib — N bundled lib(s) differ` warning — the signal to re-sync.
 
 External: none (and none planned for v1.0).
 

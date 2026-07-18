@@ -29,23 +29,35 @@ if [[ -z "$line" ]]; then
   exit 1
 fi
 
-# Expected shape: "  render_prompt (...): 9us avg (min=9us max=10us) [25000 iters]"
-# Extract "<n><unit> avg" → "<n> <unit>".
-parsed="$(printf '%s\n' "$line" | sed -E 's/.*: *([0-9]+)(ns|us|ms) avg.*/\1 \2/')"
+# Expected shape: "  render_prompt (...): 8.848us avg (min=... max=...) [25000 iters]"
+# Extract "<n><unit> avg" → "<n> <unit>". <n> may be a decimal: the bench
+# harness emits sub-µs precision (e.g. "8.848us") since cyrius 6.4.x, where
+# it used to print integers ("9us"). Optional-fraction group keeps both.
+parsed="$(printf '%s\n' "$line" | sed -E 's/.*: *([0-9]+(\.[0-9]+)?)(ns|us|ms) avg.*/\1 \3/')"
 n="$(awk '{print $1}' <<< "$parsed")"
 unit="$(awk '{print $2}' <<< "$parsed")"
 
+# Validate unit first — if the sed didn't match (unexpected line shape),
+# `unit` is a stray token and this catches it before the awk math runs.
 case "$unit" in
-  ns) us=$(( n / 1000 )) ;;
-  us) us="$n" ;;
-  ms) us=$(( n * 1000 )) ;;
+  ns|us|ms) ;;
   *)
     echo "bench-gate: unrecognized avg unit '$unit' in line: $line" >&2
     exit 1
     ;;
 esac
 
-if (( us > BUDGET_US )); then
+# Normalize to µs and compare, both in awk — decimal averages break bash's
+# integer `(( ))` arithmetic. awk prints "1" when over budget, else "0".
+us="$(awk -v n="$n" -v u="$unit" 'BEGIN {
+  if (u == "ns") v = n / 1000;
+  else if (u == "ms") v = n * 1000;
+  else v = n;
+  printf "%.3f", v;
+}')"
+over="$(awk -v us="$us" -v b="$BUDGET_US" 'BEGIN { print (us > b) ? 1 : 0 }')"
+
+if [[ "$over" == "1" ]]; then
   echo "FAIL: render_prompt ${n}${unit} (= ${us} µs) exceeds budget ${BUDGET_US} µs" >&2
   echo "      source line: $line" >&2
   exit 1
