@@ -1,6 +1,6 @@
 # Prompt tour — what `cmdrs` paints, by example
 
-A reference gallery of `cmdrs` output for the v0.3.0 surface (cwd / exit / vcs). Each block shows the config that produced it, the shell context, and the literal line `cmdrs` prints to stdout. Use it to pick a config shape that matches the prompt you want; copy into `~/.commandress` and adjust.
+A reference gallery of `cmdrs` output, centred on the core cwd / exit / vcs surface. Each block shows the config that produced it, the shell context, and the literal line `cmdrs` prints to stdout. Use it to pick a config shape that matches the prompt you want; copy into `~/.commandress` and adjust.
 
 The annotated all-knobs config is the sibling file [`commandress.cyml.example`](commandress.cyml.example).
 
@@ -156,23 +156,25 @@ $ AGNOSHI_LAST_EXIT=1 cmdrs
 
 ---
 
-## Shell integration (manual, pre-M7)
+## Shell integration
 
-Until the agnoshi adapter (M7) lands, `cmdrs` is invoked by hand — it reads its context from env vars and prints one line to stdout. Wire it into your shell of choice:
-
-### bash / zsh
-
-Stash the previous command's exit before `cmdrs` runs so the segment can read it:
+**Use the shipped adapters** — they have shipped since v0.8.0, and they carry security
+fixes that a hand-rolled hook will not:
 
 ```sh
-# In ~/.bashrc or ~/.zshrc:
-_cmdrs_prompt() {
-    AGNOSHI_LAST_EXIT=$? cmdrs
-}
-PROMPT_COMMAND='_cmdrs_prompt'        # bash
-# OR
-PROMPT='$(_cmdrs_prompt)'             # zsh — single quotes are intentional
+source /path/to/commandress/adapters/zsh.sh    # zsh  — see docs/guides/zsh-setup.md
+source /path/to/commandress/adapters/bash.sh   # bash — see docs/guides/bash-setup.md
 ```
+
+> **Do not hand-roll `PROMPT='$(...)'` with single quotes.** That form only works with
+> zsh's `prompt_subst`, which makes the shell run command substitution on the prompt at
+> every redraw — and `cmdrs` output contains bytes chosen by whatever repository you are
+> standing in. That is arbitrary command execution, confirmed and fixed in v1.1.6
+> ([2026-08-26 audit](../audit/2026-08-26-audit.md), finding P-01). This tour recommended
+> exactly that pattern until the 2026-08-26 doc sweep. The adapters assign a
+> fully-rendered string in a `precmd` / `PROMPT_COMMAND` hook instead, which needs no
+> prompt expansion at all. If you must inline it, copy the vetted paste from the setup
+> guides — both marked-REQUIRED lines included.
 
 ### Smoke-testing the binary directly
 
@@ -182,9 +184,10 @@ $ AGNOSHI_LAST_EXIT=42 ./build/cmdrs                 # non-zero exit shown
 $ (cd /tmp && ./build/cmdrs)                          # outside HOME, outside sit
 ```
 
-### agnoshi (M7+, not yet shipped)
+### agnoshi (contract defined; agnoshi has not adopted it yet)
 
-Planned shape — the agnoshi-side adapter will set this for you:
+The 5-point contract is specified in [`adapters/agnoshi.sh`](../../adapters/agnoshi.sh). No
+commandress change is required when agnoshi implements it:
 
 ```sh
 export AGNOSHI_PROMPT_CMD=cmdrs
@@ -200,17 +203,19 @@ export AGNOSHI_PROMPT_CMD=cmdrs
 | Drop the dirty marker | `[[segments.vcs]]\nshow_dirty = false` |
 | Different dirty glyph | `[[segments.vcs]]\ndirty_marker = " ●"` |
 | Absolute paths in cwd | `[[segments.cwd]]\nhome_shorten = false` |
-| Powerline-style separator | `[[prompt]]\nseparator = " │ "` *(theming proper lands in M5)* |
+| Powerline-style separator | `[[prompt]]\nseparator_style = "powerline"` — full theming shipped in v0.6.0; see [`../themes/`](../themes/) |
 | Disable a segment | Omit it from `segments = [...]` |
 
 ---
 
 ## What's not yet here
 
-The v0.3.0 surface is intentionally narrow. These land in upcoming milestones — see [`../development/roadmap.md`](../development/roadmap.md):
+Everything this tour once listed as upcoming has shipped: `time` / `hostname` / `user` and
+per-segment timeouts (v0.4.0), the language-env segments (v0.5.0), colour + powerline +
+right-prompt (v0.6.0), and probe caching (v0.7.0). v1.0 froze the schema.
 
-- **M3 (v0.4.0)** — `time`, `hostname`, `user` segments; per-segment timeout enforcement (drops slow segments instead of stalling).
-- **M4 (v0.5.0)** — language-env segments (`python_env`, `node_env`, etc.).
-- **M5 (v0.6.0)** — ANSI color palette, powerline separators, right-prompt.
-- **M6 (v0.7.0)** — probe caching (the change that makes `vcs` cheap enough for default-on).
-- **M7 (v0.8.0)** — agnoshi / bash / zsh first-party adapters.
+What is genuinely still ahead is sequenced in
+[`../development/roadmap.md`](../development/roadmap.md) — multi-palette and hex/256-colour
+(1.2.0), `rust-toolchain.toml` and opt-in version shellouts (1.3.0), per-segment
+`budget_ms` and local-time support (1.4.0). Every item there is pinned to the line of code
+that defers it.

@@ -38,7 +38,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 | `src/segments/cyrius_env.cyr` | **M4 (0.5.0)** — Cyrius project segment. Walks ancestors for `cyrius.cyml`, reads `<root>/VERSION`, falls back to `cyrius --version` shellout (5 ms budget). Emits raw version string. Per [ADR 0005](../adr/0005-language-env-probe-pattern.md) |
 | `src/segments/python_env.cyr` | **M4 (0.5.0)** — Python project/venv segment. `$VIRTUAL_ENV` basename first, else `.python-version` ancestor walk + read+trim. `python --version` shellout deferred pre-v1. Per ADR 0005 |
 | `src/segments/node_env.cyr` | **M4 (0.5.0)** — Node project segment. `.nvmrc` ancestor walk + read+trim. Passes numeric (`20.11.1`) and channel-style (`lts/iron`) content verbatim. `package.json engines.node` + `node --version` shellout deferred. Per ADR 0005 |
-| `src/segments/rustup_env.cyr` | **M4 (0.5.0)** — Rust toolchain segment. Plain-format `rust-toolchain` ancestor walk + read+trim. `rust-toolchain.toml` deferred (blocked on Cyrius single-bracket TOML, papercut Item 3); `rustup show` shellout deferred per file-first policy. Per ADR 0005 |
+| `src/segments/rustup_env.cyr` | **M4 (0.5.0)** — Rust toolchain segment. Plain-format `rust-toolchain` ancestor walk + read+trim. `rust-toolchain.toml` **unblocked** (Cyrius Item 3 closed — verified 2026-08-26) and scheduled for roadmap 1.3.0; `rustup show` shellout deferred per file-first policy, opt-in in 1.3.0. Per ADR 0005 |
 
 ## Binary
 
@@ -72,7 +72,7 @@ Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../a
 
 ## Tests
 
-- `tests/commandress.tcyr` — **304 assertions across 148 tests**: full M1–M7 coverage + the 1.1.5 CLI group (10 tests / 16 assertions over `src/cli.cyr`, driven through cmdit's pure `cmdit_parse_argv` core with synthetic argv — side mapping, the space-separated form, both degrade paths, help/version short-circuits, and a version-drift guard asserting `cmdrs_version()` equals the `VERSION` file) + M8 audit-fix additions for `sanitize_segment_output` (8 cases — F-1), cache hardening (2 cases — F-3/F-4/F-5: mode-0o600 stat-verify, symlink-swap refuses), `parse_last_exit` (6 cases — F-7), and `find_in_path_with` (3 cases — F-8 relative-rejected / dot-rejected / absolute-resolves-including-mixed). `cyrius test` green.
+- `tests/commandress.tcyr` — **308 assertions across 146 tests**: full M1–M7 coverage + the 1.1.5 CLI group (10 tests / 16 assertions over `src/cli.cyr`, driven through cmdit's pure `cmdit_parse_argv` core with synthetic argv — side mapping, the space-separated form, both degrade paths, help/version short-circuits, and a version-drift guard asserting `cmdrs_version()` equals the `VERSION` file) + M8 audit-fix additions for `sanitize_segment_output` (8 cases — F-1), cache hardening (2 cases — F-3/F-4/F-5: mode-0o600 stat-verify, symlink-swap refuses), `parse_last_exit` (6 cases — F-7), and `find_in_path_with` (3 cases — F-8 relative-rejected / dot-rejected / absolute-resolves-including-mixed). `cyrius test` green.
 - `tests/commandress.bcyr` — per-segment + config + parser + full-prompt timings (above).
 - `tests/commandress.fcyr` — fuzz stub (no harness yet).
 
@@ -93,18 +93,18 @@ External (non-AGNOS, third-party): none, and none planned. The 1.1.5 cmdit adopt
 
 ## In-flight work
 
-- **M9 closed in 1.0.0** (tagged 2026-05-18): doc roll only — CHANGELOG 1.0.0 headline, README refresh, state + roadmap close-out. No code changes. Public API frozen per ADR 0007.
-- **agnoshi adoption pending**: `/home/macro/Repos/agnoshi/src/prompt.cyr` currently renders its own prompt. When agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw (5-point contract documented in `adapters/agnoshi.sh`, with F-12 no-re-expand rule), users sourcing the adapter get a commandress-rendered prompt with no further commandress change.
-- **Deferred behind upstream gaps**:
-  - `rust-toolchain.toml` parsing — blocked on Cyrius single-bracket TOML (papercut Item 3, v6.x).
-  - `find_in_path` itself — pending Cyrius v6.x Item 8 (no stdlib `which()`); the `src/pathlookup.cyr` workaround ships.
-  - LSP transitive-include false positives across `src/render.cyr` — Cyrius Item 4, v6.x. Build is clean; the noise stays.
-- **Deferred by policy (file-first, per user direction 2026-05-18)**:
-  - `python --version`, `node --version`, `rustup show` shellouts. The cache infrastructure makes these affordable when they land — parked for post-v1.
-  - `package.json` `engines.node` parsing. JSON-walk cost still not justified.
-- **Binary size drifting up with the stdlib snapshot** (noted 1.1.4): each resync pulls larger vendored libs, and ~half of 1.1.4's +20,664 B is code the linker never reaches (`384 unreachable fns (69,382 B)`). `CYRIUS_DCE=1` eliminates it today but is not wired into the build or CI. Worth deciding at the next refresh whether DCE becomes the default for release builds — size is not budgeted (render time is), so this is hygiene, not a regression against a stated target.
-- **Post-v1 theme-switching path**: single-palette `[[palette]]` shipped 0.6.0; curated `docs/themes/` library shipped 0.6.1; multi-palette `[[palettes.<name>]]` + top-level `palette = "<name>"` selector remains the next theme-track move under the additive-only contract in ADR 0007.
-- **Next**: **post-v1 cadence**. Public surface is frozen; new work is additive per ADR 0007 or goes through the documented 3-step deprecation path. Driver list is the deferred items above plus whatever downstream consumers request.
+> **Planned work lives in [`roadmap.md`](roadmap.md)**, sequenced into 1.2.0 → 1.5.0 with
+> each item pinned to the source line that defers it. This section is *state* — what is
+> true right now — not a second copy of the plan. It was both until the 2026-08-26 doc
+> sweep, and the two copies had drifted.
+
+- **agnoshi adoption pending**: `/home/macro/Repos/agnoshi/src/prompt.cyr` still renders its own prompt. When agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw (5-point contract in `adapters/agnoshi.sh`, including the F-12 no-re-expand rule), sourcing the adapter yields a commandress-rendered prompt with **no commandress change required**.
+- **Upstream gates, with the date each was last checked** — a gate is a claim about the world and it expires:
+  - **Cyrius Item 3 (single-bracket TOML) — CLOSED.** Re-tested 2026-08-26 against the 6.5.35 stdlib: `toml_get_sections` finds a single-bracket `[toolchain]`, and the config loader reads `[prompt]` end to end (pinned by `test_config_accepts_single_bracket_sections`). This had been carried as a blocker in two source files and the roadmap; `rust-toolchain.toml` is now scheduled work, not blocked work.
+  - **Cyrius Item 8 (no stdlib `which()`) — still open.** Re-checked 2026-08-26: no stdlib fn resolves a bare name against `$PATH`. `src/pathlookup.cyr` remains correct and shipping.
+  - **Cyrius Item 4 (LSP transitive-include false positives on `src/render.cyr`) — still open.** The editor reports undefined `SGR_RESET` / `sgr_open_for` / `toml_*` when analysing the file standalone; the build is clean. Noise, not a defect.
+- **Binary size drifting up with the stdlib snapshot** (noted 1.1.4, unchanged at 1.1.6): each resync pulls larger vendored libs, and roughly half the growth is code the linker never reaches. `CYRIUS_DCE=1` eliminates it but is not wired into the build or CI. Size is not a budgeted metric (render time is), so this is hygiene — scheduled as a *decision* in roadmap 1.5.0 rather than left to drift.
+- **Undocumented-but-supported**: single-bracket `[section]` config works today. `[[section]]` stays canonical (every theme and example uses it); both are accepted, and the suite pins it.
 
 ## Next
 

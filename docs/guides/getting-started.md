@@ -42,52 +42,69 @@ Segments are independent — no shared mutable state, no ordering dependencies. 
 - `tests/commandress.bcyr` — benchmarks (`cyrius bench`).
 - `tests/commandress.fcyr` — fuzz harness (`cyrius fuzz`).
 
-## Config (planned for M1)
+## Config
 
-`~/.commandress`:
+`~/.commandress` (no extension — [ADR 0006](../adr/0006-config-path-rename.md)). CYML;
+the header zone is TOML. Both `[[section]]` and `[section]` are accepted; `[[section]]`
+is the canonical spelling every shipped theme uses.
 
 ```cyml
-[prompt]
-order = ["cwd", "git", "exit"]
-separator = " · "
+[[prompt]]
+segments       = ["cwd", "vcs", "exit"]     # default order
+right_segments = ["time"]                   # optional; rendered by `cmdrs --side=right`
+separator      = " "
+trailer        = " $ "
 
-[segments.cwd]
+[[segments.cwd]]
 home_shorten = true
-max_length = 40
+max_length   = 40
+fg           = "cyan"
 
-[segments.git]
-budget_ms = 80
-show_dirty = true
-show_ahead_behind = false
+[[segments.vcs]]
+show_dirty   = true
+dirty_marker = "*"
 
-[segments.exit]
-show_when_zero = false
-color_nonzero = "red"
+[[segments.exit]]
+hide_zero = true
+fg        = "red"
 ```
 
-Missing config file → baked-in defaults. Invalid config field → log to stderr, render with defaults.
+Missing config file → baked-in defaults. Unknown field → warning on stderr, render
+continues with defaults for that field. Every knob is listed in
+[`../examples/commandress.cyml.example`](../examples/commandress.cyml.example); drop-in
+palettes live in [`../themes/`](../themes/).
 
-## Adding a segment (M1+)
+## Adding a segment
 
-1. Create `src/segments/your_segment.cyr` exporting `render_your_segment(ctx) → str`
+1. Create `src/segments/your_segment.cyr` exporting a pure `your_segment_render(...) → cstring` (0 for "render nothing")
 2. Add a unit test in `tests/commandress.tcyr` — at least one happy path + one error path
 3. Add a benchmark in `tests/commandress.bcyr` measuring render time
-4. Register the segment in `src/render.cyr`'s dispatch table
-5. Add it to the default order in `src/config.cyr`'s defaults
+4. Register the segment in `src/render.cyr`'s dispatch table (`_seg_fn_for`, plus `_sgr_for` / `_bg_for`)
+5. If it should be on by default, add it to `src/config.cyr`'s defaults
 6. Bump `CHANGELOG.md` `[Unreleased] / Added`
 7. If the segment design is non-trivial, file an ADR (see [`../adr/template.md`](../adr/template.md))
 
+Segment output is sanitized at one chokepoint in `src/render.cyr`, so a new segment gets
+control-byte filtering for free — but read the [2026-08-26 audit](../audit/2026-08-26-audit.md)
+first if your segment copies bytes from outside commandress.
+
 ## Running standalone
 
-Once segments land:
-
 ```sh
-AGNOSHI_LAST_EXIT=0 PWD=/tmp ./build/cmdrs               # default config
-AGNOSHI_LAST_EXIT=1 ./build/cmdrs --config /tmp/test.cyml # custom config
-./build/cmdrs --debug                                     # per-segment timing
+AGNOSHI_LAST_EXIT=0 ./build/cmdrs        # default config
+AGNOSHI_LAST_EXIT=42 ./build/cmdrs       # non-zero exit rendered
+./build/cmdrs --side=right               # right prompt (config `right_segments`)
+./build/cmdrs --version                  # stdout
+./build/cmdrs --help                     # generated flag table, stderr
+HOME=/tmp/altconf ./build/cmdrs          # point at a different config
 ```
 
-## Integrating with agnoshi (M7+)
+There is no `--config` or `--debug` flag; earlier drafts of this guide listed both and
+neither was ever implemented. The config path is derived from `$HOME`, so set `HOME` to
+test an alternative. The full CLI surface is `--side`, `--help`, `--version`
+([ADR 0008](../adr/0008-cli-parsing-via-cmdit.md)).
+
+## Integrating with agnoshi
 
 ```sh
 # In your agnoshi rc file:

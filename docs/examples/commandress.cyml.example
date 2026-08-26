@@ -1,3 +1,12 @@
+# Annotated commandress config — every knob, with the reasoning.
+# Copy to ~/.commandress (no extension) and delete what you don't need;
+# anything omitted falls back to the baked-in default.
+#
+# SECTION SPELLING: `[[name]]` is canonical and is what every shipped theme
+# uses. Single-bracket `[name]` is also accepted and behaves identically —
+# the `[[X]]` form began as a workaround for a stdlib parser gap that has
+# since closed. Either works; pick one and be consistent.
+
 [[prompt]]
 # Segment order — left-to-right. Names must match registered segments
 # (see render.cyr::_seg_fn_for). Unknown names warn to stderr; they

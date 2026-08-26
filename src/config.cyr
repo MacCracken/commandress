@@ -1,9 +1,18 @@
 # config.cyr — CYML config loader for ~/.commandress.
 #
-# Schema (TOML in the header zone of a CYML file — sub-tables use the
-# `[[name]]` form because the stdlib's `toml_parse` recognises array-of-
-# tables but not single-bracket `[name]`. Treat `[[X]]` as our spelling
-# of `[X]` for now; single-bracket support is a stdlib follow-up):
+# Schema (TOML in the header zone of a CYML file). Sub-tables are written
+# `[[name]]`, and BOTH `[[name]]` and `[name]` are accepted.
+#
+# The `[[X]]` form was originally a workaround: the stdlib's `toml_parse`
+# recognised array-of-tables but not single-bracket sections (Cyrius papercut
+# Item 3). **That gap closed** — verified against the 6.5.35 stdlib during the
+# 2026-08-26 doc sweep, and pinned by
+# tests/commandress.tcyr::test_config_accepts_single_bracket_sections.
+#
+# `[[X]]` remains the CANONICAL documented spelling: every shipped theme and
+# example uses it, and switching would churn every user's config to no benefit.
+# `[X]` works and is documented as also-supported. Do not "fix" the docs to
+# single-bracket; do not remove support for either.
 #
 #   [[prompt]]
 #   segments              = ["cwd", "vcs", "exit"]

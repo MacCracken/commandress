@@ -6,10 +6,15 @@
 #
 # `rust-toolchain` is the legacy plain-text format (one line: a channel
 # like `1.75.0` or `stable`). Modern projects use `rust-toolchain.toml`
-# instead — its `[toolchain] channel = "..."` shape isn't parseable by
-# the Cyrius stdlib today (single-bracket sections deferred to v6.x,
-# papercut Item 3). When that lands, add a `.toml` branch before the
-# plain check.
+# instead — `[toolchain] channel = "..."`.
+#
+# That was deferred because the Cyrius stdlib could not parse single-bracket
+# sections (papercut Item 3). **The gap is closed**: verified 2026-08-26 that
+# `toml_get_sections` finds a single-bracket `[toolchain]`, and that the config
+# loader reads single-bracket sections end to end. This segment is therefore
+# UNBLOCKED, not gated — it is scheduled work, roadmap 1.3.0. Add a `.toml`
+# branch before the plain check; keep the plain-file path, both formats are
+# in the wild.
 #
 # `rustup show active-toolchain` shellout is similarly parked pre-v1
 # per the file-first policy — version probes get cheap once M6

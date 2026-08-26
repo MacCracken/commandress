@@ -2,7 +2,7 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.0.0** — public API frozen ([ADR 0007](docs/adr/0007-schema-freeze.md)). **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.1.6** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit. **License**: GPL-3.0-only.
 
 ## What it is
 
@@ -26,11 +26,11 @@ A small, self-contained binary that takes shell context as input (`$CWD`, last e
 ```sh
 cyrius deps                                    # resolve stdlib deps (no-op if already synced)
 cyrius build src/main.cyr build/cmdrs          # compile (binary named cmdrs)
-cyrius test                                    # 279 assertions across 131 tests
+cyrius test                                    # 308 assertions across 146 tests
 cyrius bench tests/commandress.bcyr            # per-segment + full-prompt timings
 ```
 
-## Available segments (v1.0.0)
+## Available segments
 
 | Name | Source | Renders | Per-segment options |
 |---|---|---|---|
@@ -45,7 +45,7 @@ cyrius bench tests/commandress.bcyr            # per-segment + full-prompt timin
 | `node_env` | `.nvmrc` ancestor walk | Pinned Node version / channel | `fg`/`bg`/`style` |
 | `rustup_env` | `rust-toolchain` ancestor walk | Pinned Rust toolchain | `fg`/`bg`/`style` |
 
-Default segment order is `["cwd", "vcs", "exit"]` — `vcs` became default-on in v0.7.0 once the 1 s TTL probe cache (`src/cache.cyr`) made it cheap enough (~68 µs hot avg vs ~1.2 ms cold). Outside a `sit` repo the `vcs` segment renders empty, so the prompt stays clean for non-VCS directories.
+Default segment order is `["cwd", "vcs", "exit"]` — `vcs` became default-on in v0.7.0 once the 1 s TTL probe cache (`src/cache.cyr`) made it cheap enough (~7.6 µs hot avg vs ~1.8 ms cold). Outside a `sit` repo the `vcs` segment renders empty, so the prompt stays clean for non-VCS directories.
 
 Colour, powerline-style separators, named palettes, and right-prompt all ship — see [`docs/examples/commandress.cyml.example`](docs/examples/commandress.cyml.example) and the curated theme files in [`docs/themes/`](docs/themes/).
 
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.1.5
+cmdrs 1.1.6
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```
@@ -102,6 +102,7 @@ source /path/to/commandress/adapters/agnoshi.sh
 commandress/
 ├── VERSION                                    # canonical version — cyrius.cyml reads this
 ├── cyrius.cyml                                # package + build manifest
+├── cyrius.lock                                # dep pins, committed (see architecture/003)
 ├── CHANGELOG.md, CLAUDE.md, README.md, LICENSE
 ├── adapters/                                  # first-party shell adapters
 │   ├── zsh.sh, bash.sh, agnoshi.sh
@@ -113,6 +114,7 @@ commandress/
 │   ├── render.cyr                             # table-driven segment registry + dispatch
 │   ├── shellout.cyr                           # per-call timeout watchdog
 │   ├── cache.cyr                              # per-segment per-cwd probe cache
+│   ├── cli.cyr                                # CLI surface (cmdit flag table, degrade policy)
 │   ├── pathlookup.cyr, fslookup.cyr           # shared lookup helpers
 │   ├── color.cyr                              # ANSI SGR + sanitisation
 │   └── segments/
@@ -120,20 +122,20 @@ commandress/
 │       ├── time.cyr, hostname.cyr, user.cyr
 │       └── cyrius_env.cyr, python_env.cyr, node_env.cyr, rustup_env.cyr
 ├── tests/
-│   ├── commandress.tcyr                       # 279 assertions across 131 tests
+│   ├── commandress.tcyr                       # 308 assertions across 146 tests
 │   ├── commandress.bcyr                       # benchmark suite
 │   └── commandress.fcyr                       # fuzz stub
-├── scripts/                                   # bench-gate + bench-history
+├── scripts/                                   # bench-gate, bench-history, lock-check
 └── docs/
-    ├── adr/                                   # decision records (0001–0007)
+    ├── adr/                                   # decision records (0001–0008)
     ├── architecture/                          # non-obvious invariants
-    ├── audit/                                 # security audit
-    ├── benchmarks.md, benchmarks/             # finalised + historical timings
+    ├── audit/                                 # security audits (2026-05-18, 2026-08-26)
+    ├── benchmarks.md, benchmarks/             # budgets + historical timings
     ├── guides/                                # task-oriented how-tos
     ├── themes/                                # curated drop-in palettes
     ├── examples/                              # runnable examples + annotated config
     └── development/
-        ├── roadmap.md                         # milestones (M9 closed)
+        ├── roadmap.md                         # post-v1 sequencing (1.2.0 →)
         └── state.md                           # live state snapshot
 ```
 
@@ -144,11 +146,11 @@ commandress/
 - [`docs/examples/commandress.cyml.example`](docs/examples/commandress.cyml.example) — annotated config showing every knob
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build + first run
 - [`docs/development/state.md`](docs/development/state.md) — current version, sizes, benchmarks, in-flight work
-- [`docs/development/roadmap.md`](docs/development/roadmap.md) — milestones through v1.0
-- [`docs/adr/`](docs/adr/) — architectural decisions (rendering model, config format, VCS-via-sit, schema freeze, etc.)
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — post-v1 sequencing (1.2.0 →), every item pinned to the line that defers it
+- [`docs/adr/`](docs/adr/) — architectural decisions (rendering model, config format, VCS-via-sit, schema freeze, cmdit adoption)
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants (prompt render budget, shellout watchdog, etc.)
-- [`docs/audit/2026-05-18-audit.md`](docs/audit/2026-05-18-audit.md) — v1.0 security audit
-- [`docs/benchmarks.md`](docs/benchmarks.md) — finalised v1.0 benchmark numbers
+- [`docs/audit/2026-08-26-audit.md`](docs/audit/2026-08-26-audit.md) — latest security audit (1.1.6 P-1 sweep); prior pass [2026-05-18](docs/audit/2026-05-18-audit.md)
+- [`docs/benchmarks.md`](docs/benchmarks.md) — what we measure, the budgets, and the current numbers
 - [`CLAUDE.md`](CLAUDE.md) — agent instructions for this repo
 
 ## Place in the AGNOS ecosystem

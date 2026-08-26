@@ -6,6 +6,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+**Full doc sweep (2026-08-26).** The `doc-health.md` ledger had itself gone stale — last
+refreshed at **v0.3.0**, five releases back, inventorying 17 docs when there are 36 and
+4 ADRs when there are 8. Rebuilt from the real tree, and every stale claim it should have
+caught is now fixed.
+
+**Two findings were security-relevant, and both are the same shape: 1.1.6 fixed the
+adapters, and nothing swept the docs that taught the old configuration.**
+
+- **`docs/guides/zsh-setup.md` documented `setopt prompt_subst`** — in prose *and* in a
+  copy-paste "manual setup" block. That is precisely the arbitrary-command-execution
+  vector the 1.1.6 audit removed from `adapters/zsh.sh` (P-01): a user following the guide
+  re-created the vulnerability by hand. Removed, replaced with a `%`-doubling recipe and
+  a security section explaining why the option is never needed here.
+- **`docs/examples/prompt-tour.md` recommended `PROMPT='$(_cmdrs_prompt)'`** — single-quoted,
+  which only works *with* `prompt_subst`. Same vector, presented as the zsh idiom. Replaced
+  with a pointer to the shipped adapters plus an explicit warning.
+- **`docs/guides/bash-setup.md`'s manual recipe** was missing both bash-side fixes
+  (`shopt -u promptvars`, backslash-doubling). Both added and marked REQUIRED, with the
+  shell-global trade-off stated.
+
+Every replacement recipe was **executed against the live attack** before being written
+down — `$(touch /tmp/x)` in a `.python-version`, confirmed not to fire — rather than
+reasoned about. The self-test is now printed in the guides so a reader can repeat it.
+
+**Two stale upstream blockers, one of which was gating real work:**
+
+- **Cyrius papercut Item 3 (single-bracket TOML) has closed.** `src/config.cyr` and
+  `src/segments/rustup_env.cyr` both deferred work to it. Verified against the 6.5.35
+  stdlib — with a double-bracket control case proving the harness — that
+  `toml_get_sections` finds a single-bracket `[toolchain]`. Two consequences: the
+  `rust-toolchain.toml` work is **scheduled, not blocked** (roadmap 1.3.0), and
+  single-bracket `[section]` config **already works today**, which nothing documented.
+  Now documented, and pinned by `test_config_accepts_single_bracket_sections` so it
+  cannot silently regress. `[[section]]` stays canonical — every theme uses it and
+  churning user configs buys nothing.
+- **Item 8 (no stdlib `which()`) genuinely still holds** — re-checked, `src/pathlookup.cyr`
+  stays. Both gates now carry the date they were last verified, because a gate is a claim
+  about the world and it expires.
+
+**`docs/guides/getting-started.md` had been flagged stale in the May ledger and never
+fixed.** It still documented a `[prompt] order =` schema that never shipped, a
+`[segments.git]` section (it is `vcs`), and `--config` / `--debug` flags that do not
+exist. Rewritten against the real schema and CLI; the replacement config was run through
+`cmdrs` to confirm it renders with zero warnings.
+
+### Changed
+
+- **`docs/development/roadmap.md` reorganised** from v1.0 milestone framing into release
+  slots — **1.2.0** (multi-palette, hex/256-colour, powerline theme), **1.3.0**
+  (`rust-toolchain.toml`, `package.json engines.node`, opt-in version shellouts),
+  **1.4.0** (per-segment `budget_ms`, output length cap, local time/`TZ`), **1.5.0**
+  (cache eviction, wider cache key, the `CYRIUS_DCE` decision, remaining `alloc` guards),
+  plus an **unscheduled** section for the two items gated outside this repo. Every entry
+  links to the source line, audit finding, or ADR that defers it — the codebase was swept
+  for `deferred` / `TODO` / `follow-up` / `parked` language and all of it is now pinned.
+  Version slots are stated as planned sequencing, not commitments.
+- **`docs/development/state.md`** no longer duplicates the roadmap; it keeps only state
+  (upstream gates with check-dates, size drift, the undocumented-but-supported config
+  spelling) and defers planning to `roadmap.md`. The two had drifted, which is how the
+  stale Item 3 claim survived in three places at once.
+- **`README.md`** — status line `v1.0.0` → `v1.1.6`, test counts (2×), `--version` sample
+  output, segment-table header, `vcs` timing (`~68 µs` → `~7.6 µs`), and the layout tree
+  (added `src/cli.cyr`, `cyrius.lock`, `scripts/lock-check`, ADR range 0001–0008, both
+  audits).
+- **`docs/benchmarks.md`** re-measured at 1.1.6; the "v1.0 finalised" framing dropped, a
+  `cli_parse` row added, the end-to-end warm figure corrected to ~0.96 ms with a note that
+  it is dominated by process exec, and the 0.9.0→1.1.4 gap in `history.csv` called out.
+- **`docs/adr/0005`** annotated (not revised) where it cites the now-closed Item 3.
+- Source comments in `src/config.cyr` and `src/segments/rustup_env.cyr` corrected where
+  they described the closed gap as current.
+
 ## [1.1.6] — 2026-08-26 (P-1 audit — arbitrary command execution in both shell adapters)
 
 **Security release. Update if you use the shell adapters or work in untrusted

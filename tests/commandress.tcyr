@@ -255,6 +255,35 @@ fn _write_test_config(name, content): i64 {
     return path;
 }
 
+# Doc sweep 2026-08-26: single-bracket `[section]` config ALREADY WORKS, and
+# nothing said so.
+#
+# `src/config.cyr`'s header explained the `[[X]]` schema as a workaround —
+# "the stdlib's `toml_parse` recognises array-of-tables but not single-bracket
+# `[name]`. Treat `[[X]]` as our spelling of `[X]` for now" — and
+# `rustup_env.cyr` deferred `rust-toolchain.toml` to the same gap (Cyrius
+# papercut Item 3). Tested against the 6.5.35 stdlib: `toml_get_sections` finds
+# a single-bracket `[toolchain]` section, and the loader below reads a
+# single-bracket `[prompt]` end to end. The limitation is gone; the comments
+# outlived it.
+#
+# `[[X]]` stays the documented canonical spelling — every shipped theme and
+# example uses it, and changing that would churn every user's config for no
+# gain. This test pins the fact that `[X]` ALSO works, so the now-accurate
+# documentation of it cannot silently regress.
+fn test_config_accepts_single_bracket_sections(): i64 {
+    var content = "[prompt]\nsegments = [\"exit\"]\ntrailer = \" > \"\n\n[segments.exit]\nhide_zero = false\n";
+    var path = _write_test_config("singlebracket", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_trailer(c), " > ", "single-bracket [prompt] trailer applies");
+    assert_eq(cfg_exit_hide_zero(c), 0, "single-bracket [segments.exit] applies");
+    var segs = cfg_segments(c);
+    assert_eq(vec_len(segs), 1, "single-bracket [prompt] segments applies");
+    _streq_or_dump(vec_get(segs, 0), "exit", "single-bracket segments[0] == \"exit\"");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 fn test_config_load_full_override(): i64 {
     var content = "[[prompt]]\nsegments = [\"exit\", \"cwd\"]\nseparator = \" | \"\ntrailer = \" > \"\n\n[[segments.cwd]]\nhome_shorten = false\n\n[[segments.exit]]\nhide_zero = false\n";
     var path = _write_test_config("full", content);
@@ -1755,6 +1784,7 @@ fn main(): i64 {
     test_config_default_vcs_fields();
     test_config_load_missing_returns_defaults();
     test_config_load_null_path_returns_defaults();
+    test_config_accepts_single_bracket_sections();
     test_config_load_full_override();
     test_config_load_partial_override();
     test_config_load_vcs_section();
