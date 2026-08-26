@@ -26,11 +26,20 @@ stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "a
 # all three from one table. See ADR 0008.
 #
 # `path` is deliberately COMMENTED OUT. A path override silently WINS over its
-# tag, and cyrius.lock records no dep name or version, so nothing detects the
-# substitution — the ecosystem discipline (stiva, kii) is to resolve from the tag
-# so the lock means one thing and CI's build is the build. To develop cmdit
-# alongside commandress, uncomment it, then tag cmdit and bump this pin before
-# committing the lock.
+# tag, so the lock would describe whatever the sibling checkout happens to be
+# rather than what CI builds. Resolve from the tag: the lock then means one
+# thing and CI's build is the build.
+#
+# The ecosystem comments this was copied from add that the lock "records no dep
+# name or version, so nothing detects the substitution". On 6.5.35 that is no
+# longer true, and it cuts in our favour — the lock carries a
+# `commit <sha> cmdit <url> 1.2.4` pin line, and resolving with the override
+# active OMITS that line entirely. So the substitution IS detectable, and
+# `scripts/lock-check.sh` (wired into CI) fails on it. Measured, not assumed —
+# see docs/architecture/003-cyrius-lock-shape.md.
+#
+# To develop cmdit alongside commandress: uncomment, work, then tag cmdit, bump
+# this pin, re-resolve with the override off, and commit THAT lock.
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit.git"
 # path = "../cmdit"   # see note above — do not commit a lock built with this active

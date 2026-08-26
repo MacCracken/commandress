@@ -73,7 +73,23 @@ Public API per ADR 0007 unaffected; `cmdrs` and `cmdrs --side=right` are unchang
   via includes (`src/main.cyr` includes `lib/args.cyr`; the bench harness includes
   `lib/bench.cyr`); cmdit's `dist/cmdit.deps` sidecar requires them in scope, so the
   declaration caught up with what the build already did.
-- **`cyrius.lock`** — new, committed (119 entries, 1 commit-pinned at cmdit `e69bcaa`).
+- **`cyrius.lock`** — new, committed (119 entries, 1 commit-pinned at cmdit `e69bcaa`), with
+  **`scripts/lock-check.sh`** wired into CI to verify it still describes a clean tag-only
+  resolution. Two findings behind it, both measured rather than assumed
+  ([architecture/003](docs/architecture/003-cyrius-lock-shape.md)):
+  - **The lock's line order is not stable across machines** — it tracks `lib/`'s directory
+    read order. The first version of this guard was an inline
+    `git diff --exit-code -- cyrius.lock`; it passed every local check (consecutive local
+    resolves *are* byte-stable) and failed on its first real CI run with ~100 lines of
+    reordered-but-identical entries. The check is now order-insensitive: `commit` lines and
+    hash lines compared as two independently sorted sets.
+  - **A `path = "../cmdit"` override omits the dep's `commit` pin line entirely**, which
+    corrects the ecosystem comment quoted into `cyrius.cyml` when the dep landed ("records
+    no dep name or version, so nothing detects the substitution"). On 6.5.35 the lock *does*
+    carry `commit <sha> cmdit <url> 1.2.4`, and a path-override lock has none — so the
+    substitution is detectable, and this is the case the script exists to catch. Verified
+    across five states: clean, shuffled, altered hash, altered sha, and a lock genuinely
+    generated with the override active.
 - **`main` no longer calls `args_init()`.** `cmdit_argv` calls it, and it is **not
   idempotent** — each call allocates `ARG_MAX` (2 MB) and re-reads `/proc/self/cmdline`, so
   leaving both in place would have allocated 4 MB per prompt. `getenv` is unaffected either

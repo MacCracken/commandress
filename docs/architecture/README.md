@@ -10,3 +10,4 @@ Not decisions (those live in [`../adr/`](../adr/)) and not guides (those live in
 |---|---|
 | [001](001-prompt-render-budget.md) | Prompt render budget — total / per-segment / overrun behavior |
 | [002](002-shellout-watchdog.md) | Shellout watchdog — fork + epoll + kill enforcement for per-segment budgets |
+| [003](003-cyrius-lock-shape.md) | `cyrius.lock` — unstable line order, and what a `path` override erases |

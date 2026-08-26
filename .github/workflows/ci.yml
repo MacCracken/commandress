@@ -62,16 +62,15 @@ jobs:
 
       - name: Verify the lock is honest
         # cyrius.lock is committed. A `path = "../cmdit"` override silently beats
-        # its tag and the lock records no dep name or version, so a lock built
-        # with an override active is undetectable by inspection — but it is
-        # detectable HERE, where no sibling checkout exists: if the committed
-        # lock disagrees with what resolving from tags produces, the diff is the
-        # override. Same guard stiva documents.
-        run: |
-          set -e
-          git diff --exit-code -- cyrius.lock \
-            || { echo "::error::cyrius.lock changed after 'cyrius deps' — it was likely committed with a [deps.*] path override active; re-resolve from tags and recommit"; exit 1; }
-          echo "lock matches a clean tag resolution"
+        # its tag, and a lock generated with one active drops the dep's `commit`
+        # pin line ENTIRELY — verified, not assumed — so CI, which has no sibling
+        # checkouts, is where that shows up.
+        #
+        # The comparison lives in a script because the first version of this step
+        # was an inline `git diff --exit-code -- cyrius.lock` and it false-
+        # positived on its first run: `cyrius deps` does not emit lock entries in
+        # a stable order across machines. See the header of lock-check.sh.
+        run: scripts/lock-check.sh
 
       - name: Build
         # Binary is `cmdrs` (short for commandress), set via [build].output
