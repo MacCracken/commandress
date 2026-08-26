@@ -6,6 +6,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--agnos` builds failed on `cache.cyr`'s `sys_stat` arity — and the cache was never
+  going to work there anyway.** The raw `sys_*` wrappers are per-target by design and
+  agnos's are length-carrying: `sys_stat(path, pathlen, statbuf)` against Linux's
+  `sys_stat(path, statbuf)`. `cache_init` and `cache_get` used the Linux shape
+  unconditionally. Cyrius only *warned* about a wrong argument count until **v6.5.1**
+  escalated it to a hard error, so this compiled clean for as long as it existed and
+  would have passed a garbage pathlen at runtime.
+
+  Fixed by disabling the cache outright on agnos rather than by bridging the call.
+  Routing through the stdlib's portable `xstat` would have moved the bug rather than
+  removed it: `xstat` bridges the CALL but not the STRUCT, and every offset this file
+  reads (`st_mode` @24, `st_uid` @28, `st_size` @48, `st_mtim.tv_sec` @88) is Linux
+  x86_64 `struct stat`, while agnos's is a 48-byte all-u64 record with a different
+  field order and **no `st_uid` at all** (AGNOS userland ABI §4.1). The F-3 ownership
+  audit that gates the cache therefore cannot be satisfied on agnos — `getuid` is a
+  stub returning 0 for every process and `sys_mkdir(path, pathlen)` takes no mode, so
+  0o700 cannot even be requested. An audit that always passes is worse than no cache.
+
+  Nothing is lost: `shellout_capture` already returns -1 on agnos, so the only
+  cacheable value — `vcs_render`'s `sit status` output — is never produced there. The
+  new `_cache_stat` bridge fails closed on agnos and `cache_init` sets
+  `_cache_disabled` before any of this file's remaining Linux-shaped raw syscalls
+  (`SYS_MKDIR`, `SYS_UNLINK`, rename #82) can run. Host behaviour is unchanged —
+  suite stays **279 passed, 0 failed**.
+
 ## [1.1.3] — 2026-07-17 (toolchain refresh + stdlib resync)
 
 **Toolchain refresh + dependency resync.** Patch release lifting the Cyrius pin from `6.2.24` to `6.4.66` (clearing the `manifest-pin: 6.2.24 (drift — wrapper is 6.4.66)` drift) and re-vendoring the bundled stdlib snapshot to match the new pin. No `src/` changes. Suite remains **279 passed, 0 failed**; binary drops **210,144 B → 147,600 B** (−62,544 B, −29.8 %) — most of it a bss collapse (59,296 B → 2,464 B) from the 6.4.66 toolchain's global layout, the rest tighter codegen. `render_prompt (default cwd+vcs+exit)` benches **8.848 µs avg** (min 8.700 µs, max 10.272 µs; was ~9 µs), still ~0.2 % of the 5 ms cold-start budget ([architecture/001-prompt-render-budget.md](docs/architecture/001-prompt-render-budget.md)). Public API per [ADR 0007](docs/adr/0007-schema-freeze.md) unaffected.

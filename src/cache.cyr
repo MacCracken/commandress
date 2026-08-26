@@ -11,6 +11,11 @@
 # files inherit umask via `file_write_all`. mtime is the TTL clock
 # (sys_stat → struct stat offset 88 on Linux x86_64).
 #
+# HOST-ONLY. The whole cache is disabled on agnos — see `_cache_stat` and
+# `cache_init` below for the reasoning. Every raw `syscall(...)` in this file
+# (SYS_MKDIR, SYS_UNLINK, rename #82) is Linux-shaped and is unreachable on
+# agnos because `cache_init` sets `_cache_disabled` before any of them run.
+#
 # Cache values:
 #   - heap-alloc'd cstring (possibly empty) → cached value (caller
 #     decides how to interpret an empty cstring; vcs_render maps "" →
@@ -99,6 +104,30 @@ fn _cache_path(seg_name, cwd): i64 {
     return out;
 }
 
+# stat(2) for the two cache paths, with an explicit agnos branch.
+#
+# The raw `sys_*` wrappers are per-target by design and agnos's are
+# length-carrying — `sys_stat(path, pathlen, statbuf)` against Linux's
+# `sys_stat(path, statbuf)`. Cyrius made that arity mismatch a hard ERROR at
+# v6.5.1 (it was a warning before, so this file built `--agnos` and would have
+# read a garbage pathlen at runtime).
+#
+# This does NOT route through the stdlib's portable `xstat`, deliberately.
+# `xstat` bridges the CALL but not the STRUCT: every offset read below (st_mode
+# @24, st_uid @28, st_size @48, st_mtim.tv_sec @88) is Linux x86_64 `struct
+# stat`, while agnos's is a 48-byte all-u64 record with a different field order
+# and no `st_uid` (userland ABI §4.1). Compiling clean via `xstat` would just
+# move the bug from the call to the loads. Failing closed on agnos is honest and
+# costs nothing — `cache_init` disables the cache there anyway.
+fn _cache_stat(path, buf): i64 {
+    #ifdef CYRIUS_TARGET_AGNOS
+    return 0 - 1;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    return sys_stat(path, buf);
+    #endif
+}
+
 # Idempotent mkdir of the cache directory. EEXIST is treated as
 # success; any other failure leaves the cache effectively disabled
 # (cache_put will silently fail on the missing dir; cache_get's stat
@@ -110,10 +139,23 @@ fn _cache_path(seg_name, cwd): i64 {
 # attacker pre-creates `/tmp/commandress-<uid>/` as 0o777 (file mode
 # 0o644 inside that would be world-readable; symlink swaps possible).
 fn cache_init(): i64 {
+    # AGNOS: the cache is disabled outright, and the F-3 audit is the reason.
+    # It cannot be satisfied there — agnos's stat struct (userland ABI §4.1) is a
+    # 48-byte all-u64 record with NO `st_uid` field at all, `getuid` is a stub
+    # that returns 0 for every process, and `sys_mkdir(path, pathlen)` takes no
+    # mode, so 0o700 cannot even be requested. An "audited" cache on agnos would
+    # be an audit that always passes, which is worse than no cache. Nothing is
+    # lost: `shellout_capture` already returns -1 on agnos (src/shellout.cyr), so
+    # the only cacheable value — vcs_render's `sit status` output — is never
+    # produced there. Same shape as that degrade.
+    #ifdef CYRIUS_TARGET_AGNOS
+    _cache_disabled = 1;
+    return 0;
+    #endif
     var dir = cache_dir();
     syscall(SYS_MKDIR, dir, 0x1c0);                             # 0o700
     var stbuf[144];
-    if (sys_stat(dir, &stbuf) != 0) { _cache_disabled = 1; return 0; }
+    if (_cache_stat(dir, &stbuf) != 0) { _cache_disabled = 1; return 0; }
     var st_mode = load32(&stbuf + 24);                          # struct stat: st_mode @ 24
     var st_uid  = load32(&stbuf + 28);                          # struct stat: st_uid  @ 28
     var our_uid = syscall(SYS_GETUID);
@@ -136,7 +178,7 @@ fn cache_get(seg_name, cwd, ttl_secs): i64 {
     if (_cache_disabled == 1) { return 0; }
     var path = _cache_path(seg_name, cwd);
     var stbuf[144];                                             # struct stat is 144 B on x86_64
-    if (sys_stat(path, &stbuf) != 0) { return 0; }
+    if (_cache_stat(path, &stbuf) != 0) { return 0; }
     var mtime_sec = load64(&stbuf + 88);                        # offset of st_mtim.tv_sec
     var now_sec = clock_epoch_secs();
     if (now_sec - mtime_sec > ttl_secs) { return 0; }
