@@ -20,11 +20,14 @@ include "lib/chrono.cyr"
 include "lib/pwd.cyr"
 include "lib/process.cyr"
 include "lib/assert.cyr"
+include "lib/args.cyr"
+include "lib/cmdit.cyr"
 
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
 include "src/cache.cyr"
+include "src/cli.cyr"
 include "src/context.cyr"
 include "src/shellout.cyr"
 include "src/segments/cwd.cyr"
@@ -1471,6 +1474,118 @@ fn test_shellout_timeout_kills_child(): i64 {
     return 0;
 }
 
+# ---- cli (cmdit adoption, 1.1.5) ----
+#
+# These drive cmdit's PURE core, `cmdit_parse_argv`, over a synthetic argv:
+# no /proc read, no environment, no process spawn. That is the whole reason
+# `src/cli.cyr` exists as a module — the hand-rolled `_parse_side` it replaced
+# read the real process argv from inside `src/main.cyr` (a file no test can
+# include, since it ends in a bare `_agnos_entry();`), so it had zero coverage.
+
+fn _mk_argv(a0, a1, a2): i64 {
+    var n = 1;
+    if (a1 != 0) { n = 2; }
+    if (a2 != 0) { n = 3; }
+    var v = alloc(n * 8);
+    store64(v, a0);
+    if (a1 != 0) { store64(v + 8, a1); }
+    if (a2 != 0) { store64(v + 16, a2); }
+    return v;
+}
+
+fn _argc_of(a1, a2): i64 {
+    if (a2 != 0) { return 3; }
+    if (a1 != 0) { return 2; }
+    return 1;
+}
+
+# Full pipeline under test: register the table, parse synthetic argv, map the
+# result to a side through the degrade policy.
+fn _side_of(a1, a2): i64 {
+    var cli = cmdit_new("cmdrs");
+    var f = cli_register(cli);
+    var pr = cmdit_parse_argv(cli, _argc_of(a1, a2), _mk_argv("cmdrs", a1, a2));
+    return cli_side_for(cli, f, pr);
+}
+
+# The raw cmdit result, for the cases where the RESULT is the assertion.
+fn _parse_result_of(a1, a2): i64 {
+    var cli = cmdit_new("cmdrs");
+    cli_register(cli);
+    return cmdit_parse_argv(cli, _argc_of(a1, a2), _mk_argv("cmdrs", a1, a2));
+}
+
+# The guard that makes the compiled-in version literal trustworthy: if someone
+# bumps VERSION and forgets src/cli.cyr, `cmdrs --version` would confidently
+# print the old number. Fail the suite instead.
+fn test_cli_version_matches_version_file(): i64 {
+    var from_file = read_trimmed_file_at(".", "/VERSION");
+    assert_nonnull(from_file, "VERSION file readable from repo root");
+    assert_streq(cmdrs_version(), from_file,
+                 "cmdrs_version() matches the VERSION file (bump both)");
+    return 0;
+}
+
+fn test_cli_default_is_left(): i64 {
+    assert_eq(_side_of(0, 0), 0, "no flags → left (side 0)");
+    return 0;
+}
+
+fn test_cli_side_right(): i64 {
+    assert_eq(_side_of("--side=right", 0), 1, "--side=right → right (side 1)");
+    return 0;
+}
+
+fn test_cli_side_left_explicit(): i64 {
+    assert_eq(_side_of("--side=left", 0), 0, "--side=left → left (side 0)");
+    return 0;
+}
+
+# getopt-long space form. The hand-rolled walk only ever matched the single
+# attached string `--side=right`, so this shape is new in 1.1.5 — additive,
+# and free with the parser.
+fn test_cli_side_space_form(): i64 {
+    assert_eq(_side_of("--side", "right"), 1, "--side right (space form) → right");
+    return 0;
+}
+
+# The degrade policy. Both of these rendered the left prompt in 1.1.4 by
+# falling through; they still do, but now via an explicit parse error that
+# cmdit_print_error names on stderr.
+fn test_cli_bad_enum_degrades_to_left(): i64 {
+    assert_eq(_parse_result_of("--side=bogus", 0), CMDIT_RESULT_ERR,
+              "--side=bogus → parse error (choice set validated)");
+    assert_eq(_side_of("--side=bogus", 0), 0, "--side=bogus still renders left, not empty");
+    return 0;
+}
+
+fn test_cli_unknown_flag_degrades_to_left(): i64 {
+    assert_eq(_parse_result_of("--nope", 0), CMDIT_RESULT_ERR, "--nope → parse error");
+    assert_eq(_side_of("--nope", 0), 0, "unknown flag still renders left, not empty");
+    return 0;
+}
+
+fn test_cli_help_short_circuits(): i64 {
+    assert_eq(_parse_result_of("--help", 0), CMDIT_HELP, "--help → CMDIT_HELP");
+    assert_eq(_parse_result_of("-h", 0), CMDIT_HELP, "-h → CMDIT_HELP");
+    return 0;
+}
+
+fn test_cli_version_short_circuits(): i64 {
+    assert_eq(_parse_result_of("--version", 0), CMDIT_VERSION, "--version → CMDIT_VERSION");
+    assert_eq(_parse_result_of("-V", 0), CMDIT_VERSION, "-V → CMDIT_VERSION");
+    return 0;
+}
+
+# A bare positional is not an error and must not disturb the side. agnoshi's
+# adapter contract passes no positionals, but a user experimenting at the shell
+# should still get their prompt.
+fn test_cli_positional_ignored(): i64 {
+    assert_eq(_parse_result_of("somearg", 0), CMDIT_OK, "positional parses clean");
+    assert_eq(_side_of("somearg", 0), 0, "positional → left, no error");
+    return 0;
+}
+
 # ---- harness ----
 
 fn main(): i64 {
@@ -1644,6 +1759,18 @@ fn main(): i64 {
     test_group("shellout watchdog");
     test_shellout_happy_path();
     test_shellout_timeout_kills_child();
+
+    test_group("cli (cmdit)");
+    test_cli_version_matches_version_file();
+    test_cli_default_is_left();
+    test_cli_side_right();
+    test_cli_side_left_explicit();
+    test_cli_side_space_form();
+    test_cli_bad_enum_degrades_to_left();
+    test_cli_unknown_flag_degrades_to_left();
+    test_cli_help_short_circuits();
+    test_cli_version_short_circuits();
+    test_cli_positional_ignored();
 
     return assert_summary();
 }

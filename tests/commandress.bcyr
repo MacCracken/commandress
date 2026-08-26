@@ -25,11 +25,14 @@ include "lib/process.cyr"
 include "lib/chrono.cyr"
 include "lib/pwd.cyr"
 include "lib/bench.cyr"
+include "lib/args.cyr"
+include "lib/cmdit.cyr"
 
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
 include "src/cache.cyr"
+include "src/cli.cyr"
 include "src/shellout.cyr"
 include "src/render.cyr"
 
@@ -326,10 +329,45 @@ fn bench_prompt(): i64 {
     return 0;
 }
 
+# CLI parse — the cmdit path that replaced the hand-rolled argv walk in 1.1.5.
+#
+# Tracked because it is a real, measured regression on this one number: the
+# hand-rolled `_parse_side` walk benched ~56 ns, and the cmdit equivalent is
+# ~11.9 µs, ~98 % of which is `cmdit_new` zeroing its 64-entry × 112-byte flag
+# table. It is deliberately NOT inside `render_prompt` (which takes `side` as a
+# parameter), so the cold-start gate below is unaffected — and against the
+# ~925 µs the binary actually spends per invocation, the swap is under 1.5 %
+# and measured flat end-to-end. See ADR 0008.
+fn bench_cli_parse(): i64 {
+    var b = bench_new("cli_parse (cmdit --side)");
+    var av = alloc(2 * 8);
+    store64(av, "cmdrs");
+    store64(av + 8, "--side=right");
+    var rounds = 100;
+    var batch = 1000;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            var cli = cmdit_new("cmdrs");
+            var f = cli_register(cli);
+            var pr = cmdit_parse_argv(cli, 2, av);
+            cli_side_for(cli, f, pr);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 fn main(): i64 {
     alloc_init();
     cache_init();                                # so vcs_render can warm + hit the per-cwd cache
     println("=== commandress benchmarks ===");
+    bench_cli_parse();
     bench_cwd_segment();
     bench_exit_segment();
     bench_config_default();

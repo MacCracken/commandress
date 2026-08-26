@@ -1,0 +1,55 @@
+# commandress — CLI surface.
+#
+# The whole surface is one flag (`--side=left|right`) plus the `--help` /
+# `--version` that cmdit registers for free. Before 1.1.5 this lived in
+# `src/main.cyr` as a hand-rolled walk that byte-compared each argv entry
+# against the single string `--side=right`; it is now a cmdit flag table.
+# See ADR 0008.
+#
+# It lives in its own module rather than in main.cyr so the policy is
+# TESTABLE. `src/main.cyr` ends in a bare `_agnos_entry();` top-level call, so
+# no test file can include it without running the program — which is why the
+# old `_parse_side()` had no coverage at all. The two fns here take a cmdit
+# handle, so tests drive them through cmdit's pure `cmdit_parse_argv` core
+# (synthetic argv, no /proc, no env) and assert the mapping directly.
+
+# The one compiled-in copy of the project version, printed by `--version`.
+# cmdit_version prepends the program name, so this is the bare number.
+#
+# MUST match the `VERSION` file at the repo root — `tests/commandress.tcyr`
+# reads VERSION and asserts equality, so a forgotten bump fails the suite
+# instead of shipping a `--version` that lies. A fn (not a `var`) so it costs
+# no initialized-globals slot.
+fn cmdrs_version(): i64 { return "1.1.5"; }
+
+# Register commandress's flag table on a fresh handle from `cmdit_new`, which
+# has already registered --help/-h and --version/-V. Returns the `--side` flag
+# index for `cmdit_get_enum`.
+#
+# `--side` is an enum, not a string: the choice set is now checked by the
+# parser (`--side=bogus` -> CMDIT_ERR_BAD_ENUM, named on stderr) where the
+# hand-rolled walk silently treated every non-`right` value as left. The
+# 0/1 index cmdit_get_enum returns for "left"|"right" is the same convention
+# `render_prompt`'s `side` parameter already used, so nothing downstream moved.
+fn cli_register(cli): i64 {
+    if (cli == 0) { return 0 - 1; }
+    return cmdit_enum(cli, 0, "side", "left", "left|right",
+                      "which prompt side to render");
+}
+
+# Map a cmdit parse result to a render side: 0 = left (default), 1 = right.
+#
+# THE DEGRADE POLICY. Anything that is not a clean parse renders the LEFT
+# prompt instead of exiting non-zero. This preserves 1.1.4 behaviour exactly —
+# the old walk ignored everything that was not literally `--side=right` — and
+# ADR 0007 explicitly declines to promise behaviour on unknown flags, so the
+# choice is ours to make. It is made this way because `cmdrs` is invoked as
+# `PROMPT="$(cmdrs)"` once per redraw: exiting 2 with empty stdout would blank
+# the user's prompt over a typo. The caller pairs this with
+# `cmdit_print_error`, which writes to stderr and so is invisible to `$( )`
+# capture while still telling a human what was wrong.
+fn cli_side_for(cli, f_side, pr): i64 {
+    if (cli == 0) { return 0; }
+    if (pr != CMDIT_OK) { return 0; }
+    return cmdit_get_enum(cli, f_side);
+}

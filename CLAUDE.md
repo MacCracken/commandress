@@ -49,7 +49,7 @@ cyrius bench tests/commandress.bcyr            # benchmarks
 - **Render time is a feature** — every segment runs on a budget; slow segments lose
 - **Independent segments** — each segment is a pure function of input context; no shared mutable state, no cross-segment ordering dependencies
 - **Config over code** — appearance, segment order, segment toggles live in `~/.commandress` (CYML format, no extension; see ADR 0006). Code change required only for new segment types
-- **Static binary** — zero non-stdlib deps. Cold start under 5ms target on Cyrius-current hardware
+- **Static binary** — no *runtime* deps. First-party AGNOS source deps (vendored into `lib/` by `cyrius deps`, tag-pinned in `cyrius.lock`, compiled in) are allowed; the binary must stay self-contained. Cold start under 5ms target on Cyrius-current hardware. See [ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md)
 - **agnoshi-first, shell-agnostic interface** — the binary takes context via env vars + flags; agnoshi-specific helpers live outside the binary (in agnoshi)
 - ONE change at a time — never bundle unrelated segment additions
 - Build with `cyrius build`, never raw `cat file | cc5`
@@ -60,7 +60,7 @@ cyrius bench tests/commandress.bcyr            # benchmarks
 - **Read the genesis repo's CLAUDE.md first** — [agnosticos/CLAUDE.md](https://github.com/MacCracken/agnosticos/blob/main/CLAUDE.md)
 - **Do not commit or push** — the user handles all git operations
 - **NEVER use `gh` CLI** — use `curl` to the GitHub API if needed
-- Do not add external runtime deps — config + context-from-env is the only input surface
+- Do not add external **runtime** deps — config + context-from-env is the only input surface. A first-party AGNOS source dep is a different thing and is allowed when it removes hand-rolled code (cmdit for CLI parsing, per ADR 0008); it must be tag-pinned, and it must not add an input channel
 - Do not skip tests before claiming changes work
 - Do not use `sys_system()` with unsanitized input — command injection risk; segments that read external state (git, vcs) must `exec_vec()` with explicit argv
 - Do not trust external data (config file content, env vars, git output) without validation

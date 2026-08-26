@@ -53,11 +53,25 @@ jobs:
           echo "toolchain ok: pin $CYRIUS_VERSION, snapshot present"
 
       - name: Resolve dependencies
-        # Stdlib-only project: no external [deps.NAME], so this resolves the
-        # declared stdlib surface and writes no cyrius.lock. The vendored
-        # lib/ snapshot is refreshed by `cyrius lib sync --full` at release
-        # time, not here.
+        # Resolves the declared stdlib surface plus [deps.cmdit] (1.1.5, ADR
+        # 0008) — commandress's one first-party AGNOS source dep, git-cloned at
+        # its tag and vendored into lib/. This step needs network access for
+        # that clone. The vendored stdlib snapshot itself is refreshed by
+        # `cyrius lib sync --full` at release time, not here.
         run: cyrius deps
+
+      - name: Verify the lock is honest
+        # cyrius.lock is committed. A `path = "../cmdit"` override silently beats
+        # its tag and the lock records no dep name or version, so a lock built
+        # with an override active is undetectable by inspection — but it is
+        # detectable HERE, where no sibling checkout exists: if the committed
+        # lock disagrees with what resolving from tags produces, the diff is the
+        # override. Same guard stiva documents.
+        run: |
+          set -e
+          git diff --exit-code -- cyrius.lock \
+            || { echo "::error::cyrius.lock changed after 'cyrius deps' — it was likely committed with a [deps.*] path override active; re-resolve from tags and recommit"; exit 1; }
+          echo "lock matches a clean tag resolution"
 
       - name: Build
         # Binary is `cmdrs` (short for commandress), set via [build].output

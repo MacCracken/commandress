@@ -20,11 +20,13 @@ include "lib/chrono.cyr"
 include "lib/pwd.cyr"
 include "lib/process.cyr"
 include "lib/args.cyr"
+include "lib/cmdit.cyr"
 
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
 include "src/cache.cyr"
+include "src/cli.cyr"
 include "src/shellout.cyr"
 include "src/render.cyr"
 
@@ -44,32 +46,66 @@ fn _default_config_path(home): i64 {
     return path;
 }
 
-# Walk argv looking for `--side=right` (or `--side=left`, the default).
-# Anything else — unknown flag, no flag — falls through to side 0
-# (left). Single-pass over argv; cheap enough not to bother with a
-# proper getopt for one flag.
-fn _parse_side(): i64 {
-    var side_flag = "--side=right";
-    var side_flag_len = strlen(side_flag);
-    var n = argc();
-    var i = 1;
-    while (i < n) {
-        var a = argv(i);
-        if (a != 0) {
-            var alen = strlen(a);
-            if (alen == side_flag_len) {
-                if (memeq(a, side_flag, side_flag_len) == 1) { return 1; }
-            }
-        }
-        i = i + 1;
-    }
+# Usage banner. cmdit_help generates `Usage:` + the flag table from the
+# registrations themselves, so the flag list cannot drift from the parser the
+# way a hand-written help wall does. Everything cmdit prints here goes to
+# STDERR, which is what makes `--help` safe in a prompt renderer: a shell doing
+# `PROMPT="$(cmdrs --help)"` captures stdout and gets an empty string, not a
+# help wall pasted into the prompt.
+fn _print_help(cli): i64 {
+    _cmdit_eprint("commandress — structured prompt renderer for agnoshi.\n\n");
+    cmdit_help(cli);
+    _cmdit_eprint("\nContext is taken from the environment, not from flags:\n");
+    _cmdit_eprint("  HOME                 config lookup (~/.commandress) + `~` shortening\n");
+    _cmdit_eprint("  AGNOSHI_LAST_EXIT    last command's exit status, for the `exit` segment\n");
     return 0;
 }
 
 fn main(): i64 {
     alloc_init();
-    args_init();
     cache_init();
+
+    # CLI parsing via cmdit (the [deps.cmdit] distlib) as of 1.1.5 — see ADR
+    # 0008. The whole surface is one flag; the value of the swap is that
+    # `--side`'s choice set is now validated by the parser rather than by a
+    # byte-compare against the single string `--side=right`, and that --help /
+    # --version (reserved by ADR 0007 and never delivered) come registered for
+    # free and stay tied to the table.
+    #
+    # No explicit args_init() here any more: cmdit_argv calls it, and it is NOT
+    # idempotent — it allocates ARG_MAX (2 MB) and re-reads /proc/self/cmdline
+    # on every call, so calling it here as well would allocate 4 MB per prompt.
+    # getenv is unaffected either way; it reads /proc/self/environ directly (and
+    # the parked init rsp on agnos), never args_init's buffer.
+    var side = 0;
+    var cli = cmdit_new("cmdrs");
+
+    # cmdit_new returns 0 only if the heap is exhausted, and cmdit_argv /
+    # cmdit_parse / cmdit_enum do not guard a 0 handle (they would wild-read at
+    # a small absolute address). Unreachable in practice — the three allocations
+    # are compile-time constants well inside ALLOC_MAX — but a prompt renderer
+    # that segfaults takes the user's shell prompt with it, so the one
+    # comparison is worth it. On that path we render the default left prompt.
+    if (cli != 0) {
+        var f_side = cli_register(cli);
+        var pr = cmdit_parse(cli);
+
+        if (pr == CMDIT_HELP) {
+            _print_help(cli);
+            return CMDIT_EXIT_OK;
+        }
+        if (pr == CMDIT_VERSION) {
+            return cmdit_version(cli, cmdrs_version());
+        }
+
+        # Diagnose on stderr, then fall through: `cli_side_for` maps any
+        # non-clean parse to the left prompt rather than exiting non-zero, so a
+        # typo never blanks the user's prompt. Policy + rationale in src/cli.cyr.
+        if (pr == CMDIT_RESULT_ERR) {
+            cmdit_print_error(cli);
+        }
+        side = cli_side_for(cli, f_side, pr);
+    }
 
     var home = getenv("HOME");
     var last_exit = parse_last_exit(getenv("AGNOSHI_LAST_EXIT"));
@@ -77,8 +113,8 @@ fn main(): i64 {
     var cfg = config_load(_default_config_path(home));
     var ctx = context_new(home, last_exit);
 
-    render_prompt(cfg, ctx, _parse_side());
-    return 0;
+    render_prompt(cfg, ctx, side);
+    return CMDIT_EXIT_OK;
 }
 
 # Bare-call entry: on agnos a `var = main()` top-level runs main as a gvar-init

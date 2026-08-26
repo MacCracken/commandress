@@ -12,5 +12,28 @@ test = "src/test.cyr"
 output = "cmdrs"
 
 [deps]
-stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert"]
+# `args` and `bench` were always compiled in via includes (src/main.cyr includes
+# lib/args.cyr; tests/commandress.bcyr includes lib/bench.cyr) but were never
+# declared. cmdit's `dist/cmdit.deps` sidecar requires both in scope, so they are
+# named here now — the declaration catches up with what the build already did.
+stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "args", "bench"]
+
+# ── AGNOS first-party deps ───────────────────────────────────────
+# cmdit — sovereign CLI / argument-parsing library (getopt-long), the stdlib
+# `flags` parser productized + extended. commandress's CLI surface is one flag
+# (`--side=left|right`), which it hand-rolled as a substring walk over argv; the
+# reserved `--help` / `--version` of ADR 0007 were simply absent. cmdit supplies
+# all three from one table. See ADR 0008.
+#
+# `path` is deliberately COMMENTED OUT. A path override silently WINS over its
+# tag, and cyrius.lock records no dep name or version, so nothing detects the
+# substitution — the ecosystem discipline (stiva, kii) is to resolve from the tag
+# so the lock means one thing and CI's build is the build. To develop cmdit
+# alongside commandress, uncomment it, then tag cmdit and bump this pin before
+# committing the lock.
+[deps.cmdit]
+git = "https://github.com/MacCracken/cmdit.git"
+# path = "../cmdit"   # see note above — do not commit a lock built with this active
+tag = "1.2.4"
+modules = ["dist/cmdit.cyr"]
 ---

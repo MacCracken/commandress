@@ -6,6 +6,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.5] — 2026-08-26 (cmdit adoption — CLI parsing, `--help`, `--version`)
+
+**The hand-rolled CLI parser is gone.** commandress's whole command-line surface is one
+flag — `--side=left|right` — and through 1.1.4 it was a single-pass walk over argv
+byte-comparing each entry against the one string `--side=right`. That shape meant the
+choice set was never validated (`--side=bogus` silently rendered the *left* prompt),
+`--help`/`--version` did not exist despite [ADR 0007](docs/adr/0007-schema-freeze.md)
+reserving both, and none of it was testable — `_parse_side` read the real process argv
+from inside `src/main.cyr`, a file no test can include because it ends in a bare
+`_agnos_entry();`. It is now a [cmdit](https://github.com/MacCracken/cmdit) flag table.
+
+**This is commandress's first non-stdlib dependency**, so the "zero non-stdlib deps"
+rule is narrowed rather than dropped: first-party AGNOS *source* deps are permitted
+(vendored into `lib/` by `cyrius deps`, tag-pinned in `cyrius.lock`, compiled in),
+*runtime* deps remain forbidden. The binary is still static and self-contained, and
+config + context-from-env is still the only input surface — cmdit parses the same argv
+that was always parsed. Rationale, costs, and the five rejected alternatives are in
+**[ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md)**.
+
+Suite **279 → 295 passed, 0 failed** (+16 assertions across 10 tests, on a CLI that
+previously had none). `--agnos` cross-build clean.
+
+**Costs, measured before they were accepted.** The parse is **~212× slower in
+isolation** — the hand-rolled walk benched **56 ns**, cmdit benches **11.914 µs**, of
+which ~98 % is `cmdit_new` zeroing a 64-entry × 112-byte flag table for a program that
+registers one flag. The binary grows **168,264 B → 211,768 B** (+43,504 B, +25.9 %;
+agnos 203,464 B). Neither is felt where it matters: the parse is **not** inside
+`render_prompt` (which takes `side` as a parameter), so the 5 ms cold-start gate is
+untouched and `render_prompt (default cwd+vcs+exit)` still benches **10.769 µs**. Against
+the ~940 µs the binary actually spends per invocation — process exec and the vcs probe
+dominate — an interleaved A/B of the 1.1.4 and 1.1.5 binaries measured deltas of
+**−15 µs, +1 µs, +11 µs**, straddling zero and below the measurement's noise floor.
+Public API per ADR 0007 unaffected; `cmdrs` and `cmdrs --side=right` are unchanged.
+
+### Added
+
+- **`--help` / `-h` and `--version` / `-V`** — reserved by ADR 0007 and never built until
+  now. Both are registered by `cmdit_new`, so the flag list in `--help` is generated from
+  the parse table and cannot drift from it. `--help` prints to **stderr** and `--version`
+  to **stdout** (`cmdrs 1.1.5`), which is what makes them safe here: a shell doing
+  `PROMPT="$(cmdrs --help)"` captures an empty string rather than pasting a help wall into
+  the prompt.
+- **`--side` value validation.** `--side=bogus` is now reported on stderr as
+  `cmdrs: --side: invalid value (expected left|right)`. In 1.1.4 it rendered the left
+  prompt silently, indistinguishable from success.
+- **getopt-long forms for free** — `--side right` (space-separated) now works alongside
+  `--side=right`; `--` terminates flags. The old walk matched only the exact attached form.
+- **`src/cli.cyr`** — the CLI policy as its own module, so it is includable by the test
+  harness and drivable through cmdit's pure `cmdit_parse_argv` core with synthetic argv.
+- **10 CLI tests / 16 assertions**, including a **version-drift guard**: the suite reads
+  the `VERSION` file and asserts it equals the compiled-in `cmdrs_version()`, so a
+  forgotten bump fails the build instead of shipping a `--version` that lies.
+- **`cli_parse (cmdit --side)` benchmark** — the regression above is now tracked per
+  release rather than rediscovered.
+
+### Changed
+
+- **`VERSION`** — `1.1.4` → `1.1.5`.
+- **`cyrius.cyml`** — new `[deps.cmdit]` (git, `tag = "1.2.4"`, `modules = ["dist/cmdit.cyr"]`).
+  `path = "../cmdit"` is present but **commented out**, per the ecosystem discipline: a path
+  override silently wins over its tag and `cyrius.lock` records no dep name or version, so
+  nothing detects the substitution. Resolving from the tag keeps CI's build and the lock in
+  agreement.
+- **`[deps].stdlib`** — `args` and `bench` are now declared. Both were always compiled in
+  via includes (`src/main.cyr` includes `lib/args.cyr`; the bench harness includes
+  `lib/bench.cyr`); cmdit's `dist/cmdit.deps` sidecar requires them in scope, so the
+  declaration caught up with what the build already did.
+- **`cyrius.lock`** — new, committed (119 entries, 1 commit-pinned at cmdit `e69bcaa`).
+- **`main` no longer calls `args_init()`.** `cmdit_argv` calls it, and it is **not
+  idempotent** — each call allocates `ARG_MAX` (2 MB) and re-reads `/proc/self/cmdline`, so
+  leaving both in place would have allocated 4 MB per prompt. `getenv` is unaffected either
+  way: it reads `/proc/self/environ` directly, and the parked init rsp on agnos, never
+  `args_init`'s buffer.
+- **CLAUDE.md / README** — the dependency rule updated to the runtime-vs-source distinction
+  above, rather than left contradicting the shipped state.
+
+### Fixed
+
+- **A parse error no longer risks blanking the prompt.** `cmdrs` runs as
+  `PROMPT="$(cmdrs)"` once per redraw, so the conventional "print usage, exit 2" path that
+  kii and stiva take would leave the user with an empty prompt over a typo. Unknown flags
+  and bad `--side` values are diagnosed on stderr and then **degrade to the left prompt**,
+  preserving 1.1.4's forgiving behaviour; ADR 0007 declines to promise behaviour on unknown
+  flags, so the choice is ours to make. `$( )` does not capture stderr, so the human sees
+  the error and the prompt still renders.
+- **Guarded `cmdit_new`'s OOM return.** It returns 0 on heap exhaustion, and
+  `cmdit_argv`/`cmdit_parse`/`cmdit_enum` do not check for a 0 handle — they would wild-read
+  at a small absolute address. Unreachable in practice (the three allocations are
+  compile-time constants well inside `ALLOC_MAX`), but a prompt renderer that segfaults takes
+  the shell prompt with it, so the one comparison is worth its cost. That path renders the
+  default left prompt.
+
 ## [1.1.4] — 2026-08-26 (toolchain refresh + stdlib resync)
 
 **Toolchain refresh + dependency resync**, carrying the agnos cache fix that had been sitting unreleased. Patch release lifting the Cyrius pin from `6.4.66` to `6.5.35` (clearing the `manifest-pin: 6.4.66 (drift — wrapper is 6.5.35)` drift) and re-vendoring the bundled stdlib snapshot to match. Suite remains **279 passed, 0 failed**; `--agnos` cross-build is clean (**164,056 B**), which is what the `cache.cyr` fix below bought.

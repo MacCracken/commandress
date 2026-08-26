@@ -28,3 +28,4 @@ Decisions about commandress — what we chose, the context, and the consequences
 | [0005](0005-language-env-probe-pattern.md) | Language-env segments follow a file-first probe pattern | Accepted |
 | [0006](0006-config-path-rename.md) | Config file lives at `~/.commandress`, not `~/.commandress.cyml` | Accepted |
 | [0007](0007-schema-freeze.md) | Public API + config schema freeze for v1.0 | Accepted |
+| [0008](0008-cli-parsing-via-cmdit.md) | CLI parsing via the cmdit distlib, and the first non-stdlib dependency | Accepted |

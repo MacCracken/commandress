@@ -8,7 +8,7 @@
 
 A small, self-contained binary that takes shell context as input (`$CWD`, last exit code, current VCS state, etc.) and prints a configurable, segment-based prompt line. The shell invokes it once per prompt redraw.
 
-- **Zero deps** beyond the Cyrius stdlib — single static binary, fast cold start (default `cwd + vcs + exit` prompt renders in ~9 µs — 0.2 % of the 5 ms budget)
+- **Single static binary, no runtime deps** — the Cyrius stdlib plus one first-party AGNOS source dep ([cmdit](https://github.com/MacCracken/cmdit), CLI parsing — [ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md)), compiled in. Fast cold start (default `cwd + vcs + exit` prompt renders in ~11 µs — 0.2 % of the 5 ms budget)
 - **Segment model** — independent producers (cwd / vcs / exit / time / hostname / user / language envs), each a pure function of context
 - **Config-driven** — appearance, segment order, and per-segment toggles live in a CYML file (`~/.commandress` — no extension; see [ADR 0006](docs/adr/0006-config-path-rename.md))
 - **Sovereign stack** — VCS state comes from [`sit`](https://github.com/MacCracken/sit), not external `git` ([ADR 0004](docs/adr/0004-vcs-probe-via-sit.md))
@@ -58,7 +58,20 @@ $ cmdrs
 
 $ AGNOSHI_LAST_EXIT=42 cmdrs
 ~/repos/commandress [42] $
+
+# Right prompt (zsh RPROMPT); renders `right_segments`, no trailer:
+$ cmdrs --side=right
+
+$ cmdrs --version
+cmdrs 1.1.5
+
+$ cmdrs --help          # generated from the flag table; prints to stderr
 ```
+
+Context is taken from the environment, not from flags — `HOME` for config lookup and
+`~` shortening, `AGNOSHI_LAST_EXIT` for the `exit` segment. An unrecognised flag is
+reported on stderr and still renders the left prompt, so a typo never blanks the
+prompt in `PROMPT="$(cmdrs)"` ([ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md)).
 
 Configure via `~/.commandress` — full annotated example at [`docs/examples/commandress.cyml.example`](docs/examples/commandress.cyml.example). Drop in a curated theme:
 
