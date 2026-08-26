@@ -43,8 +43,15 @@ input="$(cat)"
 appended=0
 
 while IFS= read -r line; do
-  # Skip non-bench lines (banners, warnings, dce notes, blanks).
-  if ! grep -qE '^[[:space:]]*[a-zA-Z_][^:]*: *[0-9]+(ns|us|ms) avg' <<< "$line"; then
+  # Skip non-bench lines (banners, warnings, dce notes, timer-floor note,
+  # blanks). The optional-fraction group is load-bearing: since cyrius
+  # 6.4.x the bench harness emits sub-µs precision ("2.835us") where it
+  # used to print integers ("3us"). A bare `[0-9]+` matches the "2", then
+  # needs a unit and finds ".", so every decimal-average row — including
+  # the headline render_prompt — was silently dropped. That is why
+  # history.csv has no rows between 0.9.0 and 1.1.4. The 1.1.3 refresh
+  # fixed the same breakage in bench-gate.sh but missed this script.
+  if ! grep -qE '^[[:space:]]*[a-zA-Z_][^:]*: *[0-9]+(\.[0-9]+)?(ns|us|ms) avg' <<< "$line"; then
     continue
   fi
 

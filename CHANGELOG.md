@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-08-26 (toolchain refresh + stdlib resync)
+
+**Toolchain refresh + dependency resync**, carrying the agnos cache fix that had been sitting unreleased. Patch release lifting the Cyrius pin from `6.4.66` to `6.5.35` (clearing the `manifest-pin: 6.4.66 (drift — wrapper is 6.5.35)` drift) and re-vendoring the bundled stdlib snapshot to match. Suite remains **279 passed, 0 failed**; `--agnos` cross-build is clean (**164,056 B**), which is what the `cache.cyr` fix below bought.
+
+Binary grows **147,600 B → 168,264 B** (+20,664 B, +14.0 %). That growth is the **vendored snapshot, not codegen**: the local wrapper was already `cycc 6.5.35` before this release — that *was* the drift — so the pre-bump baseline compiled the same `src/` with the *same compiler* against the old `lib/` and produced 147,600 B (text 143,049 B, bss 2,464 B). After the resync the same `src/` produces 168,264 B (text 162,839 B, bss 2,544 B): text **+19,790 B**, bss **+80 B**. Roughly half of it is code the linker never reaches — the build's dead-code note goes from `318 unreachable fns (58,189 bytes)` to `384 unreachable fns (69,382 bytes)`, all of which `CYRIUS_DCE=1` eliminates. This partially gives back 1.1.3's −29.8 % drop; the net against the 0.3.0 baseline (395,115 B) is still **−226,851 B**.
+
+Render time is unmoved, which is the metric that actually has a budget: `render_prompt (default cwd+vcs+exit)` benches **10.851 µs avg** (min 10.702 µs, max 11.092 µs) against **10.553 µs** pre-bump — noise, and ~0.2 % of the 5 ms cold-start budget ([architecture/001-prompt-render-budget.md](docs/architecture/001-prompt-render-budget.md)). Public API per [ADR 0007](docs/adr/0007-schema-freeze.md) unaffected.
+
+### Changed
+
+- **`VERSION`** — `1.1.3` → `1.1.4`.
+- **`cyrius.cyml`** — `[package].cyrius` pin `6.4.66` → `6.5.35`.
+- **Vendored stdlib snapshot resynced to the 6.5.35 pin** (`cyrius lib sync --full` — 108 files copied): **60 bundled libs updated, 2 added, 0 removed**. Added: `async_macos.cyr`, `thread_macos.cyr`. Version bumps: `bayan` 1.2.0 → 1.5.2, `sankoch` 2.5.1 → 2.7.8, `yukti` 2.2.9 → 2.3.8, `patra` 1.12.12 → 1.13.10, `vani` 1.1.1 → 1.2.2, `ganita` 1.0.3 → 1.1.4, `sandhi` 1.9.0 → 1.9.10, `sigil` 3.12.1 → 3.12.9, `sakshi` 2.4.6 → 2.4.11, `mabda` 4.0.7 → 4.1.0, `yantra` 1.0.1 → 1.0.3, `niyama` 1.0.6 → 1.0.7. (`agnosys` 1.2.6 is not part of the stdlib snapshot and is untouched.) Clears the `./lib/ shadows version-pinned …/6.4.66/lib — 2 bundled lib(s) differ` build warning. `[deps]` in `cyrius.cyml` is unchanged — the declared stdlib surface is the same; only the vendored implementations advanced.
+- **`docs/benchmarks/history.csv`** — first per-release rows since `0.9.0`, now that `bench-history.sh` records them (see below). 12 rows for 1.1.4.
+
 ### Fixed
 
 - **`--agnos` builds failed on `cache.cyr`'s `sys_stat` arity — and the cache was never
@@ -32,6 +47,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `_cache_disabled` before any of this file's remaining Linux-shaped raw syscalls
   (`SYS_MKDIR`, `SYS_UNLINK`, rename #82) can run. Host behaviour is unchanged —
   suite stays **279 passed, 0 failed**.
+
+- **`scripts/bench-history.sh` silently dropped every decimal-average row** — including
+  `render_prompt`, the one metric with a budget. This is the same 6.4.x decimal-output
+  breakage that 1.1.3 fixed in `bench-gate.sh`, in the sibling script it missed. The
+  skip-filter guarding the parse loop used an integer-only `[0-9]+(ns|us|ms)`: against
+  `config_default: 2.835us avg` it matches the `2`, then needs a unit and finds `.`, so
+  the row was treated as a non-bench line and skipped. Only the integer-average rows
+  (`cwd_render: 715ns`) survived — 5 of 12. Because the script counts what it appended
+  and exits 0, it reported success every time, which is why `history.csv` has no rows
+  between **0.9.0 and 1.1.4** despite the releases in between. The guard now accepts an
+  optional fraction, matching the `[0-9.]+` the value-extraction seds already used.
+  Verified: 12 of 12 rows recorded, the 6.5.x harness's new `[timer floor 1.256us per
+  clock read …]` line still correctly skipped, and the comma in `vcs_render (cached, 1s
+  TTL)` still escaped to `;`. No change to `bench-gate.sh`, which parses 6.5.x output
+  correctly as shipped.
 
 ## [1.1.3] — 2026-07-17 (toolchain refresh + stdlib resync)
 
