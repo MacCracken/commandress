@@ -46,18 +46,32 @@ fn _default_config_path(home): i64 {
     return path;
 }
 
+# Our own stderr writer.
+#
+# Audit 2026-08-26, P-08: this used to call cmdit's `_cmdit_eprint`. That is an
+# underscore-prefixed INTERNAL helper, not one of the 54 public `cmdit_*`
+# entry points, so it sits outside the frozen-1.0.0 API that ADR 0008's
+# tag pin is predicated on. cmdit is free to rename or drop it in a patch
+# release without that counting as a break — and our build would fail on a
+# routine pin bump, for a two-line helper we can own outright.
+fn _eprint(s): i64 {
+    if (s == 0) { return 0; }
+    syscall(SYS_WRITE, STDERR, s, strlen(s));
+    return 0;
+}
+
 # Usage banner. cmdit_help generates `Usage:` + the flag table from the
 # registrations themselves, so the flag list cannot drift from the parser the
-# way a hand-written help wall does. Everything cmdit prints here goes to
-# STDERR, which is what makes `--help` safe in a prompt renderer: a shell doing
+# way a hand-written help wall does. Everything printed here goes to STDERR,
+# which is what makes `--help` safe in a prompt renderer: a shell doing
 # `PROMPT="$(cmdrs --help)"` captures stdout and gets an empty string, not a
 # help wall pasted into the prompt.
 fn _print_help(cli): i64 {
-    _cmdit_eprint("commandress — structured prompt renderer for agnoshi.\n\n");
+    _eprint("commandress — structured prompt renderer for agnoshi.\n\n");
     cmdit_help(cli);
-    _cmdit_eprint("\nContext is taken from the environment, not from flags:\n");
-    _cmdit_eprint("  HOME                 config lookup (~/.commandress) + `~` shortening\n");
-    _cmdit_eprint("  AGNOSHI_LAST_EXIT    last command's exit status, for the `exit` segment\n");
+    _eprint("\nContext is taken from the environment, not from flags:\n");
+    _eprint("  HOME                 config lookup (~/.commandress) + `~` shortening\n");
+    _eprint("  AGNOSHI_LAST_EXIT    last command's exit status, for the `exit` segment\n");
     return 0;
 }
 

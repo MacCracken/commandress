@@ -110,7 +110,41 @@ fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
     }
 
     sys_close(ep);
-    if (timed_out == 1) { sys_kill(pid, SIGKILL); }
+
+    # KILL UNCONDITIONALLY, then close, then wait. All three, in this order.
+    # (audit 2026-08-26, A-02 HIGH / P-05.)
+    #
+    # The read loop has three exits and only ONE of them used to kill the
+    # child. Both of the others leave a live child and a parent about to
+    # block in waitpid, which NO DEADLINE COVERS — the budget is enforced by
+    # epoll_wait, and by this point we have left that loop for good:
+    #
+    #   - buffer full (`space <= 0`): child still running, still writing.
+    #     This one happened to be survivable, because closing the read end
+    #     below makes its next write die on EPIPE/SIGPIPE. Verified: a child
+    #     flooding 200 KB through a 256-byte buffer returned in 5 ms.
+    #   - EOF (`n <= 0`) with the child STILL ALIVE: a child that closes or
+    #     redirects its stdout and then keeps running hits this, and the
+    #     EPIPE trick does NOT save us — it is not writing, so it never
+    #     notices the closed pipe. Verified as a real hang: a fake `cyrius`
+    #     on PATH doing `exec 1>&-; sleep 30` parked the prompt for the full
+    #     30 s against a 5 ms budget.
+    #
+    # So the kill is no longer conditional on `timed_out`. Once we have
+    # stopped reading, the child's exit status is irrelevant — `stbuf` is
+    # discarded, and the return value is decided by the flags below — so
+    # there is nothing to lose by killing it and everything to lose by
+    # waiting on it. SIGKILL on an already-exited child is a harmless no-op
+    # (it is a zombie until we reap it, and kill(2) on a zombie succeeds).
+    #
+    # `timed_out` still decides the RETURN VALUE; it just no longer decides
+    # whether we are willing to hang.
+    sys_kill(pid, SIGKILL);
+
+    # close(rfd) still precedes waitpid — belt and braces for the buffer-full
+    # case, and it releases the fd before we block. Pinned by
+    # tests/commandress.tcyr::test_shellout_oversized_child_does_not_hang and
+    # ::test_shellout_eof_with_live_child_does_not_hang.
     sys_close(rfd);
     var stbuf[8];
     sys_waitpid(pid, &stbuf, 0);

@@ -1173,6 +1173,44 @@ fn test_sanitize_strips_esc_mid_string(): i64 {
     return 0;
 }
 
+# Audit 2026-08-26, A-05. The filter used to pass every byte >= 0x80 on the
+# reasoning that they are UTF-8 continuation bytes, not controls. True of the
+# bytes, false of the codepoints: U+0080–U+009F is the C1 control set, and a
+# UTF-8 terminal honouring C1 reads U+009B as CSI and U+009D as OSC — F-1's
+# whole threat, smuggled past it two bytes at a time. Verified reaching stdout
+# byte-for-byte before the fix.
+fn test_sanitize_strips_utf8_c1_controls(): i64 {
+    # \xc2\x9b = U+009B (CSI), \xc2\x9d = U+009D (OSC), \xc2\x9c = U+009C (ST).
+    var out = sanitize_segment_output("v\xc2\x9b31mRED\xc2\x9d0;t\xc2\x9c");
+    _streq_or_dump(out, "v31mRED0;t", "UTF-8-encoded C1 controls stripped");
+    return 0;
+}
+
+# The other half of A-05: the fix must not eat legitimate text. 0xC2 followed
+# by 0xA0..0xBF is ordinary Latin-1 punctuation, and 0xC3 sequences are not
+# C1 at all.
+fn test_sanitize_keeps_legitimate_utf8(): i64 {
+    # caf\xc3\xa9 = "café"; \xc2\xa0 = NO-BREAK SPACE (U+00A0, just past C1).
+    var out = sanitize_segment_output("caf\xc3\xa9\xc2\xa0ok");
+    _streq_or_dump(out, "caf\xc3\xa9\xc2\xa0ok", "é and U+00A0 survive the C1 filter");
+    return 0;
+}
+
+# Audit 2026-08-26, A-01. `read_regular_file` must refuse anything that is not
+# a regular file — that is what stops a FIFO in a hostile project directory
+# from parking the prompt in open(2) forever. A directory is the portable
+# stand-in a test can create without mknod: open(2) on it succeeds, so only the
+# fstat/S_IFREG gate rejects it. If this returns bytes, the gate is gone and
+# the FIFO hang is back.
+fn test_read_regular_file_rejects_non_regular(): i64 {
+    var buf[64];
+    var n = read_regular_file("/tmp", &buf, 64);
+    var rejected = 0;
+    if (n <= 0) { rejected = 1; }
+    assert(rejected, "read_regular_file refuses a directory (S_IFREG gate live)");
+    return 0;
+}
+
 fn test_sanitize_strips_all_c0_bytes(): i64 {
     # Every C0 control byte (0x00..0x1F) must be filtered.
     var input = "a\x01b\x02c\x07d\x0Ae\x0Df\x1bg\x1fh";
@@ -1474,6 +1512,94 @@ fn test_shellout_timeout_kills_child(): i64 {
     return 0;
 }
 
+# Regression guard for a load-bearing ORDERING in shellout_capture
+# (audit 2026-08-26, P-05 — investigated as a suspected deadlock, confirmed
+# SAFE, and pinned here so it stays that way).
+#
+# When a child writes MORE than the capture buffer holds, the read loop stops
+# early with `timed_out == 0`, so the child is never SIGKILLed. The child is
+# still writing, and once the 64 KB pipe buffer fills it blocks in write().
+# If the parent then called waitpid() while still holding the read end open,
+# both sides would block forever and the shell's prompt would hang — exactly
+# what the watchdog exists to prevent.
+#
+# It does not hang, for one reason: `sys_close(rfd)` runs BEFORE
+# `sys_waitpid` in src/shellout.cyr. Closing the last read end makes the
+# blocked child's next write fail with EPIPE/SIGPIPE, so it dies and waitpid
+# reaps it immediately. Swap those two lines and the prompt deadlocks.
+#
+# Verified live at audit time: a child flooding 200 KB through a 256-byte
+# buffer returned in 5 ms. This test keeps that true.
+fn test_shellout_oversized_child_does_not_hang(): i64 {
+    if (syscall(SYS_ACCESS, "/bin/sh", 1) != 0) {
+        assert(1, "shellout_oversized_child skipped (no /bin/sh)");
+        return 0;
+    }
+    var argv = alloc(32);
+    store64(argv, "/bin/sh");
+    store64(argv + 8, "-c");
+    # ~256 KB of output, far past both the capture buffer and the pipe.
+    store64(argv + 16, "i=0; while [ $i -lt 4096 ]; do printf '%064d' $i; i=$((i+1)); done");
+    store64(argv + 24, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+    var buf[256];
+    var start_ms = clock_now_ms();
+    # Generous 2 s budget: we are NOT testing the timeout here. If the
+    # buffer-full path deadlocked, the budget would not save us either —
+    # the parent blocks in waitpid, which no deadline covers.
+    var n = shellout_capture("/bin/sh", argv, envp, 2000, &buf, 256);
+    var elapsed_ms = clock_now_ms() - start_ms;
+    var bounded = 0;
+    if (n <= 256) { bounded = 1; }
+    assert(bounded, "oversized child output is capped at the buffer size");
+    var no_hang = 0;
+    if (elapsed_ms < 1500) { no_hang = 1; }
+    assert(no_hang, "buffer-full path returns promptly (close(rfd) precedes waitpid)");
+    return 0;
+}
+
+# The hang the buffer-full test does NOT cover (audit 2026-08-26, A-02 HIGH).
+#
+# A child that closes or redirects its stdout and then keeps running makes the
+# read loop exit on EOF (`n <= 0`) with `timed_out == 0`. Before A-02 the child
+# was only killed when the deadline fired, so this path went straight to
+# waitpid on a live child — and the EPIPE trick that rescues the buffer-full
+# case does nothing here, because the child is not writing and never notices
+# the closed pipe. Nothing covers a parent parked in waitpid: the budget is
+# enforced by epoll_wait, which we have already left.
+#
+# Measured before the fix with a fake `cyrius` doing `exec 1>&-; sleep 30`:
+# the prompt blocked for the full 30 s against a 5 ms budget. Fixed by killing
+# the child unconditionally before the wait.
+fn test_shellout_eof_with_live_child_does_not_hang(): i64 {
+    if (syscall(SYS_ACCESS, "/bin/sh", 1) != 0) {
+        assert(1, "shellout_eof_with_live_child skipped (no /bin/sh)");
+        return 0;
+    }
+    var argv = alloc(32);
+    store64(argv, "/bin/sh");
+    store64(argv + 8, "-c");
+    # Close stdout, then outlive the budget by a wide margin.
+    store64(argv + 16, "exec 1>&-; sleep 5");
+    store64(argv + 24, 0);
+    var envp = alloc(8);
+    store64(envp, 0);
+    var buf[256];
+    var start_ms = clock_now_ms();
+    var n = shellout_capture("/bin/sh", argv, envp, 20, &buf, 256);
+    var elapsed_ms = clock_now_ms() - start_ms;
+    # The child produced nothing before closing stdout.
+    var empty = 0;
+    if (n <= 0) { empty = 1; }
+    assert(empty, "child that closes stdout yields no captured bytes");
+    # The point of the test: we must not have waited out the child's 5 s.
+    var no_hang = 0;
+    if (elapsed_ms < 1000) { no_hang = 1; }
+    assert(no_hang, "EOF-with-live-child returns promptly (child killed before waitpid)");
+    return 0;
+}
+
 # ---- cli (cmdit adoption, 1.1.5) ----
 #
 # These drive cmdit's PURE core, `cmdit_parse_argv`, over a synthetic argv:
@@ -1562,6 +1688,20 @@ fn test_cli_bad_enum_degrades_to_left(): i64 {
 fn test_cli_unknown_flag_degrades_to_left(): i64 {
     assert_eq(_parse_result_of("--nope", 0), CMDIT_RESULT_ERR, "--nope → parse error");
     assert_eq(_side_of("--nope", 0), 0, "unknown flag still renders left, not empty");
+    return 0;
+}
+
+# Audit 2026-08-26, A-07 — the case the 1.1.5 CLI tests missed. They checked
+# that a bad flag ALONE renders the left prompt, which is just the default, and
+# so passed for the wrong reason. The real question is what happens when a VALID
+# `--side=right` is combined with a bad flag: the old code discarded the parsed
+# side and rendered the LEFT prompt, which the zsh adapter would paste into
+# RPROMPT.
+fn test_cli_side_survives_an_unrelated_parse_error(): i64 {
+    assert_eq(_parse_result_of("--side=right", "--nope"), CMDIT_RESULT_ERR,
+              "--side=right --nope is still a parse error");
+    assert_eq(_side_of("--side=right", "--nope"), 1,
+              "a successfully parsed --side=right survives an unrelated bad flag");
     return 0;
 }
 
@@ -1724,6 +1864,9 @@ fn main(): i64 {
     test_sgr_reset_constant();
     test_sanitize_strips_esc_mid_string();
     test_sanitize_strips_all_c0_bytes();
+    test_sanitize_strips_utf8_c1_controls();
+    test_sanitize_keeps_legitimate_utf8();
+    test_read_regular_file_rejects_non_regular();
     test_sanitize_strips_del();
     test_sanitize_passes_through_utf8();
     test_sanitize_empty_input();
@@ -1759,6 +1902,8 @@ fn main(): i64 {
     test_group("shellout watchdog");
     test_shellout_happy_path();
     test_shellout_timeout_kills_child();
+    test_shellout_oversized_child_does_not_hang();
+    test_shellout_eof_with_live_child_does_not_hang();
 
     test_group("cli (cmdit)");
     test_cli_version_matches_version_file();
@@ -1768,6 +1913,7 @@ fn main(): i64 {
     test_cli_side_space_form();
     test_cli_bad_enum_degrades_to_left();
     test_cli_unknown_flag_degrades_to_left();
+    test_cli_side_survives_an_unrelated_parse_error();
     test_cli_help_short_circuits();
     test_cli_version_short_circuits();
     test_cli_positional_ignored();

@@ -98,6 +98,27 @@ enum VcsCacheTtl {
 # cached value means "no sit repo / sit not on PATH for this cwd" —
 # we short-circuit the find_in_path + shellout in that case too.
 fn vcs_render(dirty_marker): i64 {
+    # AGNOS: return before declaring anything, and keep the two buffers out of
+    # the frame entirely (audit 2026-08-26, A-08).
+    #
+    # This function's 4 KB cwd buffer + 8 KB capture buffer make a 12,416-byte
+    # stack frame — measured, the largest in the agnos binary
+    # (`sub $0x3080,%rsp`). AGNOS hands ring-3 only ~12 KB of init stack, so the
+    # frame alone is at or over the whole budget. `lib/io.cyr::getenv` carries
+    # the same guard for the same reason and cites the crash it caused
+    # (agnoshi_147 #PF, Cyrius CHANGELOG 6.1.12): a `var[]` in a statically-dead
+    # region STILL reserves its stack at the prologue, so an early `return 0`
+    # after the declaration would not have helped — the declaration itself has
+    # to be preprocessed away.
+    #
+    # Nothing is lost. Every input this function needs is already stubbed on
+    # agnos: `cmdrs_getcwd` returns 0 (src/pathlookup.cyr), `shellout_capture`
+    # returns -1 (src/shellout.cyr), and the cache is disabled (src/cache.cyr).
+    # The host path below therefore could only ever have returned 0 there.
+    #ifdef CYRIUS_TARGET_AGNOS
+    return 0;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
     var cwd_buf[4096];
     var cwd_n = cmdrs_getcwd(&cwd_buf, 4096);
     if (cwd_n > 0) {
@@ -140,4 +161,5 @@ fn vcs_render(dirty_marker): i64 {
         }
     }
     return result;
+    #endif
 }

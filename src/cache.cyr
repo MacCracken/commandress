@@ -128,6 +128,20 @@ fn _cache_stat(path, buf): i64 {
     #endif
 }
 
+# lstat(2) twin of the above, for the cache-directory check (audit A-11).
+# Needs the same agnos bridge and for a second reason: agnos exposes no
+# `sys_lstat` at all, so naming it unguarded fails the `--agnos` build as an
+# undefined function even though `cache_init` returns before reaching it —
+# the call still compiles.
+fn _cache_lstat(path, buf): i64 {
+    #ifdef CYRIUS_TARGET_AGNOS
+    return 0 - 1;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    return sys_lstat(path, buf);
+    #endif
+}
+
 # Idempotent mkdir of the cache directory. EEXIST is treated as
 # success; any other failure leaves the cache effectively disabled
 # (cache_put will silently fail on the missing dir; cache_get's stat
@@ -155,8 +169,21 @@ fn cache_init(): i64 {
     var dir = cache_dir();
     syscall(SYS_MKDIR, dir, 0x1c0);                             # 0o700
     var stbuf[144];
-    if (_cache_stat(dir, &stbuf) != 0) { _cache_disabled = 1; return 0; }
+    # Audit 2026-08-26, A-11: LSTAT, not stat. F-3 verifies the cache dir is
+    # ours and 0o700, but `stat` FOLLOWS symlinks, so a co-tenant who wins the
+    # race to create `/tmp/commandress-<uid>` as a symlink pointing at some
+    # other directory we own with mode 0700 (say `~/.ssh`) passes both checks —
+    # and we then create and rename files inside a directory of THEIR choosing.
+    # `lstat` describes the link itself, whose st_mode is S_IFLNK, so the
+    # mode check below rejects it and the cache disables. The mkdir above
+    # already fails with EEXIST in that case, which is why the stat is the
+    # only thing standing between us and the attacker's target.
+    if (_cache_lstat(dir, &stbuf) != 0) { _cache_disabled = 1; return 0; }
     var st_mode = load32(&stbuf + 24);                          # struct stat: st_mode @ 24
+    # Explicit type gate (A-11). The permission check below would already
+    # reject a symlink, since Linux gives symlinks mode 0777 — but relying on
+    # that is relying on a coincidence. Require an actual directory.
+    if ((st_mode & 0xF000) != 0x4000) { _cache_disabled = 1; return 0; }   # S_IFDIR
     var st_uid  = load32(&stbuf + 28);                          # struct stat: st_uid  @ 28
     var our_uid = syscall(SYS_GETUID);
     if (st_uid != our_uid) { _cache_disabled = 1; return 0; }
@@ -181,6 +208,13 @@ fn cache_get(seg_name, cwd, ttl_secs): i64 {
     if (_cache_stat(path, &stbuf) != 0) { return 0; }
     var mtime_sec = load64(&stbuf + 88);                        # offset of st_mtim.tv_sec
     var now_sec = clock_epoch_secs();
+    # Audit 2026-08-26, A-12: the freshness test was one-sided. A mtime in the
+    # FUTURE makes `now - mtime` negative, which is never `> ttl_secs`, so the
+    # entry counts as fresh forever and the segment serves it for the life of
+    # the file. Reachable without an attacker: any backwards clock step (NTP
+    # correction, suspend/resume, a VM restored from a snapshot) leaves entries
+    # written "in the future" pinned. Treat a future mtime as a miss.
+    if (mtime_sec > now_sec) { return 0; }
     if (now_sec - mtime_sec > ttl_secs) { return 0; }
 
     var file_size = load64(&stbuf + 48);                        # offset of st_size
@@ -231,8 +265,20 @@ fn cache_put(seg_name, cwd, value, value_len): i64 {
         fd = file_open(tmp_path, flags, 0x180);
         if (fd < 0) { return 0; }
     }
-    file_write(fd, value, value_len);
+    # Audit 2026-08-26, P-04: the write result used to be discarded. The
+    # temp+rename dance (F-5) buys atomicity — a reader never sees a torn
+    # file — but atomicity is not integrity: renaming a SHORT write into
+    # place publishes a truncated value as though it were complete, and
+    # cache_get has no way to tell. The next redraw then renders a clipped
+    # branch name from cache for the whole TTL. Verify the byte count and
+    # abandon the temp if it is short, so a failed write degrades to a
+    # cache MISS (correct, just uncached) instead of a wrong hit.
+    var written = file_write(fd, value, value_len);
     file_close(fd);
+    if (written != value_len) {
+        syscall(SYS_UNLINK, tmp_path);
+        return 0;
+    }
 
     # SYS_RENAME = 82 on x86_64 Linux. Atomic — concurrent readers see
     # the old file or the new one, never a torn write. On failure, the

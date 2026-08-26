@@ -45,6 +45,40 @@ The 0/-1/-2 split lets callers distinguish "the command succeeded with no output
 - **No partial-output behavior.** If the budget fires mid-read, the captured prefix is *discarded* (return `-2`, ignore `total`). Partial-output rendering would force every segment parser to handle truncation; the empty-render-on-timeout shape keeps the parser side simple.
 - **No CPU-bound segment enforcement.** Pure-CPU segments (cwd, exit, time, hostname, user) clear 500 µs trivially and don't go through this watchdog. If a pure-CPU segment ever spins, it's a bug and stays a bug — not a watchdog miss. (`setitimer`-based CPU watchdog would change this; it's out of scope.)
 
+## The one ordering you must not change: `close(rfd)` before `waitpid`
+
+Established by the 2026-08-26 audit (P-05), which opened this as a suspected deadlock and
+refuted it — but the reason it is safe is not visible from reading the loop, so it is
+recorded here.
+
+The read loop has **two** exits, and only one of them kills the child:
+
+| Exit | `timed_out` | Child killed? |
+|---|---|---|
+| deadline expired / `epoll_wait` returned 0 | `1` | yes, `SIGKILL` |
+| **capture buffer full** (`space <= 0`) | `0` | **no** |
+| child closed the pipe (`n <= 0`) | `0` | not needed, it exited |
+
+On the buffer-full exit the child is still running and may still be writing. Once the
+64 KB pipe buffer fills it blocks in `write()`. If the parent then called `waitpid` while
+still holding the read end open, both sides would block forever — and **no deadline covers
+this**: the parent is parked in `waitpid`, not in `epoll_wait`, so the budget that the
+whole watchdog exists to enforce does not apply. The user's prompt would hang.
+
+It does not hang because `sys_close(rfd)` runs first. Closing the last read end makes the
+child's next `write` fail with `EPIPE`/`SIGPIPE`, so the child dies and `waitpid` reaps it
+immediately.
+
+Measured both ways at audit time:
+
+- **As shipped** — a child flooding 200 KB through a 256-byte capture buffer returns in
+  **5 ms**.
+- **With the two lines swapped** in a scratch copy — the test suite **hangs**, killed at
+  45 s.
+
+Pinned by `tests/commandress.tcyr::test_shellout_oversized_child_does_not_hang`, which
+fails if the ordering is reversed. Do not reorder those two lines.
+
 ## Cross-arch surface
 
 `sys_epoll_wait` is x86-specific in `lib/syscalls_x86_64_linux.cyr` (the aarch64 peer exposes the same wrapper via `lib/syscalls_aarch64_linux.cyr`). The watchdog code itself is arch-agnostic — it calls the wrapper, not the syscall number directly. Cross-arch builds work via Cyrius's arch-dispatched include selector.

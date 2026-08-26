@@ -317,10 +317,12 @@ fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
             ai = ai + 1;
         }
         if (known == 0) {
+            # audit A-06: both echoed values are raw config bytes; filter them
+            # the same way segment output is filtered.
             syscall(SYS_WRITE, STDERR, "warning: unknown config field '", 31);
-            syscall(SYS_WRITE, STDERR, str_data(key), str_len(key));
+            eprint_sanitized(str_data(key), str_len(key));
             syscall(SYS_WRITE, STDERR, "' in [[", 7);
-            syscall(SYS_WRITE, STDERR, section_name, strlen(section_name));
+            eprint_sanitized(section_name, strlen(section_name));
             syscall(SYS_WRITE, STDERR, "]] (ignored)\n", 13);
         }
         pi = pi + 1;
@@ -384,7 +386,8 @@ fn config_load(path): i64 {
     if (path == 0) { return c; }
 
     var buf = alloc(65536);
-    var n = file_read_all(path, buf, 65536);
+    # audit A-01: a FIFO at ~/.commandress hung the prompt forever.
+    var n = read_regular_file(path, buf, 65536);
     if (n <= 0) { return c; }
 
     var doc = cyml_parse(buf, n);

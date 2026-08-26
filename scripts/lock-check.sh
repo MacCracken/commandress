@@ -24,8 +24,10 @@
 #     sorted set.
 #
 # Usage:
-#   scripts/lock-check.sh              # re-resolves, compares, restores nothing
-#   scripts/lock-check.sh --no-resolve # compare only (lock already re-resolved)
+#   scripts/lock-check.sh              # re-resolves, compares against HEAD
+#   scripts/lock-check.sh --no-resolve # compare the working tree against HEAD
+#                                      # without re-resolving (the lock is
+#                                      # assumed already resolved by a prior step)
 #
 # Exit codes:
 #   0  — lock matches a clean tag resolution
@@ -44,7 +46,30 @@ fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-cp "$LOCK" "$tmp/before"
+
+# Baseline comes from the COMMITTED lock (git), not the working tree.
+#
+# Audit 2026-08-26, A-03 (HIGH) — this script was inert in CI as first wired.
+# ci.yml runs a "Resolve dependencies" step (`cyrius deps`) BEFORE this one, so
+# by the time we ran, the committed lock had already been overwritten by a
+# fresh resolution. Snapshotting the working tree then compared a regeneration
+# against another regeneration: identical by construction, always exit 0. A
+# lock committed with a `path` override active — zero `commit` lines — passed
+# cleanly. Verified: with the guard as written, a deliberately tampered lock
+# was reported OK.
+#
+# Reading the baseline from `git show HEAD:cyrius.lock` makes the check
+# independent of whatever earlier steps did to the file, so it cannot be
+# defeated by reordering. Falls back to the working tree outside a git
+# checkout (local runs from a tarball), where the ordering hazard does not
+# apply because nothing has resolved yet.
+if git rev-parse --git-dir >/dev/null 2>&1 && git cat-file -e HEAD:"$LOCK" 2>/dev/null; then
+  git show HEAD:"$LOCK" > "$tmp/before"
+  echo "lock-check: baseline = committed $LOCK (HEAD)"
+else
+  cp "$LOCK" "$tmp/before"
+  echo "lock-check: baseline = working-tree $LOCK (not in a git checkout)" >&2
+fi
 
 if [[ "$RESOLVE" == "1" ]]; then
   cyrius deps >/dev/null 2>&1 || { echo "lock-check: 'cyrius deps' failed" >&2; exit 1; }

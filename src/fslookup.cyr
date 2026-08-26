@@ -94,6 +94,70 @@ fn find_ancestor_with(start_dir, marker): i64 {
     return hit;
 }
 
+# Read a file that an ATTACKER may have chosen the type of.
+#
+# Audit 2026-08-26, A-01 (HIGH). `file_read_all` opens with plain
+# `open(path, O_RDONLY)`. On a FIFO with no writer, open(2) BLOCKS FOREVER —
+# and nothing in this program covers that: the only watchdog is
+# `shellout_capture`'s epoll deadline, which wraps fork+exec, not file reads,
+# and main() installs no alarm. `find_ancestor_with` selects candidates with
+# `access(F_OK)`, which succeeds on a FIFO, so a non-regular file is picked and
+# then opened blocking.
+#
+# Confirmed against the shipped binary, all five reachable paths: a hostile
+# repo shipping `VERSION`, `.python-version`, `.nvmrc` or `rust-toolchain` as a
+# FIFO — and tar preserves FIFOs, so `git clone`/untar is enough — hangs
+# `cmdrs` indefinitely (`timeout 6` -> rc 124, /proc/<pid>/wchan reads
+# `wait_for_partner`). `PROMPT="$(cmdrs)"` then never returns and the user has
+# no prompt and no input loop until they kill it. Same for `~/.commandress`
+# itself under a hostile HOME.
+#
+# Two guards, because either alone is insufficient:
+#   - O_NONBLOCK makes the OPEN return instead of parking in fifo_open.
+#   - fstat + S_IFREG rejects the file anyway, which also covers device nodes
+#     whose *reads* stall (a FIFO opened O_NONBLOCK would read EOF, but
+#     /dev/zero would read forever into our cap, and a tty could stall).
+# Checking on the already-open fd, not by path, also closes the TOCTOU between
+# the access(F_OK) that selected the path and the open that follows it.
+#
+# AGNOS: both guards are unavailable and the exposure does not exist there.
+# `O_NONBLOCK` is defined only in the Linux/macOS syscall peers (2048), not in
+# the agnos one, so naming it would fail the `--agnos` build; and agnos's
+# `sys_fstat` is a hard stub (`return 0 - 1;` in syscalls_x86_64_agnos.cyr), so
+# an unconditional S_IFREG gate would reject EVERY file and silently revert
+# agnos users to baked-in defaults. Agnos keeps the plain read.
+fn read_regular_file(path, buf, cap): i64 {
+    if (path == 0) { return 0 - 1; }
+    #ifdef CYRIUS_TARGET_AGNOS
+    return file_read_all(path, buf, cap);
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    var fd = file_open(path, O_NONBLOCK, 0);            # O_RDONLY is 0
+    if (fd < 0) { return 0 - 1; }
+    # 144 = sizeof(struct stat) on Linux x86_64 (same as src/cache.cyr). A
+    # smaller frame array would let the kernel write past it.
+    var stbuf[144];
+    if (sys_fstat(fd, &stbuf) != 0) { file_close(fd); return 0 - 1; }
+    var st_mode = load32(&stbuf + 24);                  # struct stat: st_mode @ 24
+    if ((st_mode & 0xF000) != 0x8000) {                 # S_IFMT / S_IFREG
+        file_close(fd);
+        return 0 - 1;
+    }
+    var total = 0;
+    var going = 1;
+    while (going == 1) {
+        if (total >= cap) { going = 0; }
+        else {
+            var n = file_read(fd, buf + total, cap - total);
+            if (n <= 0) { going = 0; }
+            else { total = total + n; }
+        }
+    }
+    file_close(fd);
+    return total;
+    #endif
+}
+
 fn read_trimmed_file_at(root, suffix): i64 {
     if (root == 0) { return 0; }
     if (suffix == 0) { return 0; }
@@ -105,7 +169,7 @@ fn read_trimmed_file_at(root, suffix): i64 {
     store8(path + root_len + suffix_len, 0);
 
     var buf[256];
-    var n = file_read_all(path, &buf, 256);
+    var n = read_regular_file(path, &buf, 256);   # audit A-01: FIFO/device-safe
     if (n <= 0) { return 0; }
 
     var start = 0;

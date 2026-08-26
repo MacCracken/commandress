@@ -31,8 +31,33 @@ Open a new shell — or `exec zsh` / `exec bash` — and the prompt switches ove
 
 - **bash needs `\001..\002` markers around non-printable ANSI escapes** for readline's width accounting. `bash.sh` wraps via a one-line `sed` filter on `cmdrs` output. `cmdrs` itself stays shell-agnostic.
 - **bash has no native right-prompt.** `right_segments` in `~/.commandress` is silently unused under bash. Use zsh if you want them.
-- **zsh needs `setopt prompt_subst`** to evaluate `$(cmdrs)` inside `$PROMPT` per redraw. `zsh.sh` sets it.
+- **zsh must NOT set `prompt_subst`**, and `zsh.sh` deliberately does not. (It did until the 2026-08-26 audit; see the security section below.) The option was never needed: `PROMPT` is assigned from `$( )` inside the `precmd` hook, so by render time it holds finished bytes, not a `$(cmdrs)` to expand.
+- **bash sources turn `promptvars` off** (`shopt -u promptvars`), for the same reason. Note this is shell-global, not per-prompt: if your own `PS1` relies on `$(...)`/`${...}` being expanded at render time, that stops working once you source `bash.sh`. That is the intended trade — the alternative leaves a command-execution channel open — and you can render dynamic content by computing it in `PROMPT_COMMAND` instead.
 - **agnoshi will need to set `$AGNOSHI_LAST_EXIT`** before invoking the prompt command, and capture stdout as the prompt string. Spec lives in [`agnoshi.sh`](agnoshi.sh)'s header comment until agnoshi co-signs.
+
+## Security: the prompt string is DATA, not a script
+
+`cmdrs` renders bytes it does not choose. A branch name, `.python-version`,
+`.nvmrc`, `rust-toolchain`, `VERSION`, `$VIRTUAL_ENV` — a repository you merely
+`cd` into picks those. `cmdrs` strips control bytes at the render chokepoint
+(audit F-1), but `$`, `(`, `)` and `%` are ordinary printable characters and are
+passed through as text, because they are legal in a branch name.
+
+**So the shell must never expand the prompt string.** Both shipped adapters used
+to let it, and both executed attacker-chosen commands on every redraw as a
+result — confirmed and fixed in the [2026-08-26 audit](../docs/audit/2026-08-26-audit.md)
+(finding P-01). The rules an adapter must follow:
+
+| Shell | Rule | Why |
+|---|---|---|
+| zsh | never `setopt prompt_subst`; double `%` → `%%` | `prompt_subst` runs command substitution on the prompt each redraw; `%` escapes expand even without it |
+| bash | `shopt -u promptvars` | on by default, and it applies parameter expansion **and** command substitution to `PS1` |
+| agnoshi | pass the bytes through verbatim | the 5-point contract in [`agnoshi.sh`](agnoshi.sh) (audit F-12) |
+
+Same class as CVE-2021-3934 (oh-my-zsh, branch name via `print -P`) and
+CVE-2021-45444 (zsh `PROMPT_SUBST`). If you write a new adapter, the test is
+simple: put `$(touch /tmp/x)` in a `.python-version`, `cd` there, press enter a
+few times, and confirm `/tmp/x` does not appear.
 
 ## Customization
 

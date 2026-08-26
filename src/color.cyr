@@ -47,20 +47,100 @@ fn sanitize_segment_output(s): i64 {
     if (s == 0) { return 0; }
     var len = strlen(s);
     var out = alloc(len + 1);
+    # Audit 2026-08-26, P-06. stdlib `alloc` RETURNS 0 on failure (OOM, or a
+    # size outside (0, ALLOC_MAX]) — it does not abort. Unguarded, the loop
+    # below would `store8` from address 0 for every byte of `s`. This is the
+    # chokepoint EVERY segment's output crosses on its way to the terminal,
+    # and a prompt renderer that segfaults takes the user's shell prompt with
+    # it, so the one comparison is worth its cost here even though the render
+    # path allocates modestly. Returning 0 is already the "nothing to paint"
+    # contract render_prompt handles. Same defence cmdit added in its 1.2.4
+    # security release for cmdit_new.
+    if (out == 0) { return 0; }
     var out_len = 0;
     var i = 0;
     while (i < len) {
         var c = load8(s + i);
-        if (c >= 32) {
-            if (c != 127) {
-                store8(out + out_len, c);
-                out_len = out_len + 1;
+        # Audit 2026-08-26, A-05. The original filter dropped bytes < 0x20 and
+        # 0x7F and let everything >= 0x80 through, on the reasoning that high
+        # bytes are UTF-8 continuation bytes rather than controls. True of the
+        # BYTES, false of the CODEPOINTS they decode to: U+0080–U+009F are the
+        # C1 control set, and a UTF-8 terminal that honours C1 reads U+009B as
+        # CSI and U+009D as OSC — the very sequences F-1 exists to stop, smuggled
+        # past it in two-byte form. Verified: `\xc2\x9b31mRED\xc2\x9d0;title`
+        # reached stdout byte-for-byte through the old filter.
+        #
+        # U+0080–U+009F encode as 0xC2 followed by 0x80–0x9F, so drop that pair.
+        # 0xC2 followed by 0xA0–0xBF is ordinary Latin-1 punctuation and stays.
+        var skip = 0;
+        if (c == 194) {                                 # 0xC2
+            if (i + 1 < len) {
+                var c2 = load8(s + i + 1);
+                if (c2 >= 128) {
+                    if (c2 <= 159) { skip = 1; }        # 0x80..0x9F -> C1
+                }
             }
         }
-        i = i + 1;
+        if (skip == 1) {
+            i = i + 2;
+        } else {
+            if (c >= 32) {
+                if (c != 127) {
+                    store8(out + out_len, c);
+                    out_len = out_len + 1;
+                }
+            }
+            i = i + 1;
+        }
     }
     store8(out + out_len, 0);
     return out;
+}
+
+# Write `len` bytes of `buf` to stderr with the same filter
+# `sanitize_segment_output` applies (audit 2026-08-26, A-06).
+#
+# Exists because the config-warning call sites hold a `(ptr, len)` pair — CYML
+# keys are `str_data`/`str_len`, not NUL-terminated cstrings — so they cannot
+# use the cstring sanitizer, and were writing raw config bytes straight to the
+# terminal. Same reasoning as P-02 for the segment-name warning: the config is
+# nominally trusted, but these warnings repeat on EVERY redraw for as long as
+# the offending key stands, and stderr bypasses `PROMPT="$(cmdrs)"` capture, so
+# the bytes land on the terminal directly.
+#
+# One filtered copy, one write — not a syscall per byte.
+fn eprint_sanitized(buf, len): i64 {
+    if (buf == 0) { return 0; }
+    if (len <= 0) { return 0; }
+    var out = alloc(len);
+    if (out == 0) { return 0; }
+    var out_len = 0;
+    var i = 0;
+    while (i < len) {
+        var c = load8(buf + i);
+        var skip = 0;
+        if (c == 194) {                                 # 0xC2 + 0x80..0x9F -> C1
+            if (i + 1 < len) {
+                var c2 = load8(buf + i + 1);
+                if (c2 >= 128) {
+                    if (c2 <= 159) { skip = 1; }
+                }
+            }
+        }
+        if (skip == 1) {
+            i = i + 2;
+        } else {
+            if (c >= 32) {
+                if (c != 127) {
+                    store8(out + out_len, c);
+                    out_len = out_len + 1;
+                }
+            }
+            i = i + 1;
+        }
+    }
+    if (out_len > 0) { syscall(SYS_WRITE, STDERR, out, out_len); }
+    return 0;
 }
 
 fn color_to_sgr_fg(name): i64 {

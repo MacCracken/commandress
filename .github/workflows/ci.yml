@@ -32,11 +32,25 @@ jobs:
         # installer lays out versions/<v>/{bin,lib} and symlinks bin/ + lib/ at
         # it, and additionally does SHA256 + signature verification the
         # hand-rolled block skipped. Same pattern as darshana / patra / libro.
+        #
+        # The installer is fetched from the PINNED VERSION TAG, not from `main`
+        # (audit 2026-08-26, P-07). Fetching an executable script from a moving
+        # branch and piping it to sh means every CI run executes whatever that
+        # branch says at that moment — so a bad commit on cyrius `main`, or a
+        # compromise of the account hosting it, reaches this workflow's runner
+        # and its token. The tag is the same one `[package].cyrius` already
+        # pins, so the installer now matches the toolchain it installs and a
+        # change to `main` cannot alter our builds.
+        #
+        # Residual risk, stated rather than hidden: git tags are mutable, so a
+        # force-pushed tag would still move under us. A commit SHA would be
+        # immutable; the tag is the same trust level the [deps.*] pins already
+        # use, and it is a large improvement over `main`.
         run: |
           set -e
           CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+          curl -sSf "https://raw.githubusercontent.com/MacCracken/cyrius/$CYRIUS_VERSION/scripts/install.sh" | \
             CYRIUS_VERSION="$CYRIUS_VERSION" sh
           echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
 
@@ -97,4 +111,10 @@ jobs:
         # `BUDGET_US` if a tighter / looser bound is wanted locally.
         # Bench timings on CI runners are slower than dev hardware —
         # 5 ms keeps headroom over the typical ~10 µs measured locally.
-        run: cyrius bench tests/commandress.bcyr | scripts/bench-gate.sh
+        # `set -o pipefail` (audit A-13): GitHub's default shell is `bash -e`,
+        # NOT pipefail, so the pipeline's status is bench-gate's alone. A
+        # `cyrius bench` that emitted a valid render_prompt line and THEN died
+        # would be reported green.
+        run: |
+          set -o pipefail
+          cyrius bench tests/commandress.bcyr | scripts/bench-gate.sh

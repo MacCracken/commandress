@@ -6,6 +6,200 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.6] — 2026-08-26 (P-1 audit — arbitrary command execution in both shell adapters)
+
+**Security release. Update if you use the shell adapters or work in untrusted
+repositories.** A P-1 sweep of the v1.1.5 codebase found **four HIGH-severity defects**,
+two of which are reachable by doing nothing more than `cd`-ing into a hostile repository:
+
+1. **Both shipped shell adapters executed attacker-chosen commands on every redraw**
+   (P-01, and a second independent channel in bash, A-04).
+2. **A FIFO in a project directory hangs the prompt forever** (A-01) — no adapter
+   involved, no shell feature, no timeout anywhere on the path.
+3. The watchdog **abandoned its time budget** whenever a child closed stdout and kept
+   running (A-02).
+4. The CI lock guard added earlier the same day was **inert** (A-03).
+
+Full report: **[docs/audit/2026-08-26-audit.md](docs/audit/2026-08-26-audit.md)** —
+4 HIGH, 3 MEDIUM, 12 LOW, 2 INFO confirmed, all fixed here except the accepted gaps the
+report records with reasons. Suite **295 → 304**; `render_prompt` unchanged at
+**10.86 µs**; `--agnos` clean, and its largest stack frame drops 12,416 → 8,320 bytes.
+
+The sweep ran two independent tracks — a five-dimension parallel read of the code, and
+live attack testing against the built binary — and **each caught HIGHs the other missed**,
+which is the argument for running both. The manual track found the adapter execution by
+reading the glue and trying the attack; no amount of reading `src/` would have surfaced
+it, because `cmdrs` is correct. The parallel read found the FIFO hang, which the manual
+track walked past: it fuzzed the *contents* of those probe files and never questioned
+their *file type*.
+
+The bug was not in `cmdrs`. `cmdrs` renders bytes it does not choose — a branch name,
+`.python-version` / `.nvmrc` / `rust-toolchain` / `VERSION` contents, `$VIRTUAL_ENV` —
+and strips control bytes at the render chokepoint (audit F-1), correctly. But `$`, `(`,
+`)` and `%` are ordinary printable characters and pass through as text, because they are
+legal in a branch name. **The adapters then handed that string to the shell as a
+script.** The project already had the rule written down — `adapters/agnoshi.sh` states
+it in its 5-point contract, citing CVE-2021-45444, and the 2026-05-18 audit recorded it
+as F-12 — but it was written for the adapter that does not exist yet and violated by the
+two that ship.
+
+### Security
+
+- **P-01 · HIGH — `adapters/zsh.sh` and `adapters/bash.sh` executed prompt content.**
+  zsh ran `setopt prompt_subst` (command substitution on the prompt, every redraw); bash
+  inherited `promptvars`, on by default (parameter expansion **and** command substitution
+  on `PS1`). A repository shipping `.python-version` containing `$(touch /tmp/x)` created
+  that file on every keystroke-triggered redraw — confirmed by execution under both
+  shells, not by inspection. Same class as CVE-2021-3934 (oh-my-zsh, branch name via
+  `print -P`) and CVE-2021-45444 (zsh `PROMPT_SUBST`).
+
+  Fixed by removing `setopt prompt_subst`, which was **never needed for this design**:
+  `PROMPT` is assigned from `$( )` inside the `precmd` hook, so by render time it holds
+  finished bytes — there is no `$(cmdrs)` left to expand. The option bought nothing and
+  opened the hole. bash gets `shopt -u promptvars`. zsh additionally doubles `%` →
+  `%%`, because `%` prompt escapes expand whether or not `prompt_subst` is set — a
+  separate channel that the same input reaches. All three fixes verified against the
+  live attack.
+
+  **Stated trade-off**: `shopt` is shell-global, so sourcing `bash.sh` disables
+  `promptvars` for the session. A user whose own `PS1` relies on `$(...)` expanding at
+  render time loses that. Documented in `adapters/README.md` rather than left to be
+  discovered.
+
+- **A-01 · HIGH — a FIFO in a hostile project directory hung the prompt forever.**
+  `read_trimmed_file_at` and `config_load` opened external files with a plain
+  `open(O_RDONLY)`, and `open(2)` on a FIFO with no writer blocks indefinitely. Nothing
+  covered it: the only watchdog wraps fork+exec, not file reads, and `main()` sets no
+  alarm. The candidate is chosen by `access(F_OK)`, which succeeds on a FIFO. Reproduced
+  on all five reachable paths — `VERSION`, `.python-version`, `.nvmrc`, `rust-toolchain`,
+  and `~/.commandress` — with `timeout 6` returning 124 and `/proc/<pid>/wchan` reading
+  `wait_for_partner`. **tar preserves FIFOs**, so extracting an archive is enough.
+  Fixed with `read_regular_file`: `O_NONBLOCK` on the open, then `fstat` on the
+  already-open fd requiring `S_IFREG` (which also rejects device nodes whose *reads*
+  stall), reading from that fd — closing the `access`→`open` TOCTOU as well. Guarded off
+  on agnos, deliberately: `O_NONBLOCK` is Linux/macOS-only and would fail the `--agnos`
+  build, and agnos's `sys_fstat` is a hard stub returning -1, so an unconditional gate
+  would reject every file and silently revert agnos users to defaults. Verified: 2–7 ms
+  instead of forever; regular files unaffected.
+- **A-02 · HIGH — the watchdog abandoned its budget on a live child.** The read loop has
+  three exits and only the deadline killed the child. On the **EOF** exit a child that
+  closes stdout and keeps running left the parent in `waitpid` with no deadline covering
+  it — the budget is enforced by `epoll_wait`, already exited. Measured: a fake `cyrius`
+  on `PATH` doing `exec 1>&-; sleep 30` parked the prompt for 30 s against a **5 ms**
+  budget. Fixed by killing unconditionally before waiting; once we stop reading, the
+  child's status is irrelevant. 12,000 ms → 3 ms.
+- **A-03 · HIGH — the CI lock guard was inert.** It snapshotted the working-tree lock,
+  but `ci.yml` runs `cyrius deps` in an earlier step, which overwrites that file — so it
+  compared a fresh resolution against another fresh resolution and always passed. A lock
+  committed with a `path` override (zero `commit` lines, the exact case it exists to
+  catch) was reported OK. Fixed by taking the baseline from `git show HEAD:cyrius.lock`,
+  making it immune to step ordering. Also fixes `--no-resolve` comparing the file to
+  itself.
+- **A-04 · HIGH — bash reconstructed ESC from bytes the sanitizer let through.** Not
+  covered by the `promptvars` fix: PS1 backslash decoding is unconditional. `\` and `e`
+  are printable, so `\e[31m` in a `.python-version` passes F-1 untouched and bash's
+  decoder turns it into a real ESC inside the shell. Verified: no `033` in `cmdrs`
+  output, `033 [ 3 1 m` after `${PS1@P}`. Fixed by doubling `\` → `\\`.
+- **A-05 · MEDIUM — the sanitizer passed UTF-8-encoded C1 controls.** It let every byte
+  `>= 0x80` through as "UTF-8, not controls" — true of the bytes, false of the
+  codepoints: U+0080–U+009F *is* the C1 set, and a terminal honouring C1 reads U+009B as
+  CSI. Verified reaching stdout byte-for-byte. Now drops `0xC2` + `0x80–0x9F`, while `é`
+  and NO-BREAK SPACE survive.
+- **A-06 · MEDIUM — the config-warning path echoed raw config bytes** — the sibling site
+  P-02 could not reach, because config keys are `(ptr, len)` pairs rather than cstrings.
+  Added a length-aware `eprint_sanitized`.
+- **A-07 · MEDIUM — a right-prompt parse error rendered the LEFT prompt.** A defect from
+  the 1.1.5 adoption: the degrade returned 0 for any non-OK result, degrading the **side**
+  as well as the exit code. `cmdrs --side=right --bogus` rendered the left prompt, which
+  the zsh adapter pastes into `RPROMPT`. cmdit retains a value parsed before a later flag
+  failed, so the side is now honoured. The 1.1.5 tests covered each flag *alone*, where
+  left is simply the default — they passed for the wrong reason; the combination is now
+  pinned.
+- **A-08 · MEDIUM — `vcs_render`'s frame exceeded the agnos init stack.** 4 KB + 8 KB
+  buffers made a 12,416-byte frame (confirmed by disassembly: `sub $0x3080,%rsp`, the
+  largest in the agnos binary) against ~12 KB of ring-3 init stack. An early return would
+  not help — a `var[]` in a dead region still reserves at the prologue — so the
+  declarations are now preprocessed away on agnos, the same guard `lib/io.cyr::getenv`
+  carries. Nothing lost: every input is already stubbed there. Largest frame
+  12,416 → 8,320 B.
+- **A-11 · MEDIUM — a symlinked cache directory defeated the F-3 gate.** F-3 used `stat`,
+  which follows symlinks, so a co-tenant pre-creating `/tmp/commandress-<uid>` as a
+  symlink to another `0700` directory we own passed both the uid and mode checks — and
+  `cmdrs` then wrote into a directory of their choosing. Now `lstat` (via an agnos-safe
+  bridge; agnos has no `sys_lstat`, and naming it unguarded broke the `--agnos` build even
+  on an unreachable line) plus an explicit `S_IFDIR` gate. Verified: 0 files written to
+  the symlink target.
+- **A-12 · LOW — the cache TTL check was one-sided**, so a future mtime never expired.
+  Needs no attacker: any backwards clock step pins entries. Future mtime is now a miss.
+- **A-09 / A-10 / A-13 · LOW — CI least privilege and pipeline hygiene.** `contents:
+  write` moved from the workflow level (where the CI-gate job inherited it) to the release
+  job alone; `softprops/action-gh-release` pinned from the mutable `v2` tag to its commit
+  SHA; `set -o pipefail` added so a bench that emits a valid line and then dies cannot
+  read green.
+- **P-07 · MEDIUM — CI piped an installer from a moving branch into `sh`.** The toolchain
+  *version* was pinned from `cyrius.cyml`, but the installer was fetched from
+  `raw.githubusercontent.com/.../cyrius/main/scripts/install.sh` — so every CI run
+  executed whatever that branch said at that moment, on a runner holding the workflow
+  token (`release.yml` runs with `contents: write`). Now fetched from the pinned version
+  tag, so the installer matches the toolchain it installs. Residual risk stated in the
+  report: tags are mutable; a SHA would be immutable.
+
+- **P-02 · LOW — the unknown-segment warning re-emitted unsanitized bytes.** Segment
+  *output* is sanitized; the segment *name* echoed by `warning: unknown segment '<name>'`
+  was not. Verified: a config naming a segment `\x1b[31mBADSEG\x1b[0m` put raw `033`
+  bytes on the terminal. Inside the documented config-is-trusted boundary, hence LOW, but
+  it fires once per redraw for as long as the typo stands and stderr bypasses
+  `PROMPT="$(cmdrs)"` capture. Now routed through `sanitize_segment_output`.
+
+### Fixed
+
+- **P-04 · MEDIUM — `cache_put` published short writes as complete entries.** F-5 made
+  cache writes atomic, and that holds — but atomicity is not integrity: the `file_write`
+  result was discarded, so a short write was `rename`d into place as though complete and
+  `cache_get` could not tell. The next redraw then served a clipped branch name for the
+  whole TTL. Now verifies the byte count and unlinks the temp on a short write, degrading
+  to a cache **miss** rather than a wrong hit.
+- **P-03 · LOW — all 8 stdout writes discarded their result**, so an `-EINTR` mid-write
+  would truncate the prompt and still report success. Added `_emit`, which loops on
+  partial writes and retries EINTR (treating a 0 return on non-zero length as failure so
+  it cannot spin). Rated LOW deliberately: the tempting "pipe writes above `PIPE_BUF`
+  short-write" framing does not hold for a blocking fd, and testing agreed — a
+  60,000-byte prompt delivered all 60,015 bytes through a pipe and a slow reader both
+  before and after. Hardening, not a live defect. No measurable cost.
+- **P-06 · LOW — the sanitization chokepoint could wild-write on allocation failure.**
+  stdlib `alloc` returns 0 rather than aborting; unguarded, the copy loop would `store8`
+  from address 0. Reachable only under heap exhaustion, but this is the one function every
+  segment's output crosses, and a prompt renderer that segfaults takes the shell prompt
+  with it. Same defence cmdit added for `cmdit_new` in its own 1.2.4 security release.
+- **P-08 · LOW — commandress depended on a private cmdit symbol.** `_print_help` called
+  `_cmdit_eprint`, an underscore-prefixed internal, not one of the 54 public `cmdit_*`
+  entry points — outside the frozen-1.0.0 API that [ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md)'s
+  tag pin is predicated on, so a routine pin bump could have broken the build. Replaced
+  with a local `_eprint`; `src/` now references only public `cmdit_*` names.
+
+### Added
+
+- **`test_shellout_oversized_child_does_not_hang`** (P-05 · INFO). Opened as a suspected
+  deadlock in the watchdog's buffer-full path — the child is not SIGKILLed there and may
+  still be writing, so a `waitpid` while holding the read end open would hang the prompt
+  with no deadline covering it. **Refuted**: it is safe because `sys_close(rfd)` runs
+  *before* `sys_waitpid`, so the blocked child takes `EPIPE`/`SIGPIPE` and dies. As
+  shipped, a child flooding 200 KB through a 256-byte buffer returns in 5 ms; with the
+  two lines swapped in a scratch copy, the suite **hangs and is killed at 45 s**. The
+  invariant is now stated at the call site and pinned by this test, which has teeth.
+- **`docs/audit/2026-08-26-audit.md`** — the full report, including a *Verified clean*
+  section (F-1 and F-7 re-confirmed by live attack, config parser fuzzed, `bench-gate.sh`
+  checked for false-pass, cache TOCTOU analysed as benign) and a *Known gaps* section
+  recording what was deliberately not fixed and why.
+
+### Changed
+
+- **`VERSION`** — `1.1.5` → `1.1.6`; `src/cli.cyr`'s compiled-in literal follows (the
+  1.1.5 drift guard asserts they match).
+- **`adapters/README.md`** — new *"the prompt string is DATA, not a script"* section with
+  a per-shell rule table and a two-line reproduction, so a future adapter author can
+  self-test. Corrected the two places that told readers zsh *needs* `prompt_subst`.
+
 ## [1.1.5] — 2026-08-26 (cmdit adoption — CLI parsing, `--help`, `--version`)
 
 **The hand-rolled CLI parser is gone.** commandress's whole command-line surface is one

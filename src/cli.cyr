@@ -20,7 +20,7 @@
 # reads VERSION and asserts equality, so a forgotten bump fails the suite
 # instead of shipping a `--version` that lies. A fn (not a `var`) so it costs
 # no initialized-globals slot.
-fn cmdrs_version(): i64 { return "1.1.5"; }
+fn cmdrs_version(): i64 { return "1.1.6"; }
 
 # Register commandress's flag table on a fresh handle from `cmdit_new`, which
 # has already registered --help/-h and --version/-V. Returns the `--side` flag
@@ -48,8 +48,23 @@ fn cli_register(cli): i64 {
 # the user's prompt over a typo. The caller pairs this with
 # `cmdit_print_error`, which writes to stderr and so is invisible to `$( )`
 # capture while still telling a human what was wrong.
+# Audit 2026-08-26, A-07. This used to `return 0` for ANY non-OK result, which
+# degraded the SIDE as well as the exit code — two different things.
+#
+# `cmdrs --side=right --bogus` therefore rendered the LEFT prompt. The zsh
+# adapter runs `RPROMPT="$($_CMDRS --side=right)"`, so one stray flag pasted the
+# entire left prompt — trailer and all — into the right prompt. Verified:
+# `--side=right` alone printed the time segment; adding `--bogus` printed
+# `/tmp  L ` instead.
+#
+# cmdit stores each flag's value as it parses, so a `--side` that parsed fine
+# before an unrelated flag failed is still there to read. The degrade contract
+# is "never exit non-zero and never blank the prompt" — it was never "throw away
+# input we successfully understood". CMDIT_HELP / CMDIT_VERSION never reach here
+# (main returns first), so CMDIT_OK and CMDIT_RESULT_ERR are the live cases and
+# both should honour the parsed side.
 fn cli_side_for(cli, f_side, pr): i64 {
     if (cli == 0) { return 0; }
-    if (pr != CMDIT_OK) { return 0; }
+    if (f_side < 0) { return 0; }
     return cmdit_get_enum(cli, f_side);
 }

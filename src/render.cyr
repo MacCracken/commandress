@@ -152,6 +152,41 @@ fn _bg_for(cfg, name): i64 {
     return 0;
 }
 
+# Write all `len` bytes to stdout, tolerating short writes and EINTR.
+#
+# Audit 2026-08-26, P-03. Every emit in this file used to be a bare
+# `syscall(SYS_WRITE, STDOUT, buf, len)` with the result discarded, which
+# assumes write(2) is all-or-nothing. It is not: a write larger than
+# PIPE_BUF (4096) to a pipe may be partial, and `cmdrs` writes into a pipe
+# by construction — `PROMPT="$(cmdrs)"` IS a pipe — with pieces that reach
+# that size (a deep `getcwd` runs to PATH_MAX, and a language-env segment
+# contributes up to 255 bytes). A signal arriving mid-write returns -EINTR
+# having written nothing. Either way the discarded result meant the prompt
+# was silently truncated and the render still reported success.
+#
+# Loop on progress; retry -EINTR (raw syscalls return negative errno, so
+# EINTR is -4); treat anything else — including a 0 return on a non-zero
+# length, which would otherwise spin forever — as a hard failure.
+fn _emit(buf, len): i64 {
+    if (buf == 0) { return 0; }
+    if (len <= 0) { return 0; }
+    var off = 0;
+    var failed = 0;
+    var done = 0;
+    while (done == 0) {
+        if (off >= len) { done = 1; }
+        else {
+            var n = syscall(SYS_WRITE, STDOUT, buf + off, len - off);
+            if (n > 0) { off = off + n; }
+            else {
+                if (n != (0 - 4)) { failed = 1; done = 1; }
+            }
+        }
+    }
+    if (failed == 1) { return 0 - 1; }
+    return off;
+}
+
 # Emit a powerline transition glyph: `\x1b[<fg=prev_bg>;<bg=next_bg>m<glyph>\x1b[0m`.
 # Either bg may be 0 (treated as terminal-default); when both are 0 the
 # glyph paints as plain text. The transition fg comes from the prev
@@ -162,9 +197,9 @@ fn _emit_powerline_transition(prev_bg, next_bg, glyph): i64 {
     var glen = strlen(glyph);
     if (glen == 0) { return 0; }
     var sgr = sgr_open_for(prev_bg, next_bg, 0);
-    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, sgr, strlen(sgr)); }
-    syscall(SYS_WRITE, STDOUT, glyph, glen);
-    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, SGR_RESET, strlen(SGR_RESET)); }
+    if (sgr != 0) { _emit(sgr, strlen(sgr)); }
+    _emit(glyph, glen);
+    if (sgr != 0) { _emit(SGR_RESET, strlen(SGR_RESET)); }
     return 0;
 }
 
@@ -199,8 +234,17 @@ fn render_prompt(cfg, ctx, side): i64 {
         var name = vec_get(segs, i);
         var fp = _seg_fn_for(name);
         if (fp == 0) {
+            # Sanitize the echoed name (audit 2026-08-26, P-02). It comes from
+            # the config file, which the F-1 analysis treats as trusted — but
+            # this warning re-emits it to the TERMINAL on every redraw, for as
+            # long as the typo stands, and stderr is not captured by
+            # `PROMPT="$(cmdrs)"`, so it reaches the terminal directly rather
+            # than the prompt string. An ESC-bearing segment name was verified
+            # to pass through raw here while identical bytes in segment OUTPUT
+            # are stripped one branch below. Cheap to close, so close it.
+            var safe_name = sanitize_segment_output(name);
             syscall(SYS_WRITE, STDERR, "warning: unknown segment '", 26);
-            syscall(SYS_WRITE, STDERR, name, strlen(name));
+            syscall(SYS_WRITE, STDERR, safe_name, strlen(safe_name));
             syscall(SYS_WRITE, STDERR, "' (skipped)\n", 12);
         } else {
             var out = fncall2(fp, cfg, ctx);
@@ -218,13 +262,13 @@ fn render_prompt(cfg, ctx, side): i64 {
                         if (powerline == 1) {
                             _emit_powerline_transition(prev_bg, seg_bg, glyph);
                         } else {
-                            syscall(SYS_WRITE, STDOUT, sep, sep_len);
+                            _emit(sep, sep_len);
                         }
                     }
                     var sgr = _sgr_for(cfg, name);
-                    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, sgr, strlen(sgr)); }
-                    syscall(SYS_WRITE, STDOUT, safe, safe_len);
-                    if (sgr != 0) { syscall(SYS_WRITE, STDOUT, SGR_RESET, strlen(SGR_RESET)); }
+                    if (sgr != 0) { _emit(sgr, strlen(sgr)); }
+                    _emit(safe, safe_len);
+                    if (sgr != 0) { _emit(SGR_RESET, strlen(SGR_RESET)); }
                     prev_bg = seg_bg;
                     painted = 1;
                 }
@@ -245,7 +289,7 @@ fn render_prompt(cfg, ctx, side): i64 {
 
     if (side == 0) {
         var trailer = cfg_trailer(cfg);
-        syscall(SYS_WRITE, STDOUT, trailer, strlen(trailer));
+        _emit(trailer, strlen(trailer));
     }
     return 0;
 }
