@@ -26,18 +26,33 @@ jobs:
           test "$FILE_VERSION" = "$TAG_VERSION" || { echo "VERSION ($FILE_VERSION) != tag ($TAG_VERSION)"; exit 1; }
 
       - name: Install Cyrius toolchain
+        # See ci.yml for the full rationale. Short version: do NOT hand-roll
+        # this by untarring the release asset into $HOME/.cyrius/{bin,lib} —
+        # that is the pre-6.5 layout, and from 6.5.x `cyrius deps` resolves the
+        # stdlib snapshot from $HOME/.cyrius/versions/$CYRIUS_VERSION/lib and
+        # hard-fails when only the flattened dirs exist. The upstream installer
+        # lays out versions/<v>/{bin,lib}, symlinks bin/ + lib/ at it, and
+        # verifies SHA256 + signature. The cyrius.cyml pin stays the single
+        # source of truth for the version.
         run: |
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain layout
+        # Guards the exact failure this replaced: a successful-looking install
+        # that leaves no versions/<v>/lib snapshot, so every later cyrius
+        # invocation dies on dep resolution instead of here.
+        run: |
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" \
+            || { echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"; exit 1; }
+          cyrius version
+          echo "toolchain ok: pin $CYRIUS_VERSION, snapshot present"
 
       - name: Build
         # Binary is `cmdrs`, not the repo name — see ci.yml for the rationale.

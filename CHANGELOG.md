@@ -48,6 +48,35 @@ Render time is unmoved, which is the metric that actually has a budget: `render_
   (`SYS_MKDIR`, `SYS_UNLINK`, rename #82) can run. Host behaviour is unchanged —
   suite stays **279 passed, 0 failed**.
 
+- **CI installed the toolchain with a pre-6.5 layout that 6.5.x rejects.** Both workflows
+  hand-rolled the install: untar the release asset, `mkdir -p $HOME/.cyrius/{bin,lib}`,
+  copy the files in. That produces *real* flat directories and no `versions/<v>/` tree at
+  all, where the upstream installer lays out `versions/<v>/{bin,lib}` and makes
+  `~/.cyrius/bin` and `~/.cyrius/lib` **symlinks** into it. From 6.5.x the toolchain
+  resolves the pinned stdlib snapshot at `~/.cyrius/versions/$CYRIUS_VERSION/lib` and
+  hard-fails without it:
+
+  ```
+  error: cyrius.cyml pins version 6.5.35 but it is not installed at ~/.cyrius/versions/6.5.35/lib
+    run: cyrius install 6.5.35
+  ```
+
+  This is a latent break that the pin bump in this release detonated — verified by
+  reproducing all three cases against the real toolchains: **6.4.66 + flat layout**
+  `deps`/`build` both rc=0; **6.5.35 + flat layout** both hard-fail with the error above;
+  **6.5.35 + installer layout** both rc=0. So the hand-rolled block was fine through
+  1.1.3 and could not survive 6.5.x, independent of anything in `src/`.
+
+  Both workflows now read the `cyrius.cyml` pin (still the single source of truth — no
+  hardcoded version in YAML) and hand it to the upstream `scripts/install.sh`, which also
+  does the SHA256 + signature verification the hand-rolled block skipped. A new **Verify
+  toolchain layout** step asserts `versions/$CYRIUS_VERSION/lib` exists and runs `cyrius
+  version`, so a bad install fails at the install step with a clear `::error::` instead of
+  surfacing later as a confusing dep-resolution failure. Pattern taken from darshana /
+  patra / libro. Also refreshed the `Test` step's rationale comment, which justified the
+  explicit `cyrius test <file.tcyr>` form by reference to a `6.0.56` pin this repo left
+  behind three releases ago; the command is unchanged and still correct.
+
 - **`scripts/bench-history.sh` silently dropped every decimal-average row** — including
   `render_prompt`, the one metric with a budget. This is the same 6.4.x decimal-output
   breakage that 1.1.3 fixed in `bench-gate.sh`, in the sibling script it missed. The
