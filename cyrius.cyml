@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "commandress — structured prompt renderer for agnoshi (cmdrs binary)"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.5.35"
+cyrius = "6.6.2"
 
 [build]
 entry = "src/main.cyr"
@@ -16,7 +16,16 @@ output = "cmdrs"
 # lib/args.cyr; tests/commandress.bcyr includes lib/bench.cyr) but were never
 # declared. cmdit's `dist/cmdit.deps` sidecar requires both in scope, so they are
 # named here now — the declaration catches up with what the build already did.
-stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "args", "bench"]
+#
+# 6.6.2: `chrono`, `fnptr`, `process`, `pwd` and `tagged` are added for the same
+# reason — src/main.cyr has always included all five, but an UNDECLARED module is
+# not one `cyrius deps` refreshes, so the vendored copies simply froze on whatever
+# day they were first copied in. `tagged.cyr` was still the PRE-6.6.0 heap-box
+# header ("Layout: tag at offset 0, value at offset 8") compiling against a
+# value-form toolchain, and `chrono.cyr` predated the 6.6.1 AGNOS clock fix. Both
+# were silent: the build was green throughout. Declare what you include.
+stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "args", "bench",
+          "chrono", "fnptr", "process", "pwd", "tagged"]
 
 # ── AGNOS first-party deps ───────────────────────────────────────
 # cmdit — sovereign CLI / argument-parsing library (getopt-long), the stdlib
