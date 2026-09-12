@@ -34,7 +34,7 @@ fn cmdrs_version(): i64 { return "1.1.7"; }
 fn cli_register(cli): i64 {
     if (cli == 0) { return 0 - 1; }
     return cmdit_enum(cli, 0, "side", "left", "left|right",
-                      "which prompt side to render");
+      "which prompt side to render");
 }
 
 # Map a cmdit parse result to a render side: 0 = left (default), 1 = right.

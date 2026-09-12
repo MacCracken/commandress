@@ -1677,7 +1677,7 @@ fn test_cli_version_matches_version_file(): i64 {
     var from_file = read_trimmed_file_at(".", "/VERSION");
     assert_nonnull(from_file, "VERSION file readable from repo root");
     assert_streq(cmdrs_version(), from_file,
-                 "cmdrs_version() matches the VERSION file (bump both)");
+      "cmdrs_version() matches the VERSION file (bump both)");
     return 0;
 }
 
@@ -1709,7 +1709,7 @@ fn test_cli_side_space_form(): i64 {
 # cmdit_print_error names on stderr.
 fn test_cli_bad_enum_degrades_to_left(): i64 {
     assert_eq(_parse_result_of("--side=bogus", 0), CMDIT_RESULT_ERR,
-              "--side=bogus → parse error (choice set validated)");
+      "--side=bogus → parse error (choice set validated)");
     assert_eq(_side_of("--side=bogus", 0), 0, "--side=bogus still renders left, not empty");
     return 0;
 }
@@ -1728,9 +1728,9 @@ fn test_cli_unknown_flag_degrades_to_left(): i64 {
 # RPROMPT.
 fn test_cli_side_survives_an_unrelated_parse_error(): i64 {
     assert_eq(_parse_result_of("--side=right", "--nope"), CMDIT_RESULT_ERR,
-              "--side=right --nope is still a parse error");
+      "--side=right --nope is still a parse error");
     assert_eq(_side_of("--side=right", "--nope"), 1,
-              "a successfully parsed --side=right survives an unrelated bad flag");
+      "a successfully parsed --side=right survives an unrelated bad flag");
     return 0;
 }
 

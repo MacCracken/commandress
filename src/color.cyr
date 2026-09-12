@@ -209,14 +209,14 @@ fn style_to_sgr_mods(s, codes, max): i64 {
                     if (memeq(s + start, "bold", 4) == 1) { code = 1; }
                 }
                 if (code == 0) { if (tlen == 6) {
-                    if (memeq(s + start, "italic", 6) == 1) { code = 3; }
-                }}
+                        if (memeq(s + start, "italic", 6) == 1) { code = 3; }
+                    }}
                 if (code == 0) { if (tlen == 9) {
-                    if (memeq(s + start, "underline", 9) == 1) { code = 4; }
-                }}
+                        if (memeq(s + start, "underline", 9) == 1) { code = 4; }
+                    }}
                 if (code == 0) { if (tlen == 7) {
-                    if (memeq(s + start, "reverse", 7) == 1) { code = 7; }
-                }}
+                        if (memeq(s + start, "reverse", 7) == 1) { code = 7; }
+                    }}
                 if (code != 0) {
                     if (count < max) {
                         store64(codes + count * 8, code);

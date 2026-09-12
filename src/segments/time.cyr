@@ -61,49 +61,49 @@ fn time_format(epoch, fmt): i64 {
                     oi = oi + 2;
                     i = i + 1;
                 } else { if (spec == 77) {         # M — minute
-                    store8(out + oi, 48 + min / 10);
-                    store8(out + oi + 1, 48 + min % 10);
-                    oi = oi + 2;
-                    i = i + 1;
-                } else { if (spec == 83) {         # S — second
-                    store8(out + oi, 48 + sec / 10);
-                    store8(out + oi + 1, 48 + sec % 10);
-                    oi = oi + 2;
-                    i = i + 1;
-                } else { if (spec == 89) {         # Y — full year
-                    store8(out + oi, 48 + year / 1000);
-                    store8(out + oi + 1, 48 + (year / 100) % 10);
-                    store8(out + oi + 2, 48 + (year / 10) % 10);
-                    store8(out + oi + 3, 48 + year % 10);
-                    oi = oi + 4;
-                    i = i + 1;
-                } else { if (spec == 121) {        # y — year mod 100
-                    var yy = year % 100;
-                    store8(out + oi, 48 + yy / 10);
-                    store8(out + oi + 1, 48 + yy % 10);
-                    oi = oi + 2;
-                    i = i + 1;
-                } else { if (spec == 109) {        # m — month
-                    store8(out + oi, 48 + mon / 10);
-                    store8(out + oi + 1, 48 + mon % 10);
-                    oi = oi + 2;
-                    i = i + 1;
-                } else { if (spec == 100) {        # d — day
-                    store8(out + oi, 48 + day / 10);
-                    store8(out + oi + 1, 48 + day % 10);
-                    oi = oi + 2;
-                    i = i + 1;
-                } else { if (spec == 37) {         # %% — literal '%'
-                    store8(out + oi, 37);
-                    oi = oi + 1;
-                    i = i + 1;
-                } else {
-                    # Unsupported spec: emit '%' + the spec char literal.
-                    store8(out + oi, 37);
-                    store8(out + oi + 1, spec);
-                    oi = oi + 2;
-                    i = i + 1;
-                }}}}}}}}
+                        store8(out + oi, 48 + min / 10);
+                        store8(out + oi + 1, 48 + min % 10);
+                        oi = oi + 2;
+                        i = i + 1;
+                    } else { if (spec == 83) {         # S — second
+                            store8(out + oi, 48 + sec / 10);
+                            store8(out + oi + 1, 48 + sec % 10);
+                            oi = oi + 2;
+                            i = i + 1;
+                        } else { if (spec == 89) {         # Y — full year
+                                store8(out + oi, 48 + year / 1000);
+                                store8(out + oi + 1, 48 + (year / 100) % 10);
+                                store8(out + oi + 2, 48 + (year / 10) % 10);
+                                store8(out + oi + 3, 48 + year % 10);
+                                oi = oi + 4;
+                                i = i + 1;
+                            } else { if (spec == 121) {        # y — year mod 100
+                                    var yy = year % 100;
+                                    store8(out + oi, 48 + yy / 10);
+                                    store8(out + oi + 1, 48 + yy % 10);
+                                    oi = oi + 2;
+                                    i = i + 1;
+                                } else { if (spec == 109) {        # m — month
+                                        store8(out + oi, 48 + mon / 10);
+                                        store8(out + oi + 1, 48 + mon % 10);
+                                        oi = oi + 2;
+                                        i = i + 1;
+                                    } else { if (spec == 100) {        # d — day
+                                            store8(out + oi, 48 + day / 10);
+                                            store8(out + oi + 1, 48 + day % 10);
+                                            oi = oi + 2;
+                                            i = i + 1;
+                                        } else { if (spec == 37) {         # %% — literal '%'
+                                                store8(out + oi, 37);
+                                                oi = oi + 1;
+                                                i = i + 1;
+                                            } else {
+                                                # Unsupported spec: emit '%' + the spec char literal.
+                                                store8(out + oi, 37);
+                                                store8(out + oi + 1, spec);
+                                                oi = oi + 2;
+                                                i = i + 1;
+                                            }}}}}}}}
             }
         } else {
             store8(out + oi, c);
