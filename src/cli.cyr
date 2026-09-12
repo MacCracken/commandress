@@ -20,7 +20,7 @@
 # reads VERSION and asserts equality, so a forgotten bump fails the suite
 # instead of shipping a `--version` that lies. A fn (not a `var`) so it costs
 # no initialized-globals slot.
-fn cmdrs_version(): i64 { return "1.1.7"; }
+fn cmdrs_version(): i64 { return "1.1.8"; }
 
 # Register commandress's flag table on a fresh handle from `cmdit_new`, which
 # has already registered --help/-h and --version/-V. Returns the `--side` flag
