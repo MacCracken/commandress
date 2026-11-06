@@ -81,7 +81,7 @@ change the lock. It does not prove that the lock holds exactly the tags in `cyri
 
 ## 4. From cyrius 6.7.6 a `path` override cannot win
 
-Cyrius 6.7.6 made manifests git-first, so section 2 describes older pins only. Measured on 6.7.9
+Cyrius 6.7.6 made manifests git-first, so section 2 describes older pins only. Measured on 6.7.18
 with `path = "../cmdit"` beside the tag:
 
 | Run | What it builds | `lib/` and `cyrius.lock` |
@@ -96,9 +96,9 @@ each difference. It and `scripts/lock-check.sh` do not catch the same things:
 |---|---|---|
 | Clean tag resolution | pass | pass |
 | A vendored `lib/` file altered | **fail, naming the file** | pass |
-| An extra stale `commit` line (section 3) | pass, and it says the lock is exact | pass |
+| An extra stale `commit` line (section 3) | pass, with a `note:` naming the stale pin | pass |
 
-So neither one sees the section 3 blind spot. The stale line is noise rather than a build hazard,
+So neither one fails on the section 3 blind spot. The stale line is noise rather than a build hazard,
 because the file hashes still describe what is compiled, but it does make the lock wrong.
 
 ## Moving the toolchain and a dep tag together

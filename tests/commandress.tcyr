@@ -309,6 +309,16 @@ fn test_config_crlf_bool(): i64 {
     return 0;
 }
 
+fn test_config_crlf_divider(): i64 {
+    var content = "[[prompt]]\r\ntrailer = \"> \"\r\n---\r\n[[segments.exit]]\r\nhide_zero = false\r\n";
+    var path = _write_test_config("crlfdiv", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_trailer(c), "> ", "the header above a CRLF --- divider is read");
+    assert_eq(cfg_exit_hide_zero(c), 1, "notes below a CRLF --- divider are not read as config");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 fn test_config_literal_strings(): i64 {
     var content = "[[prompt]]\nsegments = ['exit', 'cwd']\ntrailer = '> '\n[[segments.cwd]]\nfg = 'red'\n";
     var path = _write_test_config("literal", content);
@@ -1901,6 +1911,7 @@ fn main(): i64 {
     test_config_accepts_single_bracket_sections();
     test_config_bool_with_inline_comment();
     test_config_crlf_bool();
+    test_config_crlf_divider();
     test_config_literal_strings();
     test_config_unterminated_string_keeps_later_keys();
     test_config_unterminated_array_keeps_later_keys();

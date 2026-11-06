@@ -3,7 +3,7 @@
 **Status**: Accepted
 **Date**: 2026-11-06
 
-> **Update 2026-11-06** (annotation, not a revision — the decision below stands): 1.2.0 moved the pin to tag 1.5.14 with cyrius 6.7.9, and a `---` CRLF fix now needs cyrius 6.7.12 rather than just 6.7.x. The parser's behaviour is unchanged on every config tested.
+> **Update 2026-11-06** (annotation, not a revision — the decision below stands): 1.2.1 moved the pin to tag 1.11.1 with cyrius 6.7.18. That closes two negatives listed below: the quadratic dotted-key case (465 ms → 15.5 ms) and the CRLF `---` divider. `src/config.cyr` now calls the `_by_cstr` lookups, because the bare names are deprecated upstream.
 
 ## Context
 

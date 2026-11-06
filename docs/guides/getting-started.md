@@ -101,9 +101,6 @@ trailer  = "\n$ "
 `\u001b` reaches your terminal. That is intended for a file you wrote, but read any config you
 paste in from elsewhere.
 
-The `---` divider needs LF line endings. In a file saved with CRLF, the notes below it are read
-as config.
-
 ## Adding a segment
 
 1. Create `src/segments/your_segment.cyr` exporting a pure `your_segment_render(...) → cstring` (0 for "render nothing")

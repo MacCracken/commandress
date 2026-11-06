@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "commandress — structured prompt renderer for agnoshi (cmdrs binary)"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.7.9"
+cyrius = "6.7.18"
 
 [build]
 entry = "src/main.cyr"
@@ -30,8 +30,11 @@ output = "cmdrs"
 # 1.1.9: `result` is added because both bayan sublibs below include it
 # (dist/bayan-toml.deps, dist/bayan-cyml.deps). The old forked parsers included it
 # too, undeclared, which is the same drift the 6.6.2 note describes.
+#
+# 1.2.1: `hashseed` is added for the same reason. bayan 1.11.1 keys the TOML parser's
+# table index with it, so dist/bayan-toml.deps now names it.
 stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "args", "bench",
-          "chrono", "fnptr", "process", "pwd", "tagged", "result"]
+          "chrono", "fnptr", "process", "pwd", "tagged", "result", "hashseed"]
 
 # ── AGNOS first-party deps ───────────────────────────────────────
 # bayan — the data-format library that absorbed `lib/toml.cyr` and `lib/cyml.cyr`.
@@ -40,13 +43,11 @@ stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "a
 # Only the two sublibs are pulled, not the 732 KB bundle in the snapshot: a config
 # file needs TOML and CYML and nothing else. See ADR 0009.
 #
-# The tag is the newest bayan pinned to cyrius 6.7.9. The 6.7.9 snapshot bundles
-# 1.5.13, whose TOML and CYML sublibs match these byte for byte apart from the
-# version stamp. 1.6.0 and later need cyrius 6.7.11 or newer, so read a tag's own
-# `cyrius` pin before moving this.
+# The tag is the newest bayan, and the one the cyrius 6.7.18 snapshot bundles. Its
+# own pin is 6.7.16. Read a tag's `cyrius` pin before moving this.
 [deps.bayan]
 git = "https://github.com/MacCracken/bayan.git"
-tag = "1.5.14"
+tag = "1.11.1"
 modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr"]
 
 # cmdit — sovereign CLI / argument-parsing library (getopt-long), the stdlib
@@ -55,10 +56,10 @@ modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr"]
 # reserved `--help` / `--version` of ADR 0007 were simply absent. cmdit supplies
 # all three from one table. See ADR 0008.
 #
-# The tag is the newest cmdit pinned to cyrius 6.7.9. 1.4.1 and later need 6.7.18.
+# The tag is the newest cmdit, pinned to cyrius 6.7.18.
 #
 # Since cyrius 6.7.6 a `path` beside `git` / `tag` is a dev override that only local
-# mode uses, so it can no longer win over the tag by accident. Measured on 6.7.9: with
+# mode uses, so it can no longer win over the tag by accident. Measured on 6.7.18: with
 # it set, a default build still builds the tag and leaves the lock unchanged, and
 # `CYRIUS_LOCAL=1` builds the sibling from build/local-deps/ without touching lib/ or
 # the lock. See docs/architecture/003-cyrius-lock-shape.md.
@@ -68,6 +69,6 @@ modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr"]
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit.git"
 # path = "../cmdit"   # dev override; only CYRIUS_LOCAL=1 uses it
-tag = "1.4.0"
+tag = "1.5.0"
 modules = ["dist/cmdit.cyr"]
 ---

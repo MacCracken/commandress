@@ -250,7 +250,7 @@ fn _str_array(s): i64 {
 # further down. Skipping empties keeps the rule this loader has always had: the
 # first block with something in it wins.
 fn _section_pairs(sections, name): i64 {
-    var secs = bayan_toml_get_sections(sections, name);
+    var secs = bayan_toml_get_sections_by_cstr(sections, name);
     var n = vec_len(secs);
     var i = 0;
     while (i < n) {
@@ -335,9 +335,9 @@ fn _resolve_color_value(value, palette): i64 {
 # its (lack of) bg. `palette` is the table parsed from the optional
 # [[palette]] section (or 0).
 fn _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette): i64 {
-    var fg_v = bayan_toml_get(pairs, "fg");
-    var bg_v = bayan_toml_get(pairs, "bg");
-    var style_v = bayan_toml_get(pairs, "style");
+    var fg_v = bayan_toml_get_by_cstr(pairs, "fg");
+    var bg_v = bayan_toml_get_by_cstr(pairs, "bg");
+    var style_v = bayan_toml_get_by_cstr(pairs, "style");
     if (fg_v == 0) {
         if (bg_v == 0) {
             if (style_v == 0) { return 0; }
@@ -525,13 +525,13 @@ fn config_load(path): i64 {
         vec_push(prompt_allowed, "right_separator_glyph");
         _warn_unknown_pairs(prompt_pairs, prompt_allowed, "prompt");
 
-        var sep_v = bayan_toml_get(prompt_pairs, "separator");
+        var sep_v = bayan_toml_get_by_cstr(prompt_pairs, "separator");
         if (sep_v != 0) { store64(c + CFG_SEPARATOR, str_cstr(sep_v)); }
 
-        var trail_v = bayan_toml_get(prompt_pairs, "trailer");
+        var trail_v = bayan_toml_get_by_cstr(prompt_pairs, "trailer");
         if (trail_v != 0) { store64(c + CFG_TRAILER, str_cstr(trail_v)); }
 
-        var segs_v = bayan_toml_get(prompt_pairs, "segments");
+        var segs_v = bayan_toml_get_by_cstr(prompt_pairs, "segments");
         if (segs_v != 0) {
             var parsed = _str_array(segs_v);
             if (vec_len(parsed) > 0) { store64(c + CFG_SEGMENTS, parsed); }
@@ -540,20 +540,20 @@ fn config_load(path): i64 {
         # `right_segments` accepts an empty array — the user opts back out
         # of right-prompt by setting it explicitly to `[]`. So unlike
         # `segments` we don't require len > 0 to overwrite.
-        var rsegs_v = bayan_toml_get(prompt_pairs, "right_segments");
+        var rsegs_v = bayan_toml_get_by_cstr(prompt_pairs, "right_segments");
         if (rsegs_v != 0) { store64(c + CFG_RIGHT_SEGMENTS, _str_array(rsegs_v)); }
 
         # `separator_style` is parsed as a string and mapped to an int:
         # "powerline" → 1, anything else (including "plain") → 0. Storing
         # an int avoids a runtime streq per redraw.
-        var ssty_v = bayan_toml_get(prompt_pairs, "separator_style");
+        var ssty_v = bayan_toml_get_by_cstr(prompt_pairs, "separator_style");
         if (ssty_v != 0) {
             if (str_eq_cstr(ssty_v, "powerline") == 1) { store64(c + CFG_SEPARATOR_STYLE, 1); }
             else { store64(c + CFG_SEPARATOR_STYLE, 0); }
         }
-        var sg_v = bayan_toml_get(prompt_pairs, "separator_glyph");
+        var sg_v = bayan_toml_get_by_cstr(prompt_pairs, "separator_glyph");
         if (sg_v != 0) { store64(c + CFG_SEPARATOR_GLYPH, str_cstr(sg_v)); }
-        var rsg_v = bayan_toml_get(prompt_pairs, "right_separator_glyph");
+        var rsg_v = bayan_toml_get_by_cstr(prompt_pairs, "right_separator_glyph");
         if (rsg_v != 0) { store64(c + CFG_RIGHT_SEPARATOR_GLYPH, str_cstr(rsg_v)); }
     }
 
@@ -568,10 +568,10 @@ fn config_load(path): i64 {
         vec_push(cwd_allowed, "style");
         _warn_unknown_pairs(cwd_pairs, cwd_allowed, "segments.cwd");
 
-        var hs_v = bayan_toml_get(cwd_pairs, "home_shorten");
+        var hs_v = bayan_toml_get_by_cstr(cwd_pairs, "home_shorten");
         store64(c + CFG_CWD_HOME_SHORTEN, _parse_bool(hs_v, cfg_cwd_home_shorten(c)));
 
-        var ml_v = bayan_toml_get(cwd_pairs, "max_length");
+        var ml_v = bayan_toml_get_by_cstr(cwd_pairs, "max_length");
         if (ml_v != 0) { store64(c + CFG_CWD_MAX_LENGTH, atoi(str_cstr(ml_v))); }
         _apply_seg_style(c, CFG_SGR_CWD, CFG_BG_CWD, cwd_pairs, palette);
     }
@@ -586,7 +586,7 @@ fn config_load(path): i64 {
         vec_push(exit_allowed, "style");
         _warn_unknown_pairs(exit_pairs, exit_allowed, "segments.exit");
 
-        var hz_v = bayan_toml_get(exit_pairs, "hide_zero");
+        var hz_v = bayan_toml_get_by_cstr(exit_pairs, "hide_zero");
         store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
         _apply_seg_style(c, CFG_SGR_EXIT, CFG_BG_EXIT, exit_pairs, palette);
     }
@@ -602,10 +602,10 @@ fn config_load(path): i64 {
         vec_push(vcs_allowed, "style");
         _warn_unknown_pairs(vcs_pairs, vcs_allowed, "segments.vcs");
 
-        var sd_v = bayan_toml_get(vcs_pairs, "show_dirty");
+        var sd_v = bayan_toml_get_by_cstr(vcs_pairs, "show_dirty");
         store64(c + CFG_VCS_SHOW_DIRTY, _parse_bool(sd_v, cfg_vcs_show_dirty(c)));
 
-        var dm_v = bayan_toml_get(vcs_pairs, "dirty_marker");
+        var dm_v = bayan_toml_get_by_cstr(vcs_pairs, "dirty_marker");
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
         _apply_seg_style(c, CFG_SGR_VCS, CFG_BG_VCS, vcs_pairs, palette);
     }
@@ -620,7 +620,7 @@ fn config_load(path): i64 {
         vec_push(time_allowed, "style");
         _warn_unknown_pairs(time_pairs, time_allowed, "segments.time");
 
-        var fmt_v = bayan_toml_get(time_pairs, "format");
+        var fmt_v = bayan_toml_get_by_cstr(time_pairs, "format");
         if (fmt_v != 0) { store64(c + CFG_TIME_FORMAT, str_cstr(fmt_v)); }
         _apply_seg_style(c, CFG_SGR_TIME, CFG_BG_TIME, time_pairs, palette);
     }

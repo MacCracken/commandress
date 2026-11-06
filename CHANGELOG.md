@@ -6,6 +6,102 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-06
+
+`cyrius` 6.7.9 -> **6.7.18**, cmdit 1.4.0 -> **1.5.0**, bayan 1.5.14 -> **1.11.1**, and the vendored
+stdlib re-synced: the newest release of each. Two known limits close, a CRLF `---` divider and the
+slow dotted-key case. Loading a theme is about 19 % faster, and every shipped theme and example
+renders byte-identically.
+
+### Breaking
+
+| If your config has | 1.2.0 | 1.2.1 | To migrate |
+|---|---|---|---|
+| A blank first line, then `---`, then settings | Settings read, `---` ignored | `---` is the divider, so everything below it is notes and the defaults apply | Delete the blank line and the `---` |
+
+This is bayan 1.7.0's rule that a `---` is a whole line wherever it falls.
+
+### Fixed
+
+- **A CRLF `---` divider is recognised** (bayan 1.8.0). Notes below it were read as config, so a
+  `[[segments.exit]]` block in the notes could change the prompt.
+- **Thousands of unique dotted keys no longer stall the prompt** (bayan 1.11.1). About 8,000 of them
+  took 465 ms and now take 15.5 ms. The same keys under `[[palette]]` went from 316 ms to 15.7 ms.
+- **`--side=right` works past 2 MiB of arguments** (cyrius 6.7.12, cmdit 1.4.2). The whole command
+  line is now read, where 1.2.0 reported an error and rendered the left prompt.
+
+### Changed
+
+- **Toolchain `6.7.9` → `6.7.18`.** No source change was needed for the toolchain itself.
+- **bayan `1.5.14` → `1.11.1`**, the newest tag and the one the 6.7.18 snapshot bundles. Its own pin
+  is 6.7.16. `bayan_toml_get` and `bayan_toml_get_sections` are deprecated there, so the 17 calls in
+  `src/config.cyr` moved to the `_by_cstr` names, which give the same answers. `hashseed` joins
+  `[deps].stdlib` because `dist/bayan-toml.deps` now names it.
+- **cmdit `1.4.0` → `1.5.0`**, the newest tag, pinned to 6.7.18. Its changes reach this build only
+  through the long command line above; the 1.5.0 fix is to completion scripts, which `cmdrs` does not
+  generate.
+- **Vendored `lib/` re-synced** with `cyrius lib sync --full`: 113 files byte-identical to
+  `6.7.18/lib`. 66 changed, none added or removed.
+
+### Performance
+
+| | 1.2.0 (6.7.9) | 1.2.1 (6.7.18) | Delta |
+|---|---|---|---|
+| Binary, x86_64 | 309,200 B | 313,392 B | +4,192 B (+1.4 %) |
+| Binary, `--agnos` | 309,384 B | 317,808 B | +8,424 B (+2.7 %) |
+| Live code, x86_64 (`CYRIUS_DCE=1`) | 145,360 B | 149,552 B | +4,192 B (+2.9 %) |
+| Unreachable code, x86_64 | 651 fns, 163,500 B | 676 fns, 165,267 B | +1,767 B |
+| `config_load`, largest theme | 78.77 µs | **63.56 µs** | −15.2 µs (−19.3 %) |
+| `cli_parse` | 0.98 µs | 0.99 µs | flat |
+| `render_prompt` | 12.07 µs | 11.13 µs | flat, see below |
+| Cold start, no config | 413 µs | 409 µs | −4.2 µs |
+| Cold start, largest theme | 620 µs | 600 µs | −20.4 µs |
+
+Bench figures are medians of three runs alternating with 1.2.0. Cold start is three rounds of 3,000
+interleaved spawns. `render_prompt` is **flat, not faster**: it does not parse a config, and its
+1.2.0 runs measured as low as 10.51 µs.
+
+### Verified
+
+- **Suite 331/331 across 158 tests, and `--agnos` clean**, with zero compiler warnings. The CI job
+  was rehearsed end to end in a throwaway clone with this lock committed and produced byte-identical
+  binaries. The toolchain install step ran in a throwaway home, and its snapshot matches the local one.
+- **Differential, 1.2.0 vs 1.2.1.** 5,943 cases with no hangs, and only one difference: a vcs case
+  through a stub, missing the 5 ms budget on a cold exec. 150 alternating trials then rendered the
+  branch 150/150 on both. All 43 argv cases and all 34 doc config runs matched.
+- **Config corpus.** 111 configs, 109 identical. The other two are the CRLF fix and the **Breaking**
+  entry. Four more bayan 1.7.0 shapes (adjacent `[[entries]]` lines, `---` right after a marker, a
+  marker on the last line, and `---` inside a multi-line string) render as before.
+- **The dotted-key index.** bayan switches to a hash index past 8 tables, so 22 configs straddle that
+  threshold under `[[prompt]]`, `[[palette]]`, the root table and repeated headers. All 22 match
+  1.2.0's linear path, including `palette:` lookups and unknown-field warnings.
+- **Stdlib delta on the call surface.** On the Linux path `src/` reaches, the changes are behaviour
+  neutral rewrites (`file_read_all`, `getenv`, `file_open`, the `vec` abort path) or match the notes
+  above (`args_init`). One tightens: `_pwd_parse_line` now skips a passwd line whose uid or gid is not
+  one number.
+- **Fuzz.** 80,000 mutated configs, seeded with the threshold cases, and 40,000 mutated argv sets: no
+  crash, no hang, and no raw ESC on stderr.
+- **The new test can fail.** It fails against bayan 1.5.14. Its first draft did not, so it was rewritten.
+- **Watchdog.** With `sit` stubbed to hang for 30 s, both binaries return in a median of about 5.8 ms.
+
+**Not tested on agnos itself.** The `--agnos` build compiles but was not booted.
+
+### Known issues
+
+- **Neither lock guard fails on a stale pin.** Against a lock holding an extra old `commit` line,
+  `cyrius deps --locked` now prints a `note:` naming it, but still exits 0 and says the lock is exact.
+  `scripts/lock-check.sh` passes it too. This release's lock was regenerated from empty and holds
+  exactly two pins.
+- **`scripts/lock-check.sh` also passes an altered vendored file**, which `cyrius deps --locked`
+  fails, naming the file.
+
+### Documentation
+
+- ADR 0009 is annotated, and the guide's CRLF warning is gone.
+- `state.md`, the README and `roadmap.md` describe this release. The colour work under the roadmap's
+  1.2.0 heading has still not shipped, and its slot is unchanged.
+- Architecture 003 and `cyrius.cyml` now quote guard and `path` behaviour measured on 6.7.18.
+
 ## [1.2.0] - 2026-11-06
 
 `cyrius` 6.6.20 -> **6.7.9**, cmdit 1.2.6 -> **1.4.0**, bayan 1.5.12 -> **1.5.14**, and the

@@ -15,9 +15,9 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.2.0**, a toolchain and dependency refresh. The colour
-work under the 1.2.0 heading below has **not** shipped: that slot predates this release
-and still needs re-slotting. The 1.1.x line was toolchain refreshes, the cmdit CLI
+this file. Current release is **1.2.1**. The 1.2.x line so far is toolchain and dependency
+refreshes, so the colour work under the 1.2.0 heading below has **not** shipped: that slot
+predates those releases and still needs re-slotting. The 1.1.x line was toolchain refreshes, the cmdit CLI
 adoption, a security audit, and the bayan parser swap. The public API is frozen per
 [ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
 not-frozen surface, or routed through the documented 3-step deprecation path. No item
