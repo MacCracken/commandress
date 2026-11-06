@@ -58,6 +58,8 @@ A few constraints frame the choice:
   - Hand-rolled scanners for richer files (`rust-toolchain.toml`'s `[toolchain] channel = "..."`, `package.json engines.node`) are blocked on either Cyrius stdlib gaps (single-bracket TOML, papercut Item 3) or JSON-parse cost we don't want to pay yet. Deferred — these are real gaps users may notice.
 
     > **Update 2026-08-26** (annotation, not a revision — the decision below stands): the single-bracket TOML gap **has closed**. Verified against the 6.5.35 stdlib that `toml_get_sections` finds a single-bracket `[toolchain]`. `rust-toolchain.toml` is therefore scheduled work ([roadmap 1.3.0](../development/roadmap.md)), not blocked work. `package.json engines.node` remains a cost judgement, not a gap.
+
+    > **Update 2026-11-06** (annotation, not a revision — the decision below stands): `rust-toolchain.toml` shipped at 1.2.2 through bayan's TOML parser, not a hand-rolled scanner. `package.json engines.node` is still open, on the roadmap's 1.4.x line.
 - **Neutral**
   - The shellout-fallback slot in the pattern is currently only used by `cyrius_env`. Reserving the layer in the contract (rather than the implementation) keeps room for `python --version` / `node --version` / `rustup show` to land later without an ADR amendment.
   - Each segment gets its own dispatcher and registry entry in `src/render.cyr`. Five env segments = five dispatchers. Considered a single `_dispatch_env(segment_name)` table but the explicit dispatchers cost ~3 lines apiece and read cleanly; defer the table-driving until the registry crosses ~10 entries.

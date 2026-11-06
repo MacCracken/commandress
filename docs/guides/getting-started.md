@@ -63,6 +63,7 @@ fg           = "cyan"
 [[segments.vcs]]
 show_dirty   = true
 dirty_marker = "*"
+budget_ms    = 5                            # `sit status` watchdog, whole ms, 1 to 1000
 
 [[segments.exit]]
 hide_zero = true

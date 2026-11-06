@@ -44,6 +44,7 @@
 #   [[segments.vcs]]
 #   show_dirty   = true
 #   dirty_marker = "*"
+#   budget_ms    = 5                      # `sit status` watchdog; whole ms, 1..1000
 #   fg = "yellow"
 #
 #   [[segments.<env_segment>]]            # cyrius_env / python_env / node_env / rustup_env
@@ -100,7 +101,18 @@ var CFG_BG_RUSTUP_ENV = 232;
 var CFG_SEPARATOR_STYLE = 240;
 var CFG_SEPARATOR_GLYPH = 248;
 var CFG_RIGHT_SEPARATOR_GLYPH = 256;
-var CFG_SIZE = 264;
+var CFG_VCS_BUDGET_MS = 264;
+var CFG_SIZE = 272;
+
+# Per-redraw budget for the `sit status` shellout. The healthy-host measurement was
+# ~1.8 ms (CHANGELOG [0.3.0]); 5 ms gives ~2.5x margin while staying inside the 5 ms
+# total prompt budget. `[[segments.vcs]] budget_ms` overrides it for a slow disk or a
+# large repo. The cap is there so a typo cannot stall every prompt: past it the value
+# is refused and the default stands.
+enum VcsBudget {
+    VCS_BUDGET_MS = 5;
+    VCS_BUDGET_MAX_MS = 1000;
+}
 
 fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
 fn cfg_separator(c): i64          { return load64(c + CFG_SEPARATOR); }
@@ -135,6 +147,7 @@ fn cfg_bg_rustup_env(c): i64           { return load64(c + CFG_BG_RUSTUP_ENV); }
 fn cfg_separator_style(c): i64         { return load64(c + CFG_SEPARATOR_STYLE); }
 fn cfg_separator_glyph(c): i64         { return load64(c + CFG_SEPARATOR_GLYPH); }
 fn cfg_right_separator_glyph(c): i64   { return load64(c + CFG_RIGHT_SEPARATOR_GLYPH); }
+fn cfg_vcs_budget_ms(c): i64           { return load64(c + CFG_VCS_BUDGET_MS); }
 
 # Build the default Config. Used when no file is present, and as the
 # base for partial overrides — a config that sets only `separator`
@@ -155,6 +168,7 @@ fn config_default(): i64 {
     store64(c + CFG_EXIT_HIDE_ZERO, 1);
     store64(c + CFG_VCS_SHOW_DIRTY, 1);
     store64(c + CFG_VCS_DIRTY_MARKER, "*");
+    store64(c + CFG_VCS_BUDGET_MS, VCS_BUDGET_MS);
     store64(c + CFG_TIME_FORMAT, "%H:%M");
 
     # Opinionated default theme. Per-segment color choices follow the
@@ -220,6 +234,26 @@ fn _parse_bool(s, dflt): i64 {
     if (str_eq_cstr(s, "1") == 1) { return 1; }
     if (str_eq_cstr(s, "0") == 1) { return 0; }
     return dflt;
+}
+
+# A whole number of milliseconds in 1..VCS_BUDGET_MAX_MS, or 0 for anything else.
+fn _budget_ms_value(s): i64 {
+    if (s == 0) { return 0; }
+    var n = str_len(s);
+    if (n == 0) { return 0; }
+    if (n > 4) { return 0; }
+    var d = str_data(s);
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(d + i);
+        if (c < 48) { return 0; }
+        if (c > 57) { return 0; }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    if (v > VCS_BUDGET_MAX_MS) { return 0; }
+    return v;
 }
 
 # Decompose a TOML array value into a vec of heap-allocated NUL-terminated
@@ -597,6 +631,7 @@ fn config_load(path): i64 {
         var vcs_allowed = vec_new();
         vec_push(vcs_allowed, "show_dirty");
         vec_push(vcs_allowed, "dirty_marker");
+        vec_push(vcs_allowed, "budget_ms");
         vec_push(vcs_allowed, "fg");
         vec_push(vcs_allowed, "bg");
         vec_push(vcs_allowed, "style");
@@ -607,6 +642,16 @@ fn config_load(path): i64 {
 
         var dm_v = bayan_toml_get_by_cstr(vcs_pairs, "dirty_marker");
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
+
+        var bm_v = bayan_toml_get_by_cstr(vcs_pairs, "budget_ms");
+        if (bm_v != 0) {
+            var bm = _budget_ms_value(bm_v);
+            if (bm != 0) { store64(c + CFG_VCS_BUDGET_MS, bm); }
+            else {
+                var bm_msg = "warning: budget_ms in [[segments.vcs]] must be 1..1000 (using the default)\n";
+                syscall(SYS_WRITE, STDERR, bm_msg, strlen(bm_msg));
+            }
+        }
         _apply_seg_style(c, CFG_SGR_VCS, CFG_BG_VCS, vcs_pairs, palette);
     }
 

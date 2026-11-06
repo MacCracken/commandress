@@ -319,6 +319,25 @@ fn test_config_crlf_divider(): i64 {
     return 0;
 }
 
+# 1.2.2: the key was a 32-bit djb2, where these two sibling names always collide
+# (33 * 'a' + 'z' == 33 * 'b' + 'Y') and one directory showed the other's branch.
+fn test_cache_key_separates_djb2_collisions(): i64 {
+    assert_eq(streq(_cache_path("vcs", "/p/az"), _cache_path("vcs", "/p/bY")), 0, "az and bY get separate entries");
+    assert_eq(streq(_cache_path("vcs", "/p/Ez"), _cache_path("vcs", "/p/FY")), 0, "Ez and FY get separate entries");
+    return 0;
+}
+
+# Published FNV-1a 64 test vectors, so the hash cannot be subtly wrong.
+fn test_cache_key_is_fnv1a64(): i64 {
+    var dir_len = strlen(cache_dir());
+    var p = _cache_path("s", "a");
+    assert_eq(strlen(p), dir_len + 1 + 1 + 1 + 16, "the key is 16 hex digits");
+    _streq_or_dump(p + dir_len + 3, "af63dc4c8601ec8c", "FNV-1a 64 of 'a'");
+    _streq_or_dump(_cache_path("s", "foobar") + dir_len + 3, "85944171f73967e8", "FNV-1a 64 of 'foobar'");
+    _streq_or_dump(_cache_path("s", "") + dir_len + 3, "cbf29ce484222325", "the offset basis for empty input");
+    return 0;
+}
+
 fn test_config_literal_strings(): i64 {
     var content = "[[prompt]]\nsegments = ['exit', 'cwd']\ntrailer = '> '\n[[segments.cwd]]\nfg = 'red'\n";
     var path = _write_test_config("literal", content);
@@ -405,6 +424,53 @@ fn test_config_dotted_unknown_key_warns(): i64 {
     var sections = bayan_toml_parse(str_from("[[prompt]]\nfoo.bar = 1\nfoo.baz = 2\n[[prompted.x]]\na = 1\n"));
     assert_eq(_warn_nested_keys(sections, "prompt"), 2, "dotted keys under a known section warn");
     assert_eq(_warn_nested_keys(sections, "segments.cwd"), 0, "other sections stay quiet");
+    return 0;
+}
+
+# ---- vcs budget_ms (1.2.2) ----
+fn test_config_vcs_budget_ms(): i64 {
+    var c = config_load(0);
+    assert_eq(cfg_vcs_budget_ms(c), VCS_BUDGET_MS, "default budget_ms");
+
+    var path = _write_test_config("budget", "[[segments.vcs]]\nbudget_ms = 40\n");
+    assert_eq(cfg_vcs_budget_ms(config_load(path)), 40, "budget_ms override");
+    syscall(SYS_UNLINK, path);
+
+    path = _write_test_config("budgetc", "[[segments.vcs]]\nbudget_ms = 1000 # slow disk\n");
+    assert_eq(cfg_vcs_budget_ms(config_load(path)), 1000, "the cap itself is accepted, with a comment");
+    syscall(SYS_UNLINK, path);
+
+    assert_eq(_budget_ms_value(str_from("1")), 1, "the floor is accepted");
+    assert_eq(_budget_ms_value(str_from("0")), 0, "zero is refused");
+    assert_eq(_budget_ms_value(str_from("1001")), 0, "past the cap is refused");
+    assert_eq(_budget_ms_value(str_from("99999999")), 0, "a long number is refused");
+    assert_eq(_budget_ms_value(str_from("-5")), 0, "a sign is refused");
+    assert_eq(_budget_ms_value(str_from("5ms")), 0, "a unit is refused");
+    assert_eq(_budget_ms_value(str_from("1a")), 0, "a letter that stays under the cap is refused");
+    assert_eq(_budget_ms_value(str_from("")), 0, "empty is refused");
+
+    path = _write_test_config("budgetb", "[[segments.vcs]]\nbudget_ms = 100000\n");
+    assert_eq(cfg_vcs_budget_ms(config_load(path)), VCS_BUDGET_MS, "a refused value keeps the default");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# ---- powerline theme (1.2.2) ----
+fn test_theme_powerline(): i64 {
+    var c = config_load("docs/themes/powerline.cyml");
+    assert_eq(cfg_separator_style(c), 1, "powerline theme selects powerline mode");
+    _streq_or_dump(cfg_separator_glyph(c), "\xee\x82\xb0", "left glyph decodes to U+E0B0");
+    _streq_or_dump(cfg_right_separator_glyph(c), "\xee\x82\xb2", "right glyph decodes to U+E0B2");
+    assert_neq(cfg_bg_cwd(c), 0, "cwd has a block");
+    assert_neq(cfg_bg_vcs(c), 0, "vcs has a block");
+    assert_neq(cfg_bg_exit(c), 0, "exit has a block");
+    assert_neq(cfg_bg_time(c), 0, "time has a block");
+    assert_neq(cfg_bg_hostname(c), 0, "hostname has a block");
+    assert_neq(cfg_bg_user(c), 0, "user has a block");
+    assert_neq(cfg_bg_cyrius_env(c), 0, "cyrius_env has a block");
+    assert_neq(cfg_bg_python_env(c), 0, "python_env has a block");
+    assert_neq(cfg_bg_node_env(c), 0, "node_env has a block");
+    assert_neq(cfg_bg_rustup_env(c), 0, "rustup_env has a block");
     return 0;
 }
 
@@ -1137,6 +1203,104 @@ fn test_node_env_helpers_against_temp_tree(): i64 {
     syscall(SYS_UNLINK, "/tmp/cmdrs_node_tst/.nvmrc");
     syscall(SYS_RMDIR, "/tmp/cmdrs_node_tst/sub");
     syscall(SYS_RMDIR, "/tmp/cmdrs_node_tst");
+    return 0;
+}
+
+# ---- rust-toolchain.toml (1.2.2) ----
+# Follows rustup: the nearest directory wins, and within one directory the
+# extensionless file wins. Everything else is what a hostile repo can put there.
+
+fn _rustup_tree_clean(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/rust-toolchain");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/rust-toolchain.toml");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/sub/rust-toolchain");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/sub/rust-toolchain.toml");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rt_tst/sub");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rt_tst");
+    return 0;
+}
+
+fn _rustup_write(path, content): i64 {
+    var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open toolchain fixture");
+    file_write(fd, content, strlen(content));
+    file_close(fd);
+    return 0;
+}
+
+fn test_rustup_env_parse_toml(): i64 {
+    var a = "[toolchain]\nchannel = \"1.75.0\"\ncomponents = [\"rustfmt\"]\n";
+    _streq_or_dump(rustup_env_parse_toml(a, strlen(a)), "1.75.0", "channel from [toolchain]");
+    var b = "[[toolchain]]\nchannel = 'nightly-2026-01-01' # pinned\n";
+    _streq_or_dump(rustup_env_parse_toml(b, strlen(b)), "nightly-2026-01-01", "literal string with a comment");
+    var c = "[toolchain]\r\nchannel = \"stable\"\r\n";
+    _streq_or_dump(rustup_env_parse_toml(c, strlen(c)), "stable", "CRLF file");
+    var d = "[toolchain]\npath = \"/opt/rust\"\n";
+    assert_eq(rustup_env_parse_toml(d, strlen(d)), 0, "a path toolchain has no channel");
+    var e = "[other]\nchannel = \"1.75.0\"\n";
+    assert_eq(rustup_env_parse_toml(e, strlen(e)), 0, "channel outside [toolchain] is ignored");
+    var f = "[toolchain]\nchannel = \"\"\n";
+    assert_eq(rustup_env_parse_toml(f, strlen(f)), 0, "an empty channel renders empty");
+    var g = "[[[[ not toml \" at all\n";
+    assert_eq(rustup_env_parse_toml(g, strlen(g)), 0, "garbage is not a channel");
+    assert_eq(rustup_env_parse_toml("", 0), 0, "an empty file is not a channel");
+
+    # A hostile file must not get more into the prompt than the plain format allows.
+    var long_toml = alloc(RUSTUP_FILE_CAP);
+    var prefix = "[toolchain]\nchannel = \"";
+    var plen = strlen(prefix);
+    memcpy(long_toml, prefix, plen);
+    memset(long_toml + plen, 65, RUSTUP_CHANNEL_MAX);
+    store8(long_toml + plen + RUSTUP_CHANNEL_MAX, 34);
+    assert_eq(strlen(rustup_env_parse_toml(long_toml, plen + RUSTUP_CHANNEL_MAX + 1)), RUSTUP_CHANNEL_MAX, "a channel at the cap is kept");
+    memset(long_toml + plen, 65, RUSTUP_CHANNEL_MAX + 1);
+    store8(long_toml + plen + RUSTUP_CHANNEL_MAX + 1, 34);
+    assert_eq(rustup_env_parse_toml(long_toml, plen + RUSTUP_CHANNEL_MAX + 2), 0, "one byte past the cap renders empty");
+    return 0;
+}
+
+fn test_rustup_env_precedence(): i64 {
+    _rustup_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst", 0x1FF), 0, "mkdir root");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst/sub", 0x1FF), 0, "mkdir sub");
+
+    _rustup_write("/tmp/cmdrs_rt_tst/rust-toolchain.toml", "[toolchain]\nchannel = \"1.80.0\"\n");
+    _streq_or_dump(rustup_env_for("/tmp/cmdrs_rt_tst/sub"), "1.80.0", "toml found from a subdirectory");
+
+    _rustup_write("/tmp/cmdrs_rt_tst/rust-toolchain", "1.75.0\n");
+    _streq_or_dump(rustup_env_for("/tmp/cmdrs_rt_tst"), "1.75.0", "same directory: rust-toolchain wins");
+
+    _rustup_write("/tmp/cmdrs_rt_tst/sub/rust-toolchain.toml", "[toolchain]\nchannel = \"1.85.0\"\n");
+    _streq_or_dump(rustup_env_for("/tmp/cmdrs_rt_tst/sub"), "1.85.0", "a nearer toml beats a farther plain file");
+
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/sub/rust-toolchain.toml");
+    _rustup_write("/tmp/cmdrs_rt_tst/sub/rust-toolchain", "[toolchain]\nchannel = \"beta\"\n");
+    _streq_or_dump(rustup_env_for("/tmp/cmdrs_rt_tst/sub"), "beta", "TOML under the extensionless name");
+
+    _rustup_tree_clean();
+    return 0;
+}
+
+fn test_rustup_env_hostile_files(): i64 {
+    _rustup_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst", 0x1FF), 0, "mkdir root");
+    # A FIFO must not hang the prompt (audit A-01). The test would stall here if it did.
+    assert_eq(syscall(SYS_MKNODAT, 0 - 100, "/tmp/cmdrs_rt_tst/rust-toolchain.toml", 0x1180, 0), 0, "mkfifo fixture");
+    assert_eq(rustup_env_for("/tmp/cmdrs_rt_tst"), 0, "a FIFO renders empty");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/rust-toolchain.toml");
+
+    # Past the cap the parse stops, so a channel beyond it is simply not seen.
+    var fd = file_open("/tmp/cmdrs_rt_tst/rust-toolchain.toml", O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    assert(fd >= 0, "open oversized fixture");
+    var pad = alloc(RUSTUP_FILE_CAP);
+    memset(pad, 35, RUSTUP_FILE_CAP);
+    store8(pad + RUSTUP_FILE_CAP - 1, 10);
+    file_write(fd, pad, RUSTUP_FILE_CAP);
+    file_write(fd, "[toolchain]\nchannel = \"late\"\n", 29);
+    file_close(fd);
+    assert_eq(rustup_env_for("/tmp/cmdrs_rt_tst"), 0, "bytes past the read cap are not parsed");
+
+    _rustup_tree_clean();
     return 0;
 }
 
@@ -1912,6 +2076,13 @@ fn main(): i64 {
     test_config_bool_with_inline_comment();
     test_config_crlf_bool();
     test_config_crlf_divider();
+    test_cache_key_separates_djb2_collisions();
+    test_cache_key_is_fnv1a64();
+    test_config_vcs_budget_ms();
+    test_theme_powerline();
+    test_rustup_env_parse_toml();
+    test_rustup_env_precedence();
+    test_rustup_env_hostile_files();
     test_config_literal_strings();
     test_config_unterminated_string_keeps_later_keys();
     test_config_unterminated_array_keeps_later_keys();

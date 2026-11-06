@@ -1,0 +1,64 @@
+# powerline — solid colour blocks joined by transition glyphs.
+#
+# The one shipped theme with a `bg` on every segment, which is what powerline mode
+# needs: a segment with no `bg` has no block to draw a transition from.
+#
+# ⚠ Needs a nerd-patched or powerline font. The glyphs are U+E0B0 and U+E0B2, spelled
+# as escapes so this file stays readable in an editor without one. With an ordinary
+# font they show as boxes; set `separator_style = "plain"` to drop them.
+#
+# Pairs best with a terminal running any 16-colour theme. The blocks use only named
+# colours, so your terminal's palette decides the exact shades.
+
+[[prompt]]
+segments              = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+trailer               = " "
+separator_style       = "powerline"
+separator_glyph       = ""
+right_separator_glyph = ""
+
+[[palette]]
+ink   = "black"
+paper = "bright_white"
+
+[[segments.cwd]]
+fg    = "palette:paper"
+bg    = "blue"
+style = "bold"
+
+[[segments.vcs]]
+fg = "palette:ink"
+bg = "yellow"
+
+[[segments.cyrius_env]]
+fg = "palette:paper"
+bg = "magenta"
+
+[[segments.python_env]]
+fg = "palette:ink"
+bg = "cyan"
+
+[[segments.node_env]]
+fg = "palette:ink"
+bg = "green"
+
+[[segments.rustup_env]]
+fg = "palette:ink"
+bg = "bright_red"
+
+[[segments.exit]]
+fg    = "palette:paper"
+bg    = "red"
+style = "bold"
+
+[[segments.time]]
+fg = "palette:paper"
+bg = "bright_black"
+
+[[segments.hostname]]
+fg = "palette:paper"
+bg = "bright_black"
+
+[[segments.user]]
+fg = "palette:ink"
+bg = "bright_green"

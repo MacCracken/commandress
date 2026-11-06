@@ -6,6 +6,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-06
+
+The quick roadmap items: a real cache bug fixed, `rust-toolchain.toml` support, a vcs `budget_ms`,
+a powerline theme, and dead-code elimination on every build, which halves the binary. The toolchain
+and deps are unchanged. The rest of the roadmap is reorganized, with **1.2.3 scheduled as a P(-1)
+audit, hardening, optimization and security sweep**.
+
+### Fixed
+
+- **The vcs cache could show another directory's branch.** The key was a 32-bit djb2, whose structure
+  makes some collisions certain: `33 * 'a' + 'z' == 33 * 'b' + 'Y'`, so sibling directories `az` and
+  `bY` shared an entry. Reproduced on the 1.2.1 binary: 8 redraws of 8 showed the wrong branch. The
+  2026-08-26 audit recorded that two directories could share an entry "in principle"; for names of this
+  shape it is certain. The key is now a 64-bit FNV-1a,
+  pinned to published test vectors, with the same pair at 0 of 8. Pre-1.2.2 entries stay in
+  `/tmp/commandress-<uid>/` as orphans until cache eviction lands.
+
+### Added
+
+- **`rust-toolchain.toml`.** `rustup_env` now reads `[toolchain] channel`, following rustup's search:
+  the nearest directory wins, and in one directory `rust-toolchain` beats `rust-toolchain.toml`. It
+  also reads TOML under the extensionless name, which rustup accepts. A file with no `channel`, such
+  as a `path` toolchain, renders empty.
+  - **This is the first repo-controlled input to reach the TOML parser**, so it is bounded: a 4 KB
+    read cap, FIFO and device files refused, and channels over 255 bytes rendered empty, which matches
+    the plain format's limit. The worst hostile file measured costs about 0.5 ms. Control bytes are
+    stripped at the existing chokepoint, including ones spelled as escapes.
+- **`[[segments.vcs]] budget_ms`.** A whole number of milliseconds from 1 to 1000 for the `sit status`
+  watchdog, defaulting to 5. With a 40 ms `sit`, the default renders empty and `budget_ms = 200`
+  renders the branch. Anything else warns and keeps the default, so a typo cannot stall every prompt.
+- **`docs/themes/powerline.cyml`.** A sixth theme, with a `bg` on every segment. It needs a nerd-patched
+  font, and spells its glyphs as escapes so the file stays readable without one.
+- **Benchmark:** `rustup_env_parse_toml`.
+
+### Changed
+
+- **Dead-code elimination on every build** ([ADR 0010](docs/adr/0010-dead-code-elimination-on-every-build.md)):
+  `[build] dce = true`. CI now runs the suite with `CYRIUS_DCE=1`, because `cyrius test` does not apply
+  the manifest's setting and would otherwise exercise different code from the binary that ships.
+- **A `rust-toolchain` file whose first non-blank byte is `[` is read as TOML.** No real channel starts
+  that way. Junk in that shape printed before and renders empty now.
+
+### Performance
+
+| | 1.2.1 | 1.2.2 | Delta |
+|---|---|---|---|
+| Binary, x86_64 | 313,392 B | **153,808 B** | −159,584 B (−50.9 %) |
+| Binary, `--agnos` | 317,808 B | **145,928 B** | −171,880 B (−54.1 %) |
+| Live code, x86_64 | 149,552 B | 153,808 B | +4,256 B (+2.8 %) |
+| `rustup_env_render`, no file found | 4.90 µs | 9.53 µs | +4.6 µs, it now walks once per file name |
+| `rustup_env_parse_toml` | — | 1.95 µs | new |
+| `config_load`, largest theme | 66.61 µs | 66.54 µs | flat |
+| Cold start, no config | 450 µs | 443 µs | −7.7 µs |
+| Cold start, largest theme | 625 µs | 630 µs | +4.4 µs |
+
+Bench figures are medians of three runs, and cold start is three rounds of 3,000 interleaved spawns.
+The largest theme includes `rustup_env`, so it pays for the second walk.
+
+### Verified
+
+- **Suite 387/387 across 165 tests**, also with `CYRIUS_DCE=1`, and `--agnos` clean. The CI job was
+  rehearsed end to end in a throwaway clone.
+- **Differential, 1.2.1 vs 1.2.2.** 6,163 cases with no differences. The 111-config corpus and all 43
+  argv cases also matched.
+- **Fuzz.** 80,000 mutated `rust-toolchain` files: no crash, no hang, and no control byte in stdout.
+  40,000 mutated configs and 20,000 argv sets: no crash and no hang.
+- **The new tests can fail.** Undoing each of the 14 new behaviours and safeguards turns the suite red.
+  That run first found a weak test, since `"5ms"` was refused by arithmetic overflow rather than by
+  the digit check it was meant to prove, so `"1a"` was added.
+- **Found by running it, not by the suite:** the first `rust-toolchain.toml` draft let a hostile repo
+  put 3,900 characters in the prompt. That is the channel cap above.
+
+**Not tested on agnos itself.** The `--agnos` build was not booted, and that is on the 1.2.3 list.
+
+### Known issues
+
+- **On `--side=right`, the powerline closing glyph trails the last block**, so a left-pointing arrow
+  sits after the text. It is not new, and the theme leaves `right_segments` unset until it is fixed.
+  Pinned on the roadmap for 1.3.0.
+- **Neither lock guard fails on a stale pin**, and `scripts/lock-check.sh` passes an altered vendored
+  file. Both are on the 1.2.3 list.
+
+### Documentation
+
+- **`docs/development/roadmap.md` reorganized.** 1.2.3 is the P(-1) sweep. The remaining feature work
+  moves to 1.3.x (colour), 1.4.x (language env) and 1.5.x (per-segment control), with cache eviction
+  and `alloc` guards folded into 1.2.3. Items gated outside this repo stay unscheduled under 1.x.x, and
+  both gates were re-checked against 6.7.18.
+- The roadmap's 256-colour example said `"38;5;117"`; it now says `"33"`, which is what ADR 0007 froze.
+- New: [ADR 0010](docs/adr/0010-dead-code-elimination-on-every-build.md). ADR 0005, 0007 and 0009 are
+  annotated. The themes README, guides and example config cover the new features.
+
 ## [1.2.1] - 2026-11-06
 
 `cyrius` 6.7.9 -> **6.7.18**, cmdit 1.4.0 -> **1.5.0**, bayan 1.5.14 -> **1.11.1**, and the vendored

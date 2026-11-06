@@ -77,7 +77,7 @@ Each env segment renders only when its condition is met:
 - `cyrius_env` — inside a Cyrius project (`cyrius.cyml` in an ancestor). Emits the trimmed contents of `<root>/VERSION`, or `cyrius --version` as fallback.
 - `python_env` — `$VIRTUAL_ENV` set (emits its basename) or a `.python-version` file in an ancestor.
 - `node_env` — `.nvmrc` in an ancestor.
-- `rustup_env` — `rust-toolchain` (plain-format) in an ancestor.
+- `rustup_env` — `rust-toolchain` or `rust-toolchain.toml` in an ancestor.
 
 A typical render inside a Python project with a venv active and a dirty sit repo:
 

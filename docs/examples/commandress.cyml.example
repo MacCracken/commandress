@@ -41,6 +41,12 @@ show_dirty = true
 # from starship/p10k.
 dirty_marker = "*"
 
+# Milliseconds `sit status` may run before the segment renders empty. A
+# whole number from 1 to 1000; anything else warns and keeps the default.
+# Raise it for a slow disk or a very large repo. A hung `sit` then costs
+# this much on every redraw outside the 1-second cache.
+budget_ms = 5
+
 ---
 
 # Notes zone

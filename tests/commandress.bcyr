@@ -183,7 +183,7 @@ fn bench_vcs_segment(): i64 {
         bench_batch_start(b);
         var bi = 0;
         while (bi < batch) {
-            vcs_render("*");
+            vcs_render("*", VCS_BUDGET_MS);
             bi = bi + 1;
         }
         bench_batch_stop(b, batch);
@@ -328,6 +328,28 @@ fn bench_rustup_env_segment(): i64 {
     return 0;
 }
 
+# Pure parser on a realistic rust-toolchain.toml, no filesystem.
+fn bench_rustup_env_parse_toml(): i64 {
+    var b = bench_new("rustup_env_parse_toml");
+    var src = "[toolchain]\nchannel = \"1.75.0\"\ncomponents = [\"rustfmt\", \"clippy\"]\nprofile = \"minimal\"\n";
+    var src_len = strlen(src);
+    var rounds = 50;
+    var batch = 200;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            rustup_env_parse_toml(src, src_len);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 # ---- full-prompt benchmark ----
 
 fn bench_prompt(): i64 {
@@ -404,6 +426,7 @@ fn main(): i64 {
     bench_python_env_segment();
     bench_node_env_segment();
     bench_rustup_env_segment();
+    bench_rustup_env_parse_toml();
     bench_prompt();
     return 0;
 }

@@ -19,15 +19,6 @@
 # `src/pathlookup.cyr` in v0.5.0 so the M4 language-env probes share
 # one implementation (still pending Cyrius v6.x Item 8 upstream).
 
-# Per-redraw budget for the `sit status` shellout. The healthy-host
-# measurement was ~1.8 ms (CHANGELOG [0.3.0]); 5 ms gives ~2.5× safety
-# margin while keeping the segment well inside the 5 ms total prompt
-# budget. Config-overridable via [[segments.vcs]] budget_ms = N lands
-# in a follow-up slot — for v0.4.0 the budget is fixed in code.
-enum VcsBudget {
-    VCS_BUDGET_MS = 5;
-}
-
 # Pure parser. Given the raw stdout bytes from `sit status` and a
 # dirty_marker cstring (or 0 for no marker), returns a heap-alloc'd
 # NUL-terminated cstring formatted per the contract above, or 0 on
@@ -97,7 +88,7 @@ enum VcsCacheTtl {
 # cached cstring from `/tmp/commandress-<uid>/vcs-<hash>`. An empty
 # cached value means "no sit repo / sit not on PATH for this cwd" —
 # we short-circuit the find_in_path + shellout in that case too.
-fn vcs_render(dirty_marker): i64 {
+fn vcs_render(dirty_marker, budget_ms): i64 {
     # AGNOS: return before declaring anything, and keep the two buffers out of
     # the frame entirely (audit 2026-08-26, A-08).
     #
@@ -144,7 +135,7 @@ fn vcs_render(dirty_marker): i64 {
         store64(envp, 0);
 
         var buf[8192];
-        var n = shellout_capture(sit_path, argv, envp, VCS_BUDGET_MS, &buf, 8192);
+        var n = shellout_capture(sit_path, argv, envp, budget_ms, &buf, 8192);
         if (n > 0) { result = vcs_parse_render(&buf, n, dirty_marker); }
     }
 

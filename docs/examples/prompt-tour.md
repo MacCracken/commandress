@@ -215,7 +215,6 @@ per-segment timeouts (v0.4.0), the language-env segments (v0.5.0), colour + powe
 right-prompt (v0.6.0), and probe caching (v0.7.0). v1.0 froze the schema.
 
 What is genuinely still ahead is sequenced in
-[`../development/roadmap.md`](../development/roadmap.md) — multi-palette and hex/256-colour
-(1.2.0), `rust-toolchain.toml` and opt-in version shellouts (1.3.0), per-segment
-`budget_ms` and local-time support (1.4.0). Every item there is pinned to the line of code
-that defers it.
+[`../development/roadmap.md`](../development/roadmap.md) — hex/256-colour and multi-palette
+(1.3.x), `package.json` and opt-in version shellouts (1.4.x), a per-segment output cap and
+local-time support (1.5.x). Every item there is pinned to the line of code that defers it.

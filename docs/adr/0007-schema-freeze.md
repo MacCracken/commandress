@@ -140,6 +140,7 @@ The cache layout is implementation-bound but the public-facing `/tmp/commandress
 - **Hex / 256-colour values.** Reserved in §3 — when implemented, they become first-class accepted values without breaking anyone.
 - **Multi-palette via `[[palettes.<name>]]` + top-level `palette = "<name>"` selector.** This is the v1 theme-switching path committed during the M5 colour work; lands in a v1.x release as additive grammar. Single `[[palette]]` (the v0.6.0 form) stays accepted.
 - **Per-segment `budget_ms` / cache TTL override.** The M2 follow-up slot for `[[segments.vcs]]`; additive.
+  > **Update 2026-11-06** (annotation, not a revision): `[[segments.vcs]] budget_ms` shipped at 1.2.2. It is additive, in whole milliseconds from 1 to 1000, and a refused value warns and keeps the default of 5.
 - **The internal `Config` struct layout.** Field offsets in `src/config.cyr` are implementation; nothing external depends on them.
 - **The cache file format.** Currently raw bytes; could become headered + checksummed without breaking the public path layout.
 - **The SGR-baking logic.** SGR strings are generated at config-load and never exposed to the user. Free to change.

@@ -61,28 +61,32 @@ fn cache_dir(): i64 {
     return dir;
 }
 
-# 32-bit djb2 hash of `s` (length `slen`). Masked to 32 bits to keep
-# the result a positive i64; we then format as 8 hex digits. djb2 is
-# more than enough for a cache that holds tens of entries per host —
-# collision risk is negligible at this scale.
+# 64-bit FNV-1a of `s` (length `slen`), formatted as 16 hex digits.
+#
+# This was a 32-bit djb2 until 1.2.2, and djb2's structure makes collisions easy
+# rather than merely possible: 33 * 'a' + 'z' == 33 * 'b' + 'Y', so sibling
+# directories `az` and `bY` shared an entry, and whichever redrew second showed the
+# other's branch. FNV-1a mixes each byte in before the multiply, which removes that
+# pattern. It needs no seed: the cache is 0700 and per-UID, so nobody else can aim
+# at it, and a key must stay the same across processes.
 fn _cache_hash(s, slen): i64 {
-    var h = 5381;
+    var h = 0xCBF29CE484222325;
     var i = 0;
     while (i < slen) {
-        h = (h * 33 + load8(s + i)) & 0xffffffff;
+        h = (h ^ load8(s + i)) * 0x100000001B3;
         i = i + 1;
     }
     return h;
 }
 
-# Build `<cache_dir>/<seg>-<8-hex>`. Caller owns the returned cstring.
+# Build `<cache_dir>/<seg>-<16-hex>`. Caller owns the returned cstring.
 fn _cache_path(seg_name, cwd): i64 {
     var dir = cache_dir();
     var dir_len = strlen(dir);
     var seg_len = strlen(seg_name);
     var h = _cache_hash(cwd, strlen(cwd));
 
-    var total = dir_len + 1 + seg_len + 1 + 8 + 1;
+    var total = dir_len + 1 + seg_len + 1 + 16 + 1;
     var out = alloc(total);
     memcpy(out, dir, dir_len);
     store8(out + dir_len, 47);                                  # '/'
@@ -90,7 +94,7 @@ fn _cache_path(seg_name, cwd): i64 {
     store8(out + dir_len + 1 + seg_len, 45);                    # '-'
 
     var pos = dir_len + 1 + seg_len + 1;
-    var i = 7;
+    var i = 15;
     var done = 0;
     while (done == 0) {
         var nib = (h >> (i * 4)) & 15;

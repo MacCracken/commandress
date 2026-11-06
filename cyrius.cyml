@@ -10,6 +10,8 @@ cyrius = "6.7.18"
 entry = "src/main.cyr"
 test = "src/test.cyr"
 output = "cmdrs"
+# Dead-code elimination on every build, not only releases. See ADR 0010.
+dce = true
 
 [deps]
 # `args` and `bench` were always compiled in via includes (src/main.cyr includes

@@ -47,7 +47,7 @@ The promise in ADR 0007's context still counts, though: *a user's `~/.commandres
 - **Positive**
   - The eight defects above are gone, and the parser now has an owner and a pin. A toolchain bump moves it instead of leaving it behind.
   - The `lib/toml.cyr` compiler warnings are gone, so the build is warning-free.
-  - `rust-toolchain.toml` (roadmap 1.3.0) needs no new dependency.
+  - `rust-toolchain.toml`, which shipped at 1.2.2, needed no new dependency.
   - `\u` escapes and `\n` give users Unicode glyphs and two-line prompts without new schema.
   - Eight more unused `lib/` files could go at the same time, including `lib/agnosys.cyr`, a copy of a retired library.
 - **Negative**

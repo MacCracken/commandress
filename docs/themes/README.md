@@ -11,6 +11,7 @@ Curated `~/.commandress` configurations that exercise the v0.6.0 [palette layer]
 | **dracula** | [`dracula.cyml`](dracula.cyml) | Vivid purples + pinks + green accents |
 | **gruvbox** | [`gruvbox.cyml`](gruvbox.cyml) | Warm yellows + oranges + retro-amber feel |
 | **monokai** | [`monokai.cyml`](monokai.cyml) | Vibrant greens + magentas + bright yellow |
+| **powerline** | [`powerline.cyml`](powerline.cyml) | Solid colour blocks joined by transition glyphs; needs a nerd-patched font |
 
 ## How named colors map to your terminal
 
@@ -84,4 +85,4 @@ Render emits a `fg=prev_bg, bg=next_bg` SGR + the glyph between adjacent blocks,
 
 **Font requirement**: The default glyphs (`` / ``) live in the powerline private-use area (U+E0B0+) and need a nerd-patched font (NerdFonts, Powerline, Hack Nerd, etc.) installed and configured in your terminal. Without one, the glyph renders as a tofu box. Any single-byte ASCII character (`>`, `|`, `/`) works as a fallback if you don't want to install a font.
 
-**Themes & powerline**: the five theme files in this directory are fg-only out of the box. Add `bg = "..."` to each `[[segments.X]]` block you want as a powerline block. A dedicated powerline-ready theme variant is planned for a follow-up release.
+**Themes & powerline**: [`powerline.cyml`](powerline.cyml) is ready to use, with a `bg` on every segment. The other five themes are fg-only out of the box, so add `bg = "..."` to each `[[segments.X]]` block you want as a powerline block. On the right prompt the closing glyph currently trails the last block, so the powerline theme leaves `right_segments` unset until that is fixed (roadmap 1.3.x).

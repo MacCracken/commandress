@@ -53,7 +53,7 @@ fn _dispatch_exit(cfg, ctx): i64 {
 fn _dispatch_vcs(cfg, ctx): i64 {
     var marker = 0;
     if (cfg_vcs_show_dirty(cfg) == 1) { marker = cfg_vcs_dirty_marker(cfg); }
-    return vcs_render(marker);
+    return vcs_render(marker, cfg_vcs_budget_ms(cfg));
 }
 
 # Dispatcher for the `time` segment. Forwards the configured strftime-
@@ -281,6 +281,8 @@ fn render_prompt(cfg, ctx, side): i64 {
     # (fg = last segment's bg, bg = terminal default). Skipped when the
     # last segment had no bg (no block to close) — the helper returns
     # immediately when there's nothing to emit.
+    # On the right prompt this still draws the closing glyph AFTER the last block, so a
+    # left-pointing arrow trails the text instead of leading it. Pinned: roadmap 1.3.x.
     if (powerline == 1) {
         if (painted == 1) {
             if (prev_bg != 0) { _emit_powerline_transition(prev_bg, 0, glyph); }

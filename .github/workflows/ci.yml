@@ -101,7 +101,11 @@ jobs:
         # availability have varied across cyrius releases; the documented
         # `cyrius test <file.tcyr>` form sidesteps that surface entirely and
         # has worked on every pin this repo has carried.
-        run: cyrius test tests/commandress.tcyr
+        #
+        # CYRIUS_DCE=1 because `cyrius test` does not apply the manifest's
+        # `[build] dce`. Without it the suite would exercise different code from the
+        # binary that ships, so a DCE miscompile could not show up here. ADR 0010.
+        run: CYRIUS_DCE=1 cyrius test tests/commandress.tcyr
 
       - name: Cold-start budget gate (≤ 5 ms)
         # `cyrius bench` runs the full bench suite; the gate script

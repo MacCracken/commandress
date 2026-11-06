@@ -15,90 +15,124 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.2.1**. The 1.2.x line so far is toolchain and dependency
-refreshes, so the colour work under the 1.2.0 heading below has **not** shipped: that slot
-predates those releases and still needs re-slotting. The 1.1.x line was toolchain refreshes, the cmdit CLI
-adoption, a security audit, and the bayan parser swap. The public API is frozen per
-[ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
-not-frozen surface, or routed through the documented 3-step deprecation path. No item
-here breaks a v1 config.
+this file. Current release is **1.2.2**. The 1.1.x line was toolchain refreshes, the cmdit
+CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line so far is
+toolchain and dependency refreshes plus the quick roadmap items. The public API is frozen
+per [ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
+not-frozen surface, or routed through the documented 3-step deprecation path. No item here
+breaks a v1 config.
 
----
-
-## 1.2.0 — Colour and theming completion
-
-The colour model shipped deliberately narrow at 0.6.0 (16 named colours). Every slot
-below was reserved at schema freeze, so all of it is additive.
-
-| Item | Source of the deferral |
+| Slot | Theme |
 |---|---|
-| **Multi-palette** — `[[palettes.<name>]]` tables plus a top-level `palette = "<name>"` selector. Single-palette `[[palette]]` shipped 0.6.0; the multi form was reserved, not built. | [ADR 0007](../adr/0007-schema-freeze.md) reserved-for-additive; `state.md` post-v1 theme track |
-| **Hex and 256-colour values** — `fg = "#8be9fd"` / `fg = "38;5;117"` alongside the named set. | `src/color.cyr:6` — *"Hex / 256-color / palette references are deferred (v0.6.x+)"* |
-| **A powerline-ready theme variant** — the five shipped themes are fg-only; a powerline theme needs `bg` on every segment block. | `docs/themes/README.md:87` — *"A dedicated powerline-ready theme variant is planned for a follow-up release"* |
-
-**Gate**: none. All three are additive config surface plus `src/color.cyr` work.
-
----
-
-## 1.3.0 — Language-env depth
-
-The language-env segments are file-first by explicit user direction (2026-05-18): read
-a pin file, never pay a subprocess. That policy stands. This slot finishes the *file*
-half and puts the subprocess half behind opt-in config.
-
-| Item | Source of the deferral |
-|---|---|
-| **`rust-toolchain.toml` parsing** — the modern `[toolchain] channel = "…"` form, alongside the legacy plain-text file. **No longer gated** (see below). | `src/segments/rustup_env.cyr` |
-| **`package.json` → `engines.node`** — a second `node_env` source when `.nvmrc` is absent. | `src/segments/node_env.cyr:14` |
-| **Opt-in version shellouts** — `python --version`, `node --version`, `rustup show active-toolchain`, each behind a per-segment config flag, default off. The 1 s TTL cache (`src/cache.cyr`) is what makes them affordable. | `src/segments/node_env.cyr`, `src/segments/rustup_env.cyr`; `state.md` "deferred by policy" |
-
-**Gate: CLEARED.** `rust-toolchain.toml` was deferred because the Cyrius stdlib could
-not parse single-bracket `[section]` tables (papercut Item 3). **That gap has closed.**
-Verified 2026-08-26 against the 6.5.35 stdlib: `toml_get_sections` finds a
-single-bracket `[toolchain]`, with a double-bracket control case proving the harness.
-This item is scheduled work now, not blocked work — the source comments that said
-otherwise were corrected in the same sweep. Since 1.1.9 the parser is `lib/bayan-toml.cyr`
-([ADR 0009](../adr/0009-config-parsing-via-bayan.md)), so this adds no new dependency.
+| **1.2.3** | P(-1) audit, hardening, optimization and security sweep, with repairs |
+| **1.3.x** | Colour and theming completion |
+| **1.4.x** | Language-env depth |
+| **1.5.x** | Per-segment control |
+| **1.x.x** | Unscheduled: gated on something outside this repo |
 
 ---
 
-## 1.4.0 — Per-segment control
+## 1.2.3 — P(-1) audit, hardening, optimization and security sweep
 
-Knobs the config schema was always shaped for but never grew, plus the output-shape gap
-the 2026-08-26 audit recorded.
+The third pass over the whole codebase, after [2026-05-18](../audit/2026-05-18-audit.md) and
+[2026-08-26](../audit/2026-08-26-audit.md). A sweep and its repairs, not a feature release.
 
-| Item | Source of the deferral |
-|---|---|
-| **Per-segment `budget_ms`** — `[[segments.vcs]] budget_ms = N`; the watchdog budget is fixed in code today. | `src/segments/vcs.cyr:26` — *"in a follow-up slot — for v0.4.0 the budget is fixed in code"* |
-| **Per-segment output length cap** — a hostile repository can push ~255 printable characters into every redraw via a language-env pin file. Sanitized and inert, but visually disruptive; `max_length` currently applies to `cwd` only. | [2026-08-26 audit](../audit/2026-08-26-audit.md) — *Known gaps* |
-| **Local time and `TZ`** — the `time` segment is UTC-only; `TZ` lookup plus offset application is its own piece of work. | `src/segments/time.cyr:23` |
+**Why now.** The 2026-08-26 report named what should trigger the next audit, and all of it has
+happened: cmdit moved 1.2.4 → 1.5.0 with a changed public surface, the config parser was replaced
+with bayan, `rust-toolchain.toml` became the first repo-controlled input to reach that parser, and
+`budget_ms` added a config field.
 
-**Gate**: none. All three are additive per-segment config fields.
+**Scope.** All of `src/`, `adapters/`, `scripts/`, `.github/workflows/` and `cyrius.cyml`. Vendored
+`lib/` stays out of scope as a dependency, except how this repo calls into it, and except bayan's
+TOML and CYML sublibs and cmdit, which are reviewed from the consumer side.
+
+**Method.** As in 2026-08-26, because it found what neither track would have alone:
+
+1. A parallel read of the first-party code, with an adversarial reviewer on every candidate finding.
+2. Live attack testing of the built binary through real shells.
+3. An optimization pass that measures first and changes only what the numbers justify.
+
+**Seed list.** Known work this slot starts from. The sweep will add to it.
+
+| Item | Track | Source |
+|---|---|---|
+| **Repo-controlled input to bayan** — attack `rust-toolchain.toml` end to end, since it is parser input a hostile repo chooses. | Security | `src/segments/rustup_env.cyr` |
+| **cmdit 1.2.4 → 1.5.0 and bayan, from the consumer side** — neither has been audited here since it changed or arrived. | Security | 2026-08-26 audit, *Next audit* |
+| **Re-open "Confirmed but deliberately not fixed"** — each decision was made against the code as it stood. `cmdit_argv`'s failure return, for one, has an error path now. | Security | 2026-08-26 audit |
+| **Boot the `--agnos` build** — every release since 1.1.0 compiles it, and none has run it. Use the agnos repo's smoke harness, and cover `--side=right` argv and the config path. | Security | `CHANGELOG.md` 1.2.0, 1.2.1 |
+| **CI lock guard** — `cyrius deps --locked` catches an altered vendored file that `scripts/lock-check.sh` misses. Neither fails on a stale `commit` line. Decide what CI runs, and whether to fail on that `note:`. | Hardening | [architecture 003](../architecture/003-cyrius-lock-shape.md) § 3–4 |
+| **`alloc` return guards beyond the chokepoint** — 1.1.6 guarded `sanitize_segment_output`, the one path every segment crosses. Moved here from the old hygiene slot. | Hardening | 2026-08-26 audit, *Known gaps* |
+| **Cache eviction** — entries are tiny but never collected, one per (segment, cwd) forever, and the pre-1.2.2 8-hex keys are now orphans. Moved here from the old hygiene slot. | Hardening | `src/cache.cyr:30` |
+| **Config read cap** — F-6 proposed lowering it from 64 KB to about 16 KB. Decide on current numbers: bayan's worst case is far lower than when that was written. | Hardening | [2026-05-18 audit](../audit/2026-05-18-audit.md) F-6 |
+| **Cold start** — about 410 µs with no config, against 11 µs for `render_prompt`. Find where the rest goes. | Optimization | `state.md` benchmarks |
+| **`config_load`** — a 64 KB buffer per redraw and eleven `_warn_nested_keys` sweeps. | Optimization | `src/config.cyr` |
+| **`rustup_env` walks twice** — once per file name, 4.9 → 9.5 µs. One walk could test both. | Optimization | `src/segments/rustup_env.cyr` |
+| **`docs/doc-health.md`** — last refreshed at 1.1.6. | Repairs | `doc-health.md` |
+
+**Done means:**
+
+- A dated report in [`docs/audit/`](../audit/), in the 2026-08-26 format: *Findings*, *Verified clean*, *Confirmed but deliberately not fixed*, *Known gaps*, *Next audit*.
+- Every finding reproduced before it is fixed, and every fix pinned by a test shown to fail on the old code.
+- No schema additions. As 2026-08-26 said of the output length cap, those belong in a feature release, so a finding that needs one gets a slot below.
+- Differential, fuzz and CI rehearsal clean, with benchmark numbers for any performance claim.
 
 ---
 
-## 1.5.0 — Cache and build hygiene
+## 1.3.x — Colour and theming completion
 
-Nothing user-visible; all of it is the "we know, we wrote it down" pile.
+The colour model shipped deliberately narrow at 0.6.0 (16 named colours). Every slot below was
+reserved at schema freeze, so all of it is additive.
 
-| Item | Source of the deferral |
-|---|---|
-| **Cache eviction** — entries are tiny and never garbage-collected, one per (segment, cwd) forever. | `src/cache.cyr:30` — *"Out of scope (M6 follow-ups if needed): LRU eviction … for now we don't gc"* |
-| **Wider cache key** — the key is a 32-bit djb2 of the cwd, so two directories can share an entry and render each other's branch name for one TTL second. Not a privilege boundary (the cache is 0700 and per-UID), just wrong output. | [2026-08-26 audit](../audit/2026-08-26-audit.md) — *Known gaps* |
-| **Decide `CYRIUS_DCE=1` for release builds** — roughly half the binary is code the linker never reaches (`384 unreachable fns, 69,382 B` at last count). DCE eliminates it but is not wired into the build or CI. Size is not a budgeted metric (render time is), so this is hygiene — but it should be a decision, not a drift. | `state.md` in-flight, noted at 1.1.4 |
-| **`alloc` return guards beyond the chokepoint** — 1.1.6 guarded `sanitize_segment_output`, the one path every segment crosses. The rest allocate small fixed-shape buffers and are reachable only under heap exhaustion. | [2026-08-26 audit](../audit/2026-08-26-audit.md) — *Known gaps* |
+| Release | Item | Source of the deferral |
+|---|---|---|
+| **1.3.0** | **Hex and 256-colour values** — `fg = "#8be9fd"` / `fg = "33"` alongside the named set. These are the two forms ADR 0007 § 3 reserved; an earlier draft here said `"38;5;117"`, which is not what was frozen. | `src/color.cyr:6` — *"Hex / 256-color / palette references are deferred (v0.6.x+)"* |
+| **1.3.0** | **Right-prompt powerline transitions** — on `--side=right` the closing glyph trails the last block, so a left-pointing arrow sits after the text instead of leading it. The shipped powerline theme leaves `right_segments` out until this lands. | `src/render.cyr`, end of `render_prompt` |
+| **1.3.1** | **Multi-palette** — `[[palettes.<name>]]` tables plus a top-level `palette = "<name>"` selector. Single-palette `[[palette]]` shipped 0.6.0; the multi form was reserved, not built. | [ADR 0007](../adr/0007-schema-freeze.md) reserved-for-additive; `state.md` post-v1 theme track |
+
+**Gate**: none. All of it is additive config surface plus `src/color.cyr` and `src/render.cyr` work.
 
 ---
 
-## Unscheduled — gated on something outside this repo
+## 1.4.x — Language-env depth
 
-These are **not** in a version slot because commandress cannot schedule them. Each is
-listed with what would unblock it, so the gate is checkable rather than folkloric.
+The language-env segments are file-first by explicit user direction (2026-05-18): read a pin file,
+never pay a subprocess. That policy stands. This slot finishes the *file* half and puts the
+subprocess half behind opt-in config.
+
+| Release | Item | Source of the deferral |
+|---|---|---|
+| **1.4.0** | **`package.json` → `engines.node`** — a second `node_env` source when `.nvmrc` is absent. | `src/segments/node_env.cyr:14` |
+| **1.4.1** | **Opt-in version shellouts** — `python --version`, `node --version`, `rustup show active-toolchain`, each behind a per-segment config flag, default off. The 1 s TTL cache (`src/cache.cyr`) is what makes them affordable, and vcs `budget_ms` is the pattern for bounding them. | `src/segments/node_env.cyr`, `src/segments/rustup_env.cyr`; `state.md` "deferred by policy" |
+
+**Gate for 1.4.0**: `package.json` needs a JSON parser and is repo-controlled, so it is the
+`rust-toolchain.toml` question again with a larger file. Measure `bayan-json`'s size and cold-start
+cost first, and apply what the 1.2.3 audit learned about hostile parser input. It earns an ADR.
+
+---
+
+## 1.5.x — Per-segment control
+
+Knobs the config schema was always shaped for but never grew, plus the output-shape gap the
+2026-08-26 audit recorded.
+
+| Release | Item | Source of the deferral |
+|---|---|---|
+| **1.5.0** | **Per-segment output length cap** — a hostile repository can push ~255 printable characters into every redraw via a language-env pin file. Sanitized and inert, but visually disruptive; `max_length` applies to `cwd` only. | [2026-08-26 audit](../audit/2026-08-26-audit.md) — *Known gaps* |
+| **1.5.1** | **Local time and `TZ`** — the `time` segment is UTC-only; `TZ` lookup plus offset application is its own piece of work. | `src/segments/time.cyr:23` |
+
+**Gate**: none. Both are additive per-segment config fields.
+
+---
+
+## 1.x.x — Unscheduled: gated on something outside this repo
+
+These are **not** in a numbered slot because commandress cannot schedule them. Each is listed with
+what would unblock it, so the gate is checkable rather than folkloric.
 
 | Item | Real gate | Checked |
 |---|---|---|
-| **agnoshi adoption** — flips on when agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw. The 5-point contract is already specified in `adapters/agnoshi.sh`; **no commandress change is required**. | agnoshi implements the contract | `adapters/agnoshi.sh:16` — *"agnoshi has not yet adopted it"* |
-| **Retire `src/pathlookup.cyr`** — 99 lines re-implementing `execvp`'s PATH walk, because `execve(2)` does not do PATH lookup and no stdlib helper exposes one. | Cyrius grows a `which()`-equivalent (papercut Item 8) | Re-checked 2026-08-26 against the 6.5.35 vendored stdlib: **still open**, no stdlib fn resolves a bare name against `$PATH`. The workaround ships and is correct. |
+| **agnoshi adoption** — flips on when agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw. The 5-point contract is already specified in `adapters/agnoshi.sh`; **no commandress change is required**. | agnoshi implements the contract | Re-checked 2026-11-06: `agnoshi/src` does not read it yet. `adapters/agnoshi.sh:16` — *"agnoshi has not yet adopted it"* |
+| **Retire `src/pathlookup.cyr`** — 99 lines re-implementing `execvp`'s PATH walk, because `execve(2)` does not do PATH lookup and no stdlib helper exposes one. | Cyrius grows a `which()`-equivalent (papercut Item 8) | Re-checked 2026-11-06 against the 6.7.18 snapshot: **still open**, no public stdlib fn resolves a bare name against `$PATH`. The workaround ships and is correct. |
 
 > **Check the gate before repeating it.** Two of the three "blocked on Cyrius" claims in
 > this repo were stale by the time anyone re-read them — Item 3 had shipped, and the
