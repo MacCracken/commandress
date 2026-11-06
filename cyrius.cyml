@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "commandress — structured prompt renderer for agnoshi (cmdrs binary)"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.6.20"
+cyrius = "6.7.9"
 
 [build]
 entry = "src/main.cyr"
@@ -40,12 +40,13 @@ stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "a
 # Only the two sublibs are pulled, not the 732 KB bundle in the snapshot: a config
 # file needs TOML and CYML and nothing else. See ADR 0009.
 #
-# The tag is the bayan that cyrius 6.6.20 itself bundles. 1.5.13 and later need
-# cyrius 6.7.x, so read a tag's own `cyrius` pin before moving this. `path` stays
-# unset for the reason given on cmdit below.
+# The tag is the newest bayan pinned to cyrius 6.7.9. The 6.7.9 snapshot bundles
+# 1.5.13, whose TOML and CYML sublibs match these byte for byte apart from the
+# version stamp. 1.6.0 and later need cyrius 6.7.11 or newer, so read a tag's own
+# `cyrius` pin before moving this.
 [deps.bayan]
 git = "https://github.com/MacCracken/bayan.git"
-tag = "1.5.12"
+tag = "1.5.14"
 modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr"]
 
 # cmdit — sovereign CLI / argument-parsing library (getopt-long), the stdlib
@@ -54,24 +55,19 @@ modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr"]
 # reserved `--help` / `--version` of ADR 0007 were simply absent. cmdit supplies
 # all three from one table. See ADR 0008.
 #
-# `path` is deliberately COMMENTED OUT. A path override silently WINS over its
-# tag, so the lock would describe whatever the sibling checkout happens to be
-# rather than what CI builds. Resolve from the tag: the lock then means one
-# thing and CI's build is the build.
+# The tag is the newest cmdit pinned to cyrius 6.7.9. 1.4.1 and later need 6.7.18.
 #
-# The ecosystem comments this was copied from add that the lock "records no dep
-# name or version, so nothing detects the substitution". On 6.5.35 that is no
-# longer true, and it cuts in our favour — the lock carries a
-# `commit <sha> cmdit <url> 1.2.4` pin line, and resolving with the override
-# active OMITS that line entirely. So the substitution IS detectable, and
-# `scripts/lock-check.sh` (wired into CI) fails on it. Measured, not assumed —
-# see docs/architecture/003-cyrius-lock-shape.md.
+# Since cyrius 6.7.6 a `path` beside `git` / `tag` is a dev override that only local
+# mode uses, so it can no longer win over the tag by accident. Measured on 6.7.9: with
+# it set, a default build still builds the tag and leaves the lock unchanged, and
+# `CYRIUS_LOCAL=1` builds the sibling from build/local-deps/ without touching lib/ or
+# the lock. See docs/architecture/003-cyrius-lock-shape.md.
 #
-# To develop cmdit alongside commandress: uncomment, work, then tag cmdit, bump
-# this pin, re-resolve with the override off, and commit THAT lock.
+# To develop cmdit alongside commandress: uncomment `path`, work with CYRIUS_LOCAL=1,
+# then tag cmdit and bump this pin.
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit.git"
-# path = "../cmdit"   # see note above — do not commit a lock built with this active
-tag = "1.2.6"
+# path = "../cmdit"   # dev override; only CYRIUS_LOCAL=1 uses it
+tag = "1.4.0"
 modules = ["dist/cmdit.cyr"]
 ---

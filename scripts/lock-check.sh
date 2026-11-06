@@ -2,11 +2,11 @@
 # lock-check.sh — verify the committed cyrius.lock still describes a clean
 # resolution from the tags in cyrius.cyml.
 #
-# WHAT IT GUARDS. A `path = "../<dep>"` override in cyrius.cyml silently WINS
-# over that dep's `tag`, so a lock produced with one active describes whatever
-# the sibling checkout happened to be — which is not what CI, with no siblings,
-# will build. This script fails the build when the committed lock disagrees with
-# a tag-only resolution.
+# WHAT IT GUARDS. This script fails the build when the committed lock disagrees
+# with a tag-only resolution. It was written for a `path = "../<dep>"` override,
+# which silently won over that dep's `tag` until cyrius 6.7.6. That can no longer
+# happen by accident, and `cyrius deps --locked` now exists: see
+# docs/architecture/003-cyrius-lock-shape.md section 4 for what each one catches.
 #
 # WHY NOT `git diff --exit-code -- cyrius.lock`. That was the first attempt and
 # it false-positived on the very first CI run: `cyrius deps` does NOT emit the
@@ -84,10 +84,9 @@ rc=0
 
 if ! diff -u <(_commits "$tmp/before") <(_commits "$LOCK") > "$tmp/commit.diff"; then
   echo "::error::cyrius.lock: the dep PINS changed after re-resolving from tags." >&2
-  echo "  A committed lock should already describe a tag-only resolution. The usual" >&2
-  echo "  cause is a [deps.*] 'path = \"../<dep>\"' override left active when the lock" >&2
-  echo "  was generated — it silently beats the tag. Re-resolve with the override" >&2
-  echo "  commented out and recommit." >&2
+  echo "  A committed lock should already describe a tag-only resolution. Regenerate it" >&2
+  echo "  and recommit: rm cyrius.lock && cyrius deps (see" >&2
+  echo "  docs/architecture/003-cyrius-lock-shape.md)." >&2
   sed -n '1,40p' "$tmp/commit.diff" >&2
   rc=1
 fi

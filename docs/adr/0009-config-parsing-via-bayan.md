@@ -3,6 +3,8 @@
 **Status**: Accepted
 **Date**: 2026-11-06
 
+> **Update 2026-11-06** (annotation, not a revision — the decision below stands): 1.2.0 moved the pin to tag 1.5.14 with cyrius 6.7.9, and a `---` CRLF fix now needs cyrius 6.7.12 rather than just 6.7.x. The parser's behaviour is unchanged on every config tested.
+
 ## Context
 
 `~/.commandress` was parsed by `lib/toml.cyr` and `lib/cyml.cyr`. Both were left over from before the stdlib moved them into bayan at cyrius 6.1.25. No toolchain snapshot has shipped either file since, so `cyrius lib sync` could not update them and no pin described them. They were last edited by hand for the 6.6.0 value form.

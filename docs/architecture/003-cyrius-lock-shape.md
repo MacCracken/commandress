@@ -24,6 +24,8 @@ compares the `commit` lines and the hash lines as two independently sorted sets.
 
 ## 2. A `path` override erases the dep pin entirely
 
+This describes pins before cyrius 6.7.6. Section 4 has the current behaviour.
+
 The ecosystem comments (stiva's `cyrius.cyml`, quoted into ours when the dep landed)
 say the lock "records only bare `<sha256>  lib/<file>` lines (no dep name / version /
 rev), so it cannot detect the substitution" when a `path = "../<dep>"` override
@@ -77,6 +79,28 @@ change the lock. It does not prove that the lock holds exactly the tags in `cyri
 | Old and new `commit` lines for the same dep | **pass — a blind spot** |
 | Regenerated from empty (one `commit` line) | pass |
 
+## 4. From cyrius 6.7.6 a `path` override cannot win
+
+Cyrius 6.7.6 made manifests git-first, so section 2 describes older pins only. Measured on 6.7.9
+with `path = "../cmdit"` beside the tag:
+
+| Run | What it builds | `lib/` and `cyrius.lock` |
+|---|---|---|
+| `cyrius deps` | The tag, with a one-line hint naming the unused checkout | Unchanged |
+| `CYRIUS_LOCAL=1 cyrius deps` | The sibling, in `build/local-deps/` | Unchanged |
+
+6.7.6 also added `cyrius deps --locked`, which resolves the tags, writes nothing, and fails naming
+each difference. It and `scripts/lock-check.sh` do not catch the same things:
+
+| Committed state | `deps --locked` | `lock-check.sh` |
+|---|---|---|
+| Clean tag resolution | pass | pass |
+| A vendored `lib/` file altered | **fail, naming the file** | pass |
+| An extra stale `commit` line (section 3) | pass, and it says the lock is exact | pass |
+
+So neither one sees the section 3 blind spot. The stale line is noise rather than a build hazard,
+because the file hashes still describe what is compiled, but it does make the lock wrong.
+
 ## Moving the toolchain and a dep tag together
 
 1. Bump `[package].cyrius` and `[deps.<name>].tag`.
@@ -91,7 +115,6 @@ which can require a newer toolchain than the one this repo is moving to.
 
 ## Practical rule
 
-Keep `path = "../cmdit"` commented out in `cyrius.cyml` and resolve from the tag, so
-the lock means one thing and CI's build is the build. To develop cmdit alongside
-commandress, uncomment it, work, then tag cmdit, bump the pin here, re-resolve with
-the override off, and commit that lock. CI will reject the other kind.
+Resolve from the tag. To develop cmdit alongside commandress, uncomment `path` and work with
+`CYRIUS_LOCAL=1`, which never writes `lib/` or the lock. Then tag cmdit and bump the pin here,
+following the section above.

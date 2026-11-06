@@ -94,12 +94,9 @@ fn main(): i64 {
     var side = 0;
     var cli = cmdit_new("cmdrs");
 
-    # cmdit_new returns 0 only if the heap is exhausted, and cmdit_argv /
-    # cmdit_parse / cmdit_enum do not guard a 0 handle (they would wild-read at
-    # a small absolute address). Unreachable in practice — the three allocations
-    # are compile-time constants well inside ALLOC_MAX — but a prompt renderer
-    # that segfaults takes the user's shell prompt with it, so the one
-    # comparison is worth it. On that path we render the default left prompt.
+    # cmdit_new returns 0 only if the heap is exhausted. cmdit has guarded a 0
+    # handle since 1.3.2, but none of this block has anything to do without one,
+    # so on that path we render the default left prompt.
     if (cli != 0) {
         var f_side = cli_register(cli);
         var pr = cmdit_parse(cli);

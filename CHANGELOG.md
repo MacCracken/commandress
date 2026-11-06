@@ -6,6 +6,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-06
+
+`cyrius` 6.6.20 -> **6.7.9**, cmdit 1.2.6 -> **1.4.0**, bayan 1.5.12 -> **1.5.14**, and the
+vendored stdlib re-synced. The prompt on stdout is byte-identical for every config tested, and
+nothing in the config schema changes. CLI error messages do change, and `--side` parsing is about
+11× faster.
+
+### Changed
+
+- **Toolchain `6.6.20` → `6.7.9`**, the v6.7.x language minor. No source change was needed. This
+  repo has none of the sites the cyrius migration guide flags, including a lone `!` (the lexer
+  dropped it before 6.7.3, so `if (!ok)` meant `if (ok)`), typed `*T` pointers, structs, or unary
+  `-` / `~` on constants.
+- **cmdit `1.2.6` → `1.4.0`**, the newest tag pinned to 6.7.9. `src/` calls nothing new.
+  - Error lines name what was typed: `cmdrs: unknown flag: --nope`, and
+    `cmdrs: --side: invalid value 'bogus' (expected left|right)`. Control bytes print as `?`, so a
+    token cannot reach the terminal as an escape sequence.
+  - `--help=x` and `--version=1` are now errors. `cmdrs` reports them and renders the left prompt,
+    like any other bad flag, where it used to print the help or the version.
+  - A command line past 2 MiB now reports `could not read the full command line` and renders the
+    left prompt. It used to drop the trailing arguments silently.
+- **bayan `1.5.12` → `1.5.14`**, the tag pinned to 6.7.9. The 6.7.9 snapshot bundles 1.5.13, whose
+  TOML and CYML sublibs match 1.5.14 byte for byte apart from the version stamp. Upstream's changes
+  since 1.5.12 are refused-allocation handling, and all 79 corpus configs render the same.
+- **Vendored `lib/` re-synced** with `cyrius lib sync --full`: 113 files byte-identical to
+  `6.7.9/lib`. 67 changed, none added or removed.
+
+### Performance
+
+| | 1.1.9 (6.6.20) | 1.2.0 (6.7.9) | Delta |
+|---|---|---|---|
+| Binary, x86_64 | 287,672 B | 309,200 B | +21,528 B (+7.5 %) |
+| Binary, `--agnos` | 287,848 B | 309,384 B | +21,536 B (+7.5 %) |
+| Live code, x86_64 (`CYRIUS_DCE=1`) | 132,024 B | 145,360 B | +13,336 B (+10.1 %) |
+| Unreachable code, x86_64 | 605 fns, 153,181 B | 651 fns, 163,500 B | +10,319 B |
+| `cli_parse` | 11.20 µs | **0.99 µs** | about 11× faster |
+| `config_load`, largest theme | 78.37 µs | 78.44 µs | flat |
+| `render_prompt` | 11.31 µs | 10.66 µs | flat, see below |
+| Cold start, no config | 422 µs | 412 µs | −10.4 µs |
+| Cold start, largest theme | 619 µs | 608 µs | −10.8 µs |
+
+Bench figures are medians of three runs alternating with 1.1.9. Cold start is three rounds of 3,000
+interleaved spawns. `render_prompt` is **flat, not faster**: 1.2.0 runs measured 10.51 to 11.91 µs.
+
+The `cli_parse` gain comes from cmdit 1.3.0, and it undoes the cost
+[ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md) accepted at 1.1.5. Most of the size growth is
+cmdit too: its bundle went from 72,919 B to 129,116 B of source.
+
+### Verified
+
+- **Suite 329/329 and `--agnos` clean**, with zero compiler warnings. The CI job was rehearsed end
+  to end in a throwaway clone with this lock committed, and produced the same binary sizes. The
+  toolchain install step ran in a throwaway home, and its snapshot matches the local one.
+- **Differential, 1.1.9 vs 1.2.0.** 5,943 cases: no hangs, and stdout and exit code matched in every
+  one. All 990 differences are the new error text on stderr. The 79-config corpus and all 34 doc
+  config runs matched completely.
+- **argv.** 43 hand-written cases, including control bytes and 5,000-byte flags: `--help=x`,
+  `--help=` and `--version=1` are the only stdout or exit differences. No raw ESC reached stderr.
+- **Stdlib delta on the call surface.** No function reachable from `src/` changed on the Linux path,
+  apart from cmdit and bayan. The deltas in that set are arms for other targets, such as `fncall2`
+  for cx, or sit in `run` and `run_capture`, which `src/` does not call: `src/shellout.cyr` forks
+  and execs directly.
+- **Fuzz.** 80,000 mutated configs and 40,000 mutated argv sets: no crash, no hang, and no raw ESC
+  on stderr.
+- **Watchdog.** With `sit` stubbed to hang for 30 s, both binaries return in a median of about 6 ms.
+- **Manifest behaviour.** Measured, not taken from the docs: see
+  [architecture 003 § 4](docs/architecture/003-cyrius-lock-shape.md).
+
+**Not tested on agnos itself.** cmdit's new command-line check was read for that target, not run: it
+rejects only `argc() <= 0`, and its 2 MiB test is Linux-only. The `--agnos` build was not booted.
+
+### Known issues
+
+- **Neither lock guard sees a stale pin.** `scripts/lock-check.sh` and `cyrius deps --locked` both
+  pass a lock holding an extra old `commit` line. This release's lock was regenerated from empty and
+  holds exactly two pins.
+- **`scripts/lock-check.sh` also passes an altered vendored file**, which `cyrius deps --locked`
+  fails, naming the file.
+- **A CRLF `---` divider is not recognised**, as before. bayan fixed this at 1.8.0, which needs
+  cyrius 6.7.12.
+- **Thousands of unique dotted keys are still slow**: 465 ms for about 8,000 of them, unchanged. A
+  real theme takes 1.28 ms.
+
+### Documentation
+
+- **`path` overrides.** Since cyrius 6.7.6 a `path` beside a tag cannot win by accident, so
+  `cyrius.cyml`, `scripts/lock-check.sh`, `ci.yml`, `state.md` and architecture 003 no longer say it
+  does. Only comments and one error message changed; the guard's logic did not.
+- `src/main.cyr`: the comment saying cmdit does not guard a 0 handle is corrected. It has since 1.3.2.
+- `roadmap.md`: this release used the number the colour work was slotted under, and the colour work
+  has not shipped. The status note says so; the slots themselves are unchanged.
+
 ## [1.1.9] - 2026-11-06
 
 `cyrius` 6.6.3 -> **6.6.20**, cmdit 1.2.4 -> **1.2.6**, the vendored stdlib re-synced, and

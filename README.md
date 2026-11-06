@@ -2,7 +2,7 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.1.9** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit. **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.2.0** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit. **License**: GPL-3.0-only.
 
 ## What it is
 
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.1.9
+cmdrs 1.2.0
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```

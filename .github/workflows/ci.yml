@@ -75,10 +75,10 @@ jobs:
         run: cyrius deps
 
       - name: Verify the lock is honest
-        # cyrius.lock is committed. A `path = "../cmdit"` override silently beats
-        # its tag, and a lock generated with one active drops the dep's `commit`
-        # pin line ENTIRELY — verified, not assumed — so CI, which has no sibling
-        # checkouts, is where that shows up.
+        # cyrius.lock is committed, and this fails when it disagrees with a clean
+        # resolution of the tags. It was written for a `path = "../cmdit"` override,
+        # which silently beat its tag until cyrius 6.7.6; that can no longer happen
+        # by accident. See docs/architecture/003-cyrius-lock-shape.md.
         #
         # The comparison lives in a script because the first version of this step
         # was an inline `git diff --exit-code -- cyrius.lock` and it false-
