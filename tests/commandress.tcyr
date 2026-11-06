@@ -13,8 +13,8 @@ include "lib/fmt.cyr"
 include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
-include "lib/cyml.cyr"
-include "lib/toml.cyr"
+include "lib/bayan-cyml.cyr"
+include "lib/bayan-toml.cyr"
 include "lib/tagged.cyr"
 include "lib/chrono.cyr"
 include "lib/pwd.cyr"
@@ -43,6 +43,8 @@ include "src/segments/rustup_env.cyr"
 include "src/config.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
+    # A missing value must fail this assertion, not fault the whole run.
+    if (got == 0) { assert_neq(got, 0, name); return 0; }
     if (streq(got, want) == 1) {
         assert(1, name);
     } else {
@@ -281,6 +283,118 @@ fn test_config_accepts_single_bracket_sections(): i64 {
     assert_eq(vec_len(segs), 1, "single-bracket [prompt] segments applies");
     _streq_or_dump(vec_get(segs, 0), "exit", "single-bracket segments[0] == \"exit\"");
     syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# ---- config parsing through bayan (ADR 0009) ----
+# The first group is defects the forked `lib/toml.cyr` had, each reproduced against
+# the real binary before the swap. The second is rules the loader has to keep across
+# it: bayan changes the parser's output in ways a plain swap would have leaked out.
+
+fn test_config_bool_with_inline_comment(): i64 {
+    var content = "[[segments.exit]]\nhide_zero = false # always show it\n";
+    var path = _write_test_config("inlinecmt", content);
+    var c = config_load(path);
+    assert_eq(cfg_exit_hide_zero(c), 0, "a trailing comment does not defeat a bool");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_crlf_bool(): i64 {
+    var content = "[[segments.exit]]\r\nhide_zero = false\r\n";
+    var path = _write_test_config("crlfbool", content);
+    var c = config_load(path);
+    assert_eq(cfg_exit_hide_zero(c), 0, "a CRLF line ending does not defeat a bool");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_literal_strings(): i64 {
+    var content = "[[prompt]]\nsegments = ['exit', 'cwd']\ntrailer = '> '\n[[segments.cwd]]\nfg = 'red'\n";
+    var path = _write_test_config("literal", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_trailer(c), "> ", "a literal string loses its quotes");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "a literal colour resolves");
+    assert_eq(vec_len(cfg_segments(c)), 2, "literal array elements are read");
+    _streq_or_dump(vec_get(cfg_segments(c), 0), "exit", "literal element is unquoted");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_unterminated_string_keeps_later_keys(): i64 {
+    var content = "[[prompt]]\nseparator = \"oops\ntrailer = \"> \"\n";
+    var path = _write_test_config("untermstr", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_trailer(c), "> ", "an unterminated string does not delete the next key");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_unterminated_array_keeps_later_keys(): i64 {
+    var content = "[[prompt]]\nsegments = [\"cwd\ntrailer = \"> \"\n";
+    var path = _write_test_config("untermarr", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_trailer(c), "> ", "an unterminated array does not eat the file");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_basic_string_escapes(): i64 {
+    var content = "[[prompt]]\ntrailer = \"\\\"hi\\\"\\t\"\nseparator = \"\\n\"\n[[segments.vcs]]\ndirty_marker = \"\\d\"\n";
+    var path = _write_test_config("escapes", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_trailer(c), "\"hi\"\t", "basic string decodes quote and tab");
+    _streq_or_dump(cfg_separator(c), "\n", "basic string decodes newline");
+    _streq_or_dump(cfg_vcs_dirty_marker(c), "\\d", "an unknown escape stays verbatim");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_array_comment_is_not_an_element(): i64 {
+    var content = "[[prompt]]\nsegments = [\"cwd\", # not \"vcs\" ] here\n  \"exit\"]\ntrailer = \"> \"\n";
+    var path = _write_test_config("arrcmt", content);
+    var c = config_load(path);
+    var segs = cfg_segments(c);
+    assert_eq(vec_len(segs), 2, "a comment adds no array element");
+    _streq_or_dump(vec_get(segs, 1), "exit", "the array continues past the comment");
+    _streq_or_dump(cfg_trailer(c), "> ", "the array closes at its own bracket");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_repeated_key_takes_last_value(): i64 {
+    var content = "[[prompt]]\ntrailer = \"first\"\ntrailer = \"last\"\n[[palette]]\na = \"red\"\na = \"blue\"\n[[segments.cwd]]\nfg = \"palette:a\"\n";
+    var path = _write_test_config("dup", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_trailer(c), "last", "a repeated key takes its last value");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[34m", "a repeated palette name does too");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_empty_section_does_not_shadow(): i64 {
+    var content = "[[segments.cwd]]\n\n[[segments.cwd]]\nfg = \"red\"\n[[segments.cwd]]\nfg = \"blue\"\n";
+    var path = _write_test_config("emptysec", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "the first populated block wins, an empty one does not count");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_palette_dotted_name(): i64 {
+    var content = "[[palette]]\nui.primary = \"red\"\nplain = \"blue\"\n[[segments.cwd]]\nfg = \"palette:ui.primary\"\n[[segments.vcs]]\nfg = \"palette:plain\"\n";
+    var path = _write_test_config("paldot", content);
+    var c = config_load(path);
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "a dotted palette name still resolves");
+    _streq_or_dump(cfg_sgr_vcs(c), "\x1b[34m", "a plain palette name sits beside it");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_dotted_unknown_key_warns(): i64 {
+    var sections = bayan_toml_parse(str_from("[[prompt]]\nfoo.bar = 1\nfoo.baz = 2\n[[prompted.x]]\na = 1\n"));
+    assert_eq(_warn_nested_keys(sections, "prompt"), 2, "dotted keys under a known section warn");
+    assert_eq(_warn_nested_keys(sections, "segments.cwd"), 0, "other sections stay quiet");
     return 0;
 }
 
@@ -1785,6 +1899,17 @@ fn main(): i64 {
     test_config_load_missing_returns_defaults();
     test_config_load_null_path_returns_defaults();
     test_config_accepts_single_bracket_sections();
+    test_config_bool_with_inline_comment();
+    test_config_crlf_bool();
+    test_config_literal_strings();
+    test_config_unterminated_string_keeps_later_keys();
+    test_config_unterminated_array_keeps_later_keys();
+    test_config_basic_string_escapes();
+    test_config_array_comment_is_not_an_element();
+    test_config_repeated_key_takes_last_value();
+    test_config_empty_section_does_not_shadow();
+    test_config_palette_dotted_name();
+    test_config_dotted_unknown_key_warns();
     test_config_load_full_override();
     test_config_load_partial_override();
     test_config_load_vcs_section();

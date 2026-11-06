@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "commandress — structured prompt renderer for agnoshi (cmdrs binary)"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.6.3"
+cyrius = "6.6.20"
 
 [build]
 entry = "src/main.cyr"
@@ -14,8 +14,10 @@ output = "cmdrs"
 [deps]
 # `args` and `bench` were always compiled in via includes (src/main.cyr includes
 # lib/args.cyr; tests/commandress.bcyr includes lib/bench.cyr) but were never
-# declared. cmdit's `dist/cmdit.deps` sidecar requires both in scope, so they are
-# named here now — the declaration catches up with what the build already did.
+# declared. cmdit 1.2.4's `dist/cmdit.deps` sidecar required both in scope, so they
+# were named then — the declaration caught up with what the build already did. From
+# cmdit 1.2.6 the sidecar lists only alloc/string/args/io; both stay declared because
+# this repo includes them directly.
 #
 # 6.6.2: `chrono`, `fnptr`, `process`, `pwd` and `tagged` are added for the same
 # reason — src/main.cyr has always included all five, but an UNDECLARED module is
@@ -24,10 +26,28 @@ output = "cmdrs"
 # header ("Layout: tag at offset 0, value at offset 8") compiling against a
 # value-form toolchain, and `chrono.cyr` predated the 6.6.1 AGNOS clock fix. Both
 # were silent: the build was green throughout. Declare what you include.
+#
+# 1.1.9: `result` is added because both bayan sublibs below include it
+# (dist/bayan-toml.deps, dist/bayan-cyml.deps). The old forked parsers included it
+# too, undeclared, which is the same drift the 6.6.2 note describes.
 stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "args", "bench",
-          "chrono", "fnptr", "process", "pwd", "tagged"]
+          "chrono", "fnptr", "process", "pwd", "tagged", "result"]
 
 # ── AGNOS first-party deps ───────────────────────────────────────
+# bayan — the data-format library that absorbed `lib/toml.cyr` and `lib/cyml.cyr`.
+# Those two files were frozen copies that no toolchain snapshot had shipped since
+# cyrius 6.1.25, so nothing could update them, and they parsed `~/.commandress`.
+# Only the two sublibs are pulled, not the 732 KB bundle in the snapshot: a config
+# file needs TOML and CYML and nothing else. See ADR 0009.
+#
+# The tag is the bayan that cyrius 6.6.20 itself bundles. 1.5.13 and later need
+# cyrius 6.7.x, so read a tag's own `cyrius` pin before moving this. `path` stays
+# unset for the reason given on cmdit below.
+[deps.bayan]
+git = "https://github.com/MacCracken/bayan.git"
+tag = "1.5.12"
+modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr"]
+
 # cmdit — sovereign CLI / argument-parsing library (getopt-long), the stdlib
 # `flags` parser productized + extended. commandress's CLI surface is one flag
 # (`--side=left|right`), which it hand-rolled as a substring walk over argv; the
@@ -52,6 +72,6 @@ stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "a
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit.git"
 # path = "../cmdit"   # see note above — do not commit a lock built with this active
-tag = "1.2.4"
+tag = "1.2.6"
 modules = ["dist/cmdit.cyr"]
 ---

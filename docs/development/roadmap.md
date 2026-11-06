@@ -15,7 +15,7 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.1.6**; the 1.1.x line has been toolchain refreshes,
+this file. Current release is **1.1.9**; the 1.1.x line has been toolchain refreshes,
 the cmdit CLI adoption, and a security audit. The public API is frozen per
 [ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
 not-frozen surface, or routed through the documented 3-step deprecation path. No item
@@ -55,7 +55,8 @@ not parse single-bracket `[section]` tables (papercut Item 3). **That gap has cl
 Verified 2026-08-26 against the 6.5.35 stdlib: `toml_get_sections` finds a
 single-bracket `[toolchain]`, with a double-bracket control case proving the harness.
 This item is scheduled work now, not blocked work — the source comments that said
-otherwise were corrected in the same sweep.
+otherwise were corrected in the same sweep. Since 1.1.9 the parser is `lib/bayan-toml.cyr`
+([ADR 0009](../adr/0009-config-parsing-via-bayan.md)), so this adds no new dependency.
 
 ---
 
@@ -129,33 +130,3 @@ Unchanged from v1.0, restated so nobody re-proposes them:
 - [x] CHANGELOG complete from v0.1.0
 - [x] Security audit pass — **0.9.0** ([2026-05-18](../audit/2026-05-18-audit.md)); second pass **1.1.6** ([2026-08-26](../audit/2026-08-26-audit.md))
 - [x] Benchmarks captured — **0.9.0** ([`benchmarks.md`](../benchmarks.md))
-
-## Moving the cyrius pin to 6.6.6
-
-Current pin: `cyrius = "6.6.3"` (`cyrius.cyml`). Nothing needs to change first — this is a
-plain pin bump.
-
-commandress writes exactly one thing, the prompt cache, and it does **not** use either flag
-6.6.6 fixes on Windows: `src/cache.cyr:261` and `:265` open with
-`O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW` (`1 + 64 + 128 + 131072`, mode 0600) into a
-pid-suffixed temp, with no `O_TRUNC` and no `O_APPEND`. The eight `O_TRUNC` uses in the repo
-are all fixture setup inside `tests/commandress.tcyr` (lines 773, 814, 842, 919, 990, 1005,
-1036, 1049), writing `cyrius.cyml` / `VERSION` / `.python-version` / `.nvmrc` /
-`rust-toolchain` probes under `/tmp`. Those run on Linux CI only. There is no Windows target
-anywhere — `CYRIUS_TARGET_AGNOS` is the only `CYRIUS_TARGET_*` in `src/`, CI is
-`ubuntu-latest`, and `release.yml` declares no `windows-*` job — so item 1 does not reach this
-repo in either its source or its tests.
-
-Everything else checked and empty: no `async fn`, no `operator` fn, no `ret2`/`rethi`, no SIMD
-intrinsics, no struct declarations in `src/`, and no struct- or vector-typed parameter or
-`var` declaration — so all of item 3's new compile errors and item 5's by-value-struct-param
-deep copy have no sites. Its single `: cstring` parameter takes no integer literal at any call
-site (and a literal `0` remains allowed regardless). No top-level bare `{` blocks (item 4), no
-duplicated global declarations (item 6), no `regression_*` call sites of its own (item 8 — the
-two `include` hits are `lib/regression.cyr` pulling `lib/regression_agnos.cyr`), and no own
-`vec_*` function colliding with the 14 names `lib/vec.cyr` exports, so the new transitive
-`lib/assert.cyr` → `lib/vec.cyr` include is inert (item 9).
-
-After bumping, verify the full `.tcyr` suite per-file and re-run the cold-start benchmark —
-the prompt budget is the thing this repo measures, so a render-time delta is the signal worth
-watching across a compiler bump.

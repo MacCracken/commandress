@@ -1,7 +1,14 @@
 # config.cyr — CYML config loader for ~/.commandress.
 #
-# Schema (TOML in the header zone of a CYML file). Sub-tables are written
-# `[[name]]`, and BOTH `[[name]]` and `[name]` are accepted.
+# Schema (TOML in the header zone of a CYML file), read by bayan's TOML and CYML
+# sublibs (ADR 0009). Sub-tables are written `[[name]]`, and BOTH `[[name]]` and
+# `[name]` are accepted.
+#
+# Values follow TOML. `"..."` decodes escapes (`\n`, `\t`, `\"`, `\\`, and `\u` code
+# points) and keeps an unknown one verbatim. `'...'` is literal. Comments may follow
+# any value.
+# A repeated key takes its LAST value. Bare (unquoted) values are not TOML strings:
+# they end at `#`, `,` or `}`.
 #
 # The `[[X]]` form was originally a workaround: the stdlib's `toml_parse`
 # recognised array-of-tables but not single-bracket sections (Cyrius papercut
@@ -215,54 +222,92 @@ fn _parse_bool(s, dflt): i64 {
     return dflt;
 }
 
-# Parse a TOML array literal — `["a", "b"]` — into a vec of heap-
-# allocated NUL-terminated cstrings. Empty / malformed input returns
-# an empty vec.
-fn _parse_str_array(s): i64 {
+# Decompose a TOML array value into a vec of heap-allocated NUL-terminated
+# cstrings. A value that is not an array gives an empty vec.
+#
+# bayan does the splitting, so a `#` comment or a `]` inside an element cannot
+# masquerade as structure. A hand-rolled quote scanner lived here until 1.1.9 and
+# read `"x"` inside a comment as an element.
+fn _str_array(s): i64 {
     var out = vec_new();
     if (s == 0) { return out; }
-    var data = str_data(s);
-    var slen = str_len(s);
+    var els = bayan_toml_array_parse(s);
+    if (els == 0) { return out; }
+    var n = vec_len(els);
     var i = 0;
-    while (i < slen) {
-        var c = load8(data + i);
-        if (c == 34) {
-            i = i + 1;
-            var start = i;
-            var seek = 1;
-            while (seek == 1) {
-                if (i >= slen) { seek = 0; }
-                else { if (load8(data + i) == 34) { seek = 0; } else { i = i + 1; } }
-            }
-            var slen2 = i - start;
-            var cstr = alloc(slen2 + 1);
-            if (slen2 > 0) { memcpy(cstr, data + start, slen2); }
-            store8(cstr + slen2, 0);
-            vec_push(out, cstr);
-            i = i + 1;
-        } else {
-            i = i + 1;
-        }
+    while (i < n) {
+        var cs = str_cstr(vec_get(els, i));
+        if (cs != 0) { vec_push(out, cs); }
+        i = i + 1;
     }
+    return out;
+}
+
+# Pairs of the first NON-EMPTY section called `name`, or 0 if there is none.
+#
+# bayan emits an empty table where the old parser dropped it, so a plain
+# `vec_get(secs, 0)` would let an empty `[[segments.cwd]]` shadow a populated one
+# further down. Skipping empties keeps the rule this loader has always had: the
+# first block with something in it wins.
+fn _section_pairs(sections, name): i64 {
+    var secs = bayan_toml_get_sections(sections, name);
+    var n = vec_len(secs);
+    var i = 0;
+    while (i < n) {
+        var pairs = bayan_toml_section_pairs(vec_get(secs, i));
+        if (vec_len(pairs) > 0) { return pairs; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 1 if section name `sname` (a Str) is a sub-table of `parent` (a cstring of
+# length `plen`), i.e. it begins with `parent.`.
+#
+# TOML reads `a.b = 1` as key `b` of table `a`, so inside `[[prompt]]` a dotted key
+# lands in a section `prompt.a`. The old parser kept it as a flat key in `[[prompt]]`,
+# and two frozen behaviours depended on that: palette names may contain dots, and
+# an unknown field warns (ADR 0007 § 2). `_load_palette` and `_warn_nested_keys`
+# put those back.
+fn _is_subtable(sname, parent, plen): i64 {
+    if (str_len(sname) <= plen + 1) { return 0; }
+    var d = str_data(sname);
+    if (load8(d + plen) != 46) { return 0; }
+    return memeq(d, parent, plen);
+}
+
+# The key as the user wrote it: for sub-table `prompt.foo` (where `plen` is the
+# length of `prompt`) and key `bar`, an owned cstring `foo.bar`. 0 if alloc refuses.
+fn _dotted_key(sname, plen, key): i64 {
+    var tail = str_len(sname) - plen - 1;
+    var klen = str_len(key);
+    var out = alloc(tail + 1 + klen + 1);
+    if (out == 0) { return 0; }
+    memcpy(out, str_data(sname) + plen + 1, tail);
+    store8(out + tail, 46);
+    if (klen > 0) { memcpy(out + tail + 1, str_data(key), klen); }
+    store8(out + tail + 1 + klen, 0);
     return out;
 }
 
 # Look up `name` in a palette table (flat vec of alternating
 # cstrings: [k0, v0, k1, v1, ...]). Returns the value cstring or 0
 # when the name isn't bound. Linear scan — palettes are small (~10
-# entries in practice); a hashmap would be over-engineering.
+# entries in practice); a hashmap would be over-engineering. Scans to the
+# end so a repeated name takes its last value, the same rule as every other key.
 fn _palette_lookup(palette, name): i64 {
     if (palette == 0) { return 0; }
     if (name == 0) { return 0; }
     var pn = vec_len(palette);
     var pi = 0;
+    var hit = 0;
     while (pi + 1 < pn) {
         if (streq(vec_get(palette, pi), name) == 1) {
-            return vec_get(palette, pi + 1);
+            hit = vec_get(palette, pi + 1);
         }
         pi = pi + 2;
     }
-    return 0;
+    return hit;
 }
 
 # Resolve a color value cstring through the palette. Values that begin
@@ -290,9 +335,9 @@ fn _resolve_color_value(value, palette): i64 {
 # its (lack of) bg. `palette` is the table parsed from the optional
 # [[palette]] section (or 0).
 fn _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette): i64 {
-    var fg_v = toml_get(pairs, "fg");
-    var bg_v = toml_get(pairs, "bg");
-    var style_v = toml_get(pairs, "style");
+    var fg_v = bayan_toml_get(pairs, "fg");
+    var bg_v = bayan_toml_get(pairs, "bg");
+    var style_v = bayan_toml_get(pairs, "style");
     if (fg_v == 0) {
         if (bg_v == 0) {
             if (style_v == 0) { return 0; }
@@ -309,6 +354,17 @@ fn _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette): i64 {
     return 0;
 }
 
+# Report one unknown field. audit A-06: both echoed values are raw config bytes,
+# so they are filtered the same way segment output is filtered.
+fn _warn_unknown_key(key, klen, section_name): i64 {
+    syscall(SYS_WRITE, STDERR, "warning: unknown config field '", 31);
+    eprint_sanitized(key, klen);
+    syscall(SYS_WRITE, STDERR, "' in [[", 7);
+    eprint_sanitized(section_name, strlen(section_name));
+    syscall(SYS_WRITE, STDERR, "]] (ignored)\n", 13);
+    return 0;
+}
+
 # Emit a stderr warning for any key in `pairs` not on `allowed`.
 # `allowed` is a NUL-terminated vec-of-cstrings; section_name is the
 # `[[name]]` we're scoped to.
@@ -317,7 +373,7 @@ fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
     var pi = 0;
     while (pi < pn) {
         var p = vec_get(pairs, pi);
-        var key = toml_pair_key(p);
+        var key = bayan_toml_pair_key(p);
         var known = 0;
         var ai = 0;
         var an = vec_len(allowed);
@@ -325,18 +381,38 @@ fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
             if (str_eq_cstr(key, vec_get(allowed, ai)) == 1) { known = 1; }
             ai = ai + 1;
         }
-        if (known == 0) {
-            # audit A-06: both echoed values are raw config bytes; filter them
-            # the same way segment output is filtered.
-            syscall(SYS_WRITE, STDERR, "warning: unknown config field '", 31);
-            eprint_sanitized(str_data(key), str_len(key));
-            syscall(SYS_WRITE, STDERR, "' in [[", 7);
-            eprint_sanitized(section_name, strlen(section_name));
-            syscall(SYS_WRITE, STDERR, "]] (ignored)\n", 13);
-        }
+        if (known == 0) { _warn_unknown_key(str_data(key), str_len(key), section_name); }
         pi = pi + 1;
     }
     return 0;
+}
+
+# Warn about dotted keys under `section_name`, spelled as they were written.
+# Returns how many warnings it printed, so the suite can pin the behaviour.
+fn _warn_nested_keys(sections, section_name): i64 {
+    var plen = strlen(section_name);
+    var warned = 0;
+    var n = vec_len(sections);
+    var i = 0;
+    while (i < n) {
+        var s = vec_get(sections, i);
+        var sname = bayan_toml_section_name(s);
+        if (_is_subtable(sname, section_name, plen) == 1) {
+            var pairs = bayan_toml_section_pairs(s);
+            var pn = vec_len(pairs);
+            var pi = 0;
+            while (pi < pn) {
+                var name = _dotted_key(sname, plen, bayan_toml_pair_key(vec_get(pairs, pi)));
+                if (name != 0) {
+                    _warn_unknown_key(name, strlen(name), section_name);
+                    warned = warned + 1;
+                }
+                pi = pi + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return warned;
 }
 
 # Helper for segments whose [[segments.X]] block carries ONLY color
@@ -344,10 +420,8 @@ fn _warn_unknown_pairs(pairs, allowed, section_name): i64 {
 # style, applies. Used by hostname / user / the four env segments —
 # all introduced as configurable-only-for-color sections in v0.6.0.
 fn _load_color_only_section(c, sgr_offset, bg_offset, sections, name, palette): i64 {
-    var secs = toml_get_sections(sections, name);
-    if (vec_len(secs) == 0) { return 0; }
-    var sec = vec_get(secs, 0);
-    var pairs = toml_section_pairs(sec);
+    var pairs = _section_pairs(sections, name);
+    if (pairs == 0) { return 0; }
     var allowed = vec_new();
     vec_push(allowed, "fg");
     vec_push(allowed, "bg");
@@ -360,28 +434,51 @@ fn _load_color_only_section(c, sgr_offset, bg_offset, sections, name, palette): 
 # Load the [[palette]] section into a flat alternating-cstring vec.
 # Returns an empty vec when the section is absent so callers can pass
 # it through `_resolve_color_value` without a null check.
+#
+# Palette names are arbitrary (ADR 0007 § 2), so `ui.primary = "cyan"` must stay
+# reachable as `palette:ui.primary` even though TOML parks it in a sub-table.
 fn _load_palette(sections): i64 {
     var p = vec_new();
-    var secs = toml_get_sections(sections, "palette");
-    if (vec_len(secs) == 0) { return p; }
-    var sec = vec_get(secs, 0);
-    var pairs = toml_section_pairs(sec);
-    var pn = vec_len(pairs);
-    var pi = 0;
-    while (pi < pn) {
-        var pair = vec_get(pairs, pi);
-        var key = toml_pair_key(pair);
-        var val = toml_pair_value(pair);
+    var pairs = _section_pairs(sections, "palette");
+    if (pairs != 0) {
+        var pn = vec_len(pairs);
+        var pi = 0;
+        while (pi < pn) {
+            var pair = vec_get(pairs, pi);
+            var key = bayan_toml_pair_key(pair);
+            var val = bayan_toml_pair_value(pair);
 
-        # Promote key from a `str` (data+len, possibly unterminated)
-        # into an owned NUL-terminated cstring so streq lookups work.
-        var klen = str_len(key);
-        var kcs = alloc(klen + 1);
-        if (klen > 0) { memcpy(kcs, str_data(key), klen); }
-        store8(kcs + klen, 0);
-        vec_push(p, kcs);
-        vec_push(p, str_cstr(val));
-        pi = pi + 1;
+            # Promote key from a `str` (data+len, possibly unterminated)
+            # into an owned NUL-terminated cstring so streq lookups work.
+            var klen = str_len(key);
+            var kcs = alloc(klen + 1);
+            if (klen > 0) { memcpy(kcs, str_data(key), klen); }
+            store8(kcs + klen, 0);
+            vec_push(p, kcs);
+            vec_push(p, str_cstr(val));
+            pi = pi + 1;
+        }
+    }
+    var n = vec_len(sections);
+    var si = 0;
+    while (si < n) {
+        var s = vec_get(sections, si);
+        var sname = bayan_toml_section_name(s);
+        if (_is_subtable(sname, "palette", 7) == 1) {
+            var sub = bayan_toml_section_pairs(s);
+            var sn = vec_len(sub);
+            var sp = 0;
+            while (sp < sn) {
+                var entry = vec_get(sub, sp);
+                var dotted = _dotted_key(sname, 7, bayan_toml_pair_key(entry));
+                if (dotted != 0) {
+                    vec_push(p, dotted);
+                    vec_push(p, str_cstr(bayan_toml_pair_value(entry)));
+                }
+                sp = sp + 1;
+            }
+        }
+        si = si + 1;
     }
     return p;
 }
@@ -399,12 +496,15 @@ fn config_load(path): i64 {
     var n = read_regular_file(path, buf, 65536);
     if (n <= 0) { return c; }
 
-    var doc = cyml_parse(buf, n);
-    var hdr = cyml_doc_header(doc);
-    var hlen = cyml_doc_header_len(doc);
+    var doc = bayan_cyml_parse(buf, n);
+    var hdr = bayan_cyml_doc_header(doc);
+    var hlen = bayan_cyml_doc_header_len(doc);
     if (hlen == 0) { return c; }
 
-    var sections = toml_parse(str_new(hdr, hlen));
+    # 0 means the allocator refused a key or value. A half-read config is
+    # worse than none, so fall back to defaults.
+    var sections = bayan_toml_parse(str_new(hdr, hlen));
+    if (sections == 0) { return c; }
 
     # [[palette]] — optional named-slot table parsed first so every
     # segment block below can resolve `palette:<name>` references in
@@ -413,11 +513,8 @@ fn config_load(path): i64 {
     var palette = _load_palette(sections);
 
     # [[prompt]] — segment order + separator + trailer.
-    var prompt_secs = toml_get_sections(sections, "prompt");
-    if (vec_len(prompt_secs) > 0) {
-        var prompt = vec_get(prompt_secs, 0);
-        var prompt_pairs = toml_section_pairs(prompt);
-
+    var prompt_pairs = _section_pairs(sections, "prompt");
+    if (prompt_pairs != 0) {
         var prompt_allowed = vec_new();
         vec_push(prompt_allowed, "segments");
         vec_push(prompt_allowed, "right_segments");
@@ -428,44 +525,41 @@ fn config_load(path): i64 {
         vec_push(prompt_allowed, "right_separator_glyph");
         _warn_unknown_pairs(prompt_pairs, prompt_allowed, "prompt");
 
-        var sep_v = toml_get(prompt_pairs, "separator");
+        var sep_v = bayan_toml_get(prompt_pairs, "separator");
         if (sep_v != 0) { store64(c + CFG_SEPARATOR, str_cstr(sep_v)); }
 
-        var trail_v = toml_get(prompt_pairs, "trailer");
+        var trail_v = bayan_toml_get(prompt_pairs, "trailer");
         if (trail_v != 0) { store64(c + CFG_TRAILER, str_cstr(trail_v)); }
 
-        var segs_v = toml_get(prompt_pairs, "segments");
+        var segs_v = bayan_toml_get(prompt_pairs, "segments");
         if (segs_v != 0) {
-            var parsed = _parse_str_array(segs_v);
+            var parsed = _str_array(segs_v);
             if (vec_len(parsed) > 0) { store64(c + CFG_SEGMENTS, parsed); }
         }
 
         # `right_segments` accepts an empty array — the user opts back out
         # of right-prompt by setting it explicitly to `[]`. So unlike
         # `segments` we don't require len > 0 to overwrite.
-        var rsegs_v = toml_get(prompt_pairs, "right_segments");
-        if (rsegs_v != 0) { store64(c + CFG_RIGHT_SEGMENTS, _parse_str_array(rsegs_v)); }
+        var rsegs_v = bayan_toml_get(prompt_pairs, "right_segments");
+        if (rsegs_v != 0) { store64(c + CFG_RIGHT_SEGMENTS, _str_array(rsegs_v)); }
 
         # `separator_style` is parsed as a string and mapped to an int:
         # "powerline" → 1, anything else (including "plain") → 0. Storing
         # an int avoids a runtime streq per redraw.
-        var ssty_v = toml_get(prompt_pairs, "separator_style");
+        var ssty_v = bayan_toml_get(prompt_pairs, "separator_style");
         if (ssty_v != 0) {
             if (str_eq_cstr(ssty_v, "powerline") == 1) { store64(c + CFG_SEPARATOR_STYLE, 1); }
             else { store64(c + CFG_SEPARATOR_STYLE, 0); }
         }
-        var sg_v = toml_get(prompt_pairs, "separator_glyph");
+        var sg_v = bayan_toml_get(prompt_pairs, "separator_glyph");
         if (sg_v != 0) { store64(c + CFG_SEPARATOR_GLYPH, str_cstr(sg_v)); }
-        var rsg_v = toml_get(prompt_pairs, "right_separator_glyph");
+        var rsg_v = bayan_toml_get(prompt_pairs, "right_separator_glyph");
         if (rsg_v != 0) { store64(c + CFG_RIGHT_SEPARATOR_GLYPH, str_cstr(rsg_v)); }
     }
 
     # [[segments.cwd]] — cwd-segment options.
-    var cwd_secs = toml_get_sections(sections, "segments.cwd");
-    if (vec_len(cwd_secs) > 0) {
-        var cwd = vec_get(cwd_secs, 0);
-        var cwd_pairs = toml_section_pairs(cwd);
-
+    var cwd_pairs = _section_pairs(sections, "segments.cwd");
+    if (cwd_pairs != 0) {
         var cwd_allowed = vec_new();
         vec_push(cwd_allowed, "home_shorten");
         vec_push(cwd_allowed, "max_length");
@@ -474,20 +568,17 @@ fn config_load(path): i64 {
         vec_push(cwd_allowed, "style");
         _warn_unknown_pairs(cwd_pairs, cwd_allowed, "segments.cwd");
 
-        var hs_v = toml_get(cwd_pairs, "home_shorten");
+        var hs_v = bayan_toml_get(cwd_pairs, "home_shorten");
         store64(c + CFG_CWD_HOME_SHORTEN, _parse_bool(hs_v, cfg_cwd_home_shorten(c)));
 
-        var ml_v = toml_get(cwd_pairs, "max_length");
+        var ml_v = bayan_toml_get(cwd_pairs, "max_length");
         if (ml_v != 0) { store64(c + CFG_CWD_MAX_LENGTH, atoi(str_cstr(ml_v))); }
         _apply_seg_style(c, CFG_SGR_CWD, CFG_BG_CWD, cwd_pairs, palette);
     }
 
     # [[segments.exit]] — exit-segment options.
-    var exit_secs = toml_get_sections(sections, "segments.exit");
-    if (vec_len(exit_secs) > 0) {
-        var exit = vec_get(exit_secs, 0);
-        var exit_pairs = toml_section_pairs(exit);
-
+    var exit_pairs = _section_pairs(sections, "segments.exit");
+    if (exit_pairs != 0) {
         var exit_allowed = vec_new();
         vec_push(exit_allowed, "hide_zero");
         vec_push(exit_allowed, "fg");
@@ -495,17 +586,14 @@ fn config_load(path): i64 {
         vec_push(exit_allowed, "style");
         _warn_unknown_pairs(exit_pairs, exit_allowed, "segments.exit");
 
-        var hz_v = toml_get(exit_pairs, "hide_zero");
+        var hz_v = bayan_toml_get(exit_pairs, "hide_zero");
         store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
         _apply_seg_style(c, CFG_SGR_EXIT, CFG_BG_EXIT, exit_pairs, palette);
     }
 
     # [[segments.vcs]] — vcs-segment options.
-    var vcs_secs = toml_get_sections(sections, "segments.vcs");
-    if (vec_len(vcs_secs) > 0) {
-        var vcs = vec_get(vcs_secs, 0);
-        var vcs_pairs = toml_section_pairs(vcs);
-
+    var vcs_pairs = _section_pairs(sections, "segments.vcs");
+    if (vcs_pairs != 0) {
         var vcs_allowed = vec_new();
         vec_push(vcs_allowed, "show_dirty");
         vec_push(vcs_allowed, "dirty_marker");
@@ -514,20 +602,17 @@ fn config_load(path): i64 {
         vec_push(vcs_allowed, "style");
         _warn_unknown_pairs(vcs_pairs, vcs_allowed, "segments.vcs");
 
-        var sd_v = toml_get(vcs_pairs, "show_dirty");
+        var sd_v = bayan_toml_get(vcs_pairs, "show_dirty");
         store64(c + CFG_VCS_SHOW_DIRTY, _parse_bool(sd_v, cfg_vcs_show_dirty(c)));
 
-        var dm_v = toml_get(vcs_pairs, "dirty_marker");
+        var dm_v = bayan_toml_get(vcs_pairs, "dirty_marker");
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
         _apply_seg_style(c, CFG_SGR_VCS, CFG_BG_VCS, vcs_pairs, palette);
     }
 
     # [[segments.time]] — time-segment options.
-    var time_secs = toml_get_sections(sections, "segments.time");
-    if (vec_len(time_secs) > 0) {
-        var time_sec = vec_get(time_secs, 0);
-        var time_pairs = toml_section_pairs(time_sec);
-
+    var time_pairs = _section_pairs(sections, "segments.time");
+    if (time_pairs != 0) {
         var time_allowed = vec_new();
         vec_push(time_allowed, "format");
         vec_push(time_allowed, "fg");
@@ -535,7 +620,7 @@ fn config_load(path): i64 {
         vec_push(time_allowed, "style");
         _warn_unknown_pairs(time_pairs, time_allowed, "segments.time");
 
-        var fmt_v = toml_get(time_pairs, "format");
+        var fmt_v = bayan_toml_get(time_pairs, "format");
         if (fmt_v != 0) { store64(c + CFG_TIME_FORMAT, str_cstr(fmt_v)); }
         _apply_seg_style(c, CFG_SGR_TIME, CFG_BG_TIME, time_pairs, palette);
     }
@@ -549,6 +634,19 @@ fn config_load(path): i64 {
     _load_color_only_section(c, CFG_SGR_PYTHON_ENV, CFG_BG_PYTHON_ENV, sections, "segments.python_env", palette);
     _load_color_only_section(c, CFG_SGR_NODE_ENV,   CFG_BG_NODE_ENV,   sections, "segments.node_env",   palette);
     _load_color_only_section(c, CFG_SGR_RUSTUP_ENV, CFG_BG_RUSTUP_ENV, sections, "segments.rustup_env", palette);
+
+    # Dotted keys never reach the allow-lists above, so check them here.
+    _warn_nested_keys(sections, "prompt");
+    _warn_nested_keys(sections, "segments.cwd");
+    _warn_nested_keys(sections, "segments.exit");
+    _warn_nested_keys(sections, "segments.vcs");
+    _warn_nested_keys(sections, "segments.time");
+    _warn_nested_keys(sections, "segments.hostname");
+    _warn_nested_keys(sections, "segments.user");
+    _warn_nested_keys(sections, "segments.cyrius_env");
+    _warn_nested_keys(sections, "segments.python_env");
+    _warn_nested_keys(sections, "segments.node_env");
+    _warn_nested_keys(sections, "segments.rustup_env");
 
     return c;
 }

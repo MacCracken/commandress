@@ -2,13 +2,13 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.1.6** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit. **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.1.9** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit. **License**: GPL-3.0-only.
 
 ## What it is
 
 A small, self-contained binary that takes shell context as input (`$CWD`, last exit code, current VCS state, etc.) and prints a configurable, segment-based prompt line. The shell invokes it once per prompt redraw.
 
-- **Single static binary, no runtime deps** — the Cyrius stdlib plus one first-party AGNOS source dep ([cmdit](https://github.com/MacCracken/cmdit), CLI parsing — [ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md)), compiled in. Fast cold start (default `cwd + vcs + exit` prompt renders in ~11 µs — 0.2 % of the 5 ms budget)
+- **Single static binary, no runtime deps** — the Cyrius stdlib plus two first-party AGNOS source deps ([cmdit](https://github.com/MacCracken/cmdit) for CLI parsing, [ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md); [bayan](https://github.com/MacCracken/bayan) for config parsing, [ADR 0009](docs/adr/0009-config-parsing-via-bayan.md)), compiled in. Fast cold start (default `cwd + vcs + exit` prompt renders in ~11 µs — 0.2 % of the 5 ms budget)
 - **Segment model** — independent producers (cwd / vcs / exit / time / hostname / user / language envs), each a pure function of context
 - **Config-driven** — appearance, segment order, and per-segment toggles live in a CYML file (`~/.commandress` — no extension; see [ADR 0006](docs/adr/0006-config-path-rename.md))
 - **Sovereign stack** — VCS state comes from [`sit`](https://github.com/MacCracken/sit), not external `git` ([ADR 0004](docs/adr/0004-vcs-probe-via-sit.md))
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.1.6
+cmdrs 1.1.9
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```
@@ -147,7 +147,7 @@ commandress/
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build + first run
 - [`docs/development/state.md`](docs/development/state.md) — current version, sizes, benchmarks, in-flight work
 - [`docs/development/roadmap.md`](docs/development/roadmap.md) — post-v1 sequencing (1.2.0 →), every item pinned to the line that defers it
-- [`docs/adr/`](docs/adr/) — architectural decisions (rendering model, config format, VCS-via-sit, schema freeze, cmdit adoption)
+- [`docs/adr/`](docs/adr/) — architectural decisions (rendering model, config format, VCS-via-sit, schema freeze, cmdit adoption, config parsing via bayan)
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants (prompt render budget, shellout watchdog, etc.)
 - [`docs/audit/2026-08-26-audit.md`](docs/audit/2026-08-26-audit.md) — latest security audit (1.1.6 P-1 sweep); prior pass [2026-05-18](docs/audit/2026-05-18-audit.md)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — what we measure, the budgets, and the current numbers

@@ -74,6 +74,36 @@ continues with defaults for that field. Every knob is listed in
 [`../examples/commandress.cyml.example`](../examples/commandress.cyml.example); drop-in
 palettes live in [`../themes/`](../themes/).
 
+### Writing values
+
+The header zone is read as TOML by [bayan](https://github.com/MacCracken/bayan)
+([ADR 0009](../adr/0009-config-parsing-via-bayan.md)).
+
+| Form | Example | Notes |
+|---|---|---|
+| Basic string | `trailer = "\n$ "` | Decodes `\n`, `\t`, `\"`, `\\` and `\u` code points. An unknown escape stays as written. |
+| Literal string | `separator = ' \ '` | Exactly the bytes between the quotes. Use this when you want a backslash. |
+| Bool or number | `hide_zero = false` | Unquoted. |
+| Array | `segments = ["cwd", "exit"]` | May span lines and hold comments. |
+
+Comments can follow any value. If a key is repeated, the last value wins. Quote every string:
+an unquoted one ends at `#`, `,` or `}`.
+
+A newline in `trailer` gives a two-line prompt:
+
+```cyml
+[[prompt]]
+segments = ["cwd", "vcs"]
+trailer  = "\n$ "
+```
+
+`separator`, `trailer` and the glyphs are printed exactly as written, so an escape such as
+`\u001b` reaches your terminal. That is intended for a file you wrote, but read any config you
+paste in from elsewhere.
+
+The `---` divider needs LF line endings. In a file saved with CRLF, the notes below it are read
+as config.
+
 ## Adding a segment
 
 1. Create `src/segments/your_segment.cyr` exporting a pure `your_segment_render(...) → cstring` (0 for "render nothing")

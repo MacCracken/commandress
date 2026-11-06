@@ -57,6 +57,38 @@ Measured against the real toolchain and dependency (Cyrius 6.5.35, cmdit 1.2.4):
 | Dep `commit` sha altered to a nonexistent rev | fail — `cyrius deps` cannot resolve it |
 | Generated with `path = "../cmdit"` active | **fail — pin branch** (property 2) |
 
+## 3. A tag bump can leave the old pin in the lock, and the guard passes it
+
+Measured on Cyrius 6.6.20, moving cmdit `1.2.4` to `1.2.6`. `cyrius lib sync` carries
+`commit` lines forward, and `cyrius deps` then adds the new tag's line without pruning the
+old one:
+
+```
+commit	e69bcaa361dca638bb73a7a3669378bed851aa40	cmdit	https://github.com/MacCracken/cmdit.git	1.2.4
+commit	c74cb7de35d66abd670d362888949f83c385fc95	cmdit	https://github.com/MacCracken/cmdit.git	1.2.6
+```
+
+Later `cyrius deps` runs keep both lines. `lock-check.sh` then compares two pins against the
+same two pins and reports `OK — 2 dep pin(s)`. The script proves that re-resolving does not
+change the lock. It does not prove that the lock holds exactly the tags in `cyrius.cyml`.
+
+| Committed lock state | `lock-check.sh` |
+|---|---|
+| Old and new `commit` lines for the same dep | **pass — a blind spot** |
+| Regenerated from empty (one `commit` line) | pass |
+
+## Moving the toolchain and a dep tag together
+
+1. Bump `[package].cyrius` and `[deps.<name>].tag`.
+2. Run `cyrius lib sync --full` **before** any `deps` or `build`. A build first writes the
+   previous pin's hashes into the lock, and `lib sync` then refuses to run without
+   `--relock`.
+3. Run `rm cyrius.lock && cyrius deps` so the old pin cannot survive.
+4. Check that `grep -c '^commit' cyrius.lock` equals the number of git deps.
+
+To pick the tag, read that tag's own `cyrius` pin. `cyrius update` takes the latest tag,
+which can require a newer toolchain than the one this repo is moving to.
+
 ## Practical rule
 
 Keep `path = "../cmdit"` commented out in `cyrius.cyml` and resolve from the tag, so

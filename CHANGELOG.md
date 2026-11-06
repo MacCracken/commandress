@@ -6,6 +6,142 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.9] - 2026-11-06
+
+`cyrius` 6.6.3 -> **6.6.20**, cmdit 1.2.4 -> **1.2.6**, the vendored stdlib re-synced, and
+`~/.commandress` now parsed by **bayan 1.5.12** instead of two frozen forks
+([ADR 0009](docs/adr/0009-config-parsing-via-bayan.md)). Every shipped theme and example
+renders byte-identically, and no frozen field changes. Some other configs do change: see
+**Breaking**.
+
+### Breaking
+
+The old parser returned raw bytes and read some malformed input as data. bayan follows TOML.
+The changes below can affect a config that loaded before.
+
+| If your config has | 1.1.8 | 1.1.9 | To migrate |
+|---|---|---|---|
+| A backslash escape in `"..."`, such as `\n`, `\t`, `\"`, `\\` or `▶` | Printed as typed | Decoded | Use `'...'` to keep the literal text |
+| A repeated key, including in `[[palette]]` | First value wins | Last value wins | Delete the line you don't want |
+| A `'''...'''` value closing on its own line | Final newline trimmed | Final newline kept | Put the closing `'''` on the last line |
+| An unquoted string containing `#`, `,` or `}` | Read to end of line | Ends at that character | Quote the value |
+| A non-string in `segments`, such as `[cwd, 1]` | Ignored | Treated as a segment name, with a warning if unknown | Quote the names, or remove the element |
+| A nested array in `segments`, such as `[["cwd"]]` | Inner strings used | One unknown segment, with a warning | Flatten the array |
+| An array missing its `]`, such as `["cwd"` | Strings picked out of the rest of the file | One unknown segment, with a warning | Add the `]` |
+| A line starting with `=` | Warned about a field named `''` | Skipped silently | Delete the line |
+
+ADR 0007 froze fields rather than string spelling, so these did not go through its deprecation
+path. ADR 0009 has the reasoning.
+
+### Fixed
+
+Each of these was reproduced against the 1.1.8 binary first.
+
+- **Comments and line endings no longer defeat a bare value.** `hide_zero = false # note` and a
+  CRLF or trailing-tab `hide_zero = false` were silently ignored, so the zero exit stayed hidden.
+- **Literal strings work.** `trailer = '> '` printed its quotes, `fg = 'red'` lost its colour,
+  and `segments = ['cwd']` was ignored.
+- **An unterminated string no longer deletes what follows.** `separator = "oops` swallowed the
+  next line, and an unterminated array element swallowed the rest of the file.
+- **Comments inside arrays stay comments.** A `"` in one added a segment, and a `]` in one closed
+  the array early.
+- **`"""..."""` strings work.** The whole value used to be dropped.
+
+### Added
+
+These follow from reading the file as TOML, and all of them are additive:
+
+- Escapes in `"..."`, so `trailer = "\n$ "` gives a two-line prompt and `\u` gives Unicode glyphs.
+- Quoted keys, `[[ spaced ]]` headers, and dotted keys that name a real field, such as
+  `segments.cwd.fg = "red"`.
+- A `config_load` benchmark against the largest shipped theme.
+
+### Changed
+
+- **Toolchain `6.6.3` → `6.6.20`**, the closing release of the 6.6.x line.
+- **Config parsing moved to bayan's TOML and CYML sublibs**, tag 1.5.12: the bayan that 6.6.20
+  bundles, and the newest tag that does not need cyrius 6.7.x. Two sublibs instead of the bundle
+  saves 319,928 B. `bayan_toml_array_parse` replaces the hand-rolled `_parse_str_array`.
+- **cmdit `1.2.4` → `1.2.6`.** 1.2.6 is the only cmdit tag pinned to 6.6.20: 1.3.0 and up need
+  6.7.9 or later, so `cyrius update`, which takes the latest tag (1.5.0), is the wrong tool for
+  this bump. Across the two tags `src/cmdit.cyr` changes by one reflowed doc comment.
+  `dist/cmdit.deps` shrinks to `alloc`, `string`, `args`, `io`; `args` and `bench` stay declared
+  because this repo includes both directly.
+- **Vendored `lib/` re-synced** with `cyrius lib sync --full`: 113 files byte-identical to
+  `6.6.20/lib` (97 modified, 3 new: `alloc_cx`, `poison`, `tls_hostid`). `cyrius.lock` gains a
+  `cyrius 6.6.20` row. `result` is now declared in `[deps].stdlib`.
+
+### Removed
+
+- `lib/toml.cyr` and `lib/cyml.cyr`, the frozen parser forks.
+- Eight unreferenced leftovers no snapshot ships: `lib/agnosys.cyr`, `base64`, `bigint`, `csv`,
+  `json`, `linalg`, `matrix`, `u128`.
+
+### Performance
+
+| | 1.1.8 (6.6.3) | 1.1.9 (6.6.20, bayan) | Delta |
+|---|---|---|---|
+| Binary, x86_64 | 211,784 B | 287,672 B | +75,888 B (+35.8 %) |
+| Binary, `--agnos` | 207,608 B | 287,848 B | +80,240 B (+38.6 %) |
+| Live code, x86_64 (`CYRIUS_DCE=1`) | 105,288 B | 132,024 B | +26,736 B (+25.4 %) |
+| Unreachable code, x86_64 | 468 fns, 107,314 B | 605 fns, 153,181 B | +45,867 B |
+| `render_prompt` | 11.339 µs | 10.894 µs | flat, see below |
+| Cold start, no config | 423 µs | 413 µs | −10.4 µs |
+| Cold start, largest theme | 593 µs | 598 µs | +4.8 µs |
+
+Of the x86_64 growth, +43,056 B is the toolchain and stdlib (+39,202 B of that unreachable) and
++32,832 B is bayan (+20,544 B live). `render_prompt` is **flat, not faster**: 1.1.9 runs measured
+10.87 to 11.67 µs against 11.339 µs. Cold start is three rounds of 3,000 interleaved spawns.
+
+The parser swap alone, measured on 6.6.20 with three alternating runs, takes `config_load` on the
+largest theme from **70.0 µs to 82.2 µs**. The 6.6.x bench harness prints the mean as `min` and
+`max` when a row cannot resolve them, which is why `vcs_render` now reads `min=max`.
+
+### Verified
+
+- **Suite 329/329 across 157 tests, and `--agnos` clean.** The CI job was rehearsed end to end in
+  a throwaway clone with this lock committed and produced the same binary sizes.
+- **Toolchain differential, 1.1.8 vs 6.6.20.** 5,943 cases across fixtures, all five themes, flags
+  and env, including directories and FIFOs at pin-file paths, hostile bytes, and a garbage, huge,
+  directory or FIFO `~/.commandress`. No hangs, and 5,942 matched in stdout, stderr and exit code.
+  The other was the old binary missing the 5 ms vcs budget on a cold first exec of a shell stub.
+- **Stdlib delta on the call surface.** The lib functions reachable from `src/` were diffed between
+  the snapshots. `file_read_all` returns an errno on a read error instead of a partial count, and
+  fixtures with a directory at a pin-file path render identically. `getenv`, `str_cstr`,
+  `epoll_event_new` and `epoch_to_date` return 0 when `alloc` refuses. `src/segments/time.cyr` still
+  loads through its result unchecked, so that path still faults under OOM as it did before.
+  `fmt_int_buf` formats in a private buffer and still NUL-terminates. `alloc` maps its first chunk
+  `MAP_NORESERVE`. The rest are macOS and agnos arms a Linux build does not compile.
+- **Parser differential, forks vs bayan.** The same 5,943 cases: all themes and the garbage, huge,
+  FIFO and directory configs matched. 110 differed, all from one deliberately malformed config (an
+  array missing its `]`, listed under **Breaking**), and one was a vcs timing miss. A separate
+  79-config corpus has 48 identical; each of the other 31 is covered above.
+- **Fuzz.** 80,000 mutated configs against the new parser: no crash, no hang.
+- **The new tests can fail.** 13 of their assertions fail against the old forks, and undoing each
+  of the four safeguards in `src/config.cyr` turns a test red.
+- **Watchdog.** With `sit` stubbed to hang for 30 s, both binaries return in a median 6.00 ms and
+  leave no child behind.
+
+### Known issues
+
+- **`scripts/lock-check.sh` cannot see a stale pin.** Moving a dep tag through `lib sync` then
+  `deps` leaves the old `commit` line beside the new one, and the guard reports `OK`. This release's
+  lock was regenerated from empty and holds exactly two pins. See
+  [architecture 003 § 3](docs/architecture/003-cyrius-lock-shape.md).
+- **A CRLF `---` divider is not recognised**, so notes below it are read as config, as before.
+  bayan fixed this at 1.8.0, which needs cyrius 6.7.x.
+- **Thousands of unique dotted keys are slow.** bayan's table lookup is linear, so about 8,000 of
+  them take 464 ms, against 3 ms before. A real theme is unaffected (1.26 ms). Only the user's own
+  file can reach this. ADR 0009 records why it is accepted.
+
+### Documentation
+
+- New: [ADR 0009](docs/adr/0009-config-parsing-via-bayan.md). `docs/guides/getting-started.md` now
+  explains how to write values, and ADR 0003 is annotated with the new parser.
+- `state.md` and the README were still on 1.1.6; both now describe this release.
+- `roadmap.md`: the "Moving the cyrius pin to 6.6.6" note is discharged by this release and removed
+  under that file's shipped-work rule. Its pre-bump findings stay in git history (`350ed66`).
+
 ## [1.1.8] - cyrius 6.6.3
 
 `cyrius` 6.6.2 -> **6.6.3**. No source change; re-vendored and rebuilt.

@@ -29,3 +29,4 @@ Decisions about commandress — what we chose, the context, and the consequences
 | [0006](0006-config-path-rename.md) | Config file lives at `~/.commandress`, not `~/.commandress.cyml` | Accepted |
 | [0007](0007-schema-freeze.md) | Public API + config schema freeze for v1.0 | Accepted |
 | [0008](0008-cli-parsing-via-cmdit.md) | CLI parsing via the cmdit distlib, and the first non-stdlib dependency | Accepted |
+| [0009](0009-config-parsing-via-bayan.md) | Config parsing via bayan's TOML and CYML sublibs | Accepted |

@@ -27,6 +27,9 @@ Constraints:
 In scope:
 
 - One parser path: `cyml_parse()` from `lib/cyml.cyr`.
+
+  > **Update 2026-11-06** (annotation, not a revision — the decision below stands): the parser is now `bayan_cyml_parse()` from `lib/bayan-cyml.cyr`. The file named above no longer exists. See [ADR 0009](0009-config-parsing-via-bayan.md).
+
 - Schema lives in `src/config.cyr` (M1 deliverable) — validates every TOML field against an allow-list; unknown fields warn but don't fail.
 - Defaults are baked into the binary — config file is optional; missing fields fall back to defaults.
 - File path: `~/.commandress.cyml` first, then `$XDG_CONFIG_HOME/commandress.cyml`, then defaults.
@@ -58,6 +61,6 @@ Out of scope:
 
 ## References
 
-- [`lib/cyml.cyr`](../../lib/cyml.cyr) — vendored CYML parser.
+- [`lib/bayan-cyml.cyr`](../../lib/bayan-cyml.cyr) — vendored CYML parser (see [ADR 0009](0009-config-parsing-via-bayan.md)).
 - [`docs/adr/0002-segment-rendering-model.md`](0002-segment-rendering-model.md) — the model this config feeds.
 - vidya `cyrius/field_notes/language/stdlib_format.cyml` — CYML format walkthrough.
