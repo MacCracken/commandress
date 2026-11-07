@@ -336,6 +336,52 @@ fn bench_node_env_parse_package(): i64 {
     return 0;
 }
 
+# What every pin read pays for its shape, on a file with a comment above the version.
+fn bench_pin_word(): i64 {
+    var pin = "# pinned for the build\ncpython-3.12.3-linux-x86_64-gnu\n";
+    var n = strlen(pin);
+    var b = bench_new("pin_word");
+    var rounds = 50;
+    var batch = 200;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            pin_word(pin, n);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
+# A cut, which is the slow path. A value that fits only pays for strlen.
+fn bench_cap_output(): i64 {
+    var long = alloc(8200);
+    memset(long, 97, 8192);
+    store8(long + 8192, 42);
+    store8(long + 8193, 0);
+    var b = bench_new("cap_output (8 KB to 128)");
+    var rounds = 50;
+    var batch = 200;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            cap_output(long, 128, "*");
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 # What a redraw pays with a probe on: the cache hit, 59 prompts in 60. The miss is the
 # tool itself, which is measured in ADR 0014, not here.
 fn bench_probe_cached(): i64 {
@@ -476,6 +522,8 @@ fn main(): i64 {
     bench_python_env_segment();
     bench_node_env_segment();
     bench_node_env_parse_package();
+    bench_pin_word();
+    bench_cap_output();
     bench_probe_cached();
     bench_rustup_env_segment();
     bench_rustup_env_parse_toml();

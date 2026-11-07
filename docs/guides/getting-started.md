@@ -111,6 +111,24 @@ version-manager shim may need an environment it does not get, and then the segme
 The answer is cached for 60 s, so a version change can take that long to appear, and one prompt a
 minute takes as long as the tool does: about 15 ms for `node`.
 
+A pin file is read the way the tools read it: the first word of the first line that is not blank or
+a `#` comment, at most 64 ASCII characters. If that pin is a symlink it must end at a file of the
+same name, so `.nvmrc -> ../.nvmrc` and `~/.nvmrc -> ~/dotfiles/nvmrc` work, and a link to anything
+else renders empty ([ADR 0015](../adr/0015-pins-keep-their-name-and-shape.md)).
+
+### Long values
+
+Every segment takes `max_length`, in bytes, and a cut ends in `...`:
+
+```cyml
+[[segments.vcs]]
+max_length = 32        # `0` for no limit
+```
+
+It defaults to 128 on `vcs` and the language segments, whose text a repository or the environment
+chooses, and to no limit on the rest. `cwd` cuts at a `/` and keeps the end of the path. `vcs` keeps
+the dirty marker.
+
 Missing config file → baked-in defaults. Unknown field → warning on stderr, render
 continues with defaults for that field. Every knob is listed in
 [`../examples/commandress.cyml.example`](../examples/commandress.cyml.example); drop-in

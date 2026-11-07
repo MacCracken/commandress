@@ -20,10 +20,11 @@
 #
 # ⚠ REPO-CONTROLLED INPUT, and the second path after `rust-toolchain.toml` where bytes
 # an attacker chose reach a parser. ADR 0013 has the reasoning and the measurements:
-#   - `read_regular_file` refuses a FIFO or device (audit A-01).
+#   - `read_pin_file` refuses a FIFO or device (audit A-01), and a symlink to a file of
+#     another name (ADR 0015).
 #   - PKG_FILE_CAP bounds the parse. Past it the file is simply not seen, which loses
 #     nothing before the cut: bayan's flat parser returns the members it read.
-#   - NODE_RANGE_MAX bounds the output, as RUSTUP_CHANNEL_MAX does.
+#   - NODE_RANGE_MAX bounds the output, and the value must look like a semver range.
 #   - The value goes through `sanitize_segment_output` like all segment output.
 #
 # This calls bayan's FLAT parser, not `bayan_json_v_parse`. The flat one keeps values as
@@ -67,15 +68,8 @@ fn node_env_parse_package(buf, n): i64 {
     var range = _package_value(inner, "node", JSON_K_STRING);
     if (range == 0) { return 0; }
 
-    var len = str_len(range);
-    if (len == 0) { return 0; }
-    if (len > NODE_RANGE_MAX) { return 0; }
-    var d = str_data(range);
-    var i = 0;
-    while (i < len) {
-        if (load8(d + i) == 92) { return 0; }           # '\\': an escape, as written
-        i = i + 1;
-    }
+    # A backslash fails this too: it is an escape, as written, so it cannot be shown.
+    if (pin_shape_ok(str_data(range), str_len(range), NODE_RANGE_MAX, 1) == 0) { return 0; }
     return str_cstr(range);
 }
 
@@ -86,7 +80,7 @@ fn _node_package_range(root): i64 {
     if (path == 0) { return 0; }
     var buf = alloc(PKG_FILE_CAP);
     if (buf == 0) { return 0; }
-    var n = read_regular_file(path, buf, PKG_FILE_CAP);
+    var n = read_pin_file(path, buf, PKG_FILE_CAP);
     if (n <= 0) { return 0; }
     return node_env_parse_package(buf, n);
 }
@@ -94,7 +88,7 @@ fn _node_package_range(root): i64 {
 # The version or range in force at `cwd`, or 0.
 fn node_env_for(cwd): i64 {
     var root = find_ancestor_with(cwd, "/.nvmrc");
-    if (root != 0) { return read_trimmed_file_at(root, "/.nvmrc"); }
+    if (root != 0) { return read_pin_at(root, "/.nvmrc"); }
     root = find_ancestor_with(cwd, "/package.json");
     if (root == 0) { return 0; }
     return _node_package_range(root);

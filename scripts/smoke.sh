@@ -21,10 +21,9 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 
-# A hostile project file, through the real render path. The last line is the C1 pair
-# that a dropped byte used to reassemble (audit 2026-11-06, T-03).
+# Hostile project files, through the real render path. Neither is shaped like a pin, so
+# neither renders (ADR 0015).
 printf '3.11\033[31mX\033]0;t\007\302\001\233Y\n' > .python-version
-# package.json is the other repo-controlled parser input, so it gets the same treatment.
 printf '{"engines":{"node":">=18\033]0;t\007\302\001\233"}}' > package.json
 printf '[[prompt]]\nsegments = ["python_env", "node_env"]\nright_segments = ["python_env"]\ntrailer = "> "\n' > .commandress
 export HOME="$work"
@@ -32,15 +31,30 @@ unset VIRTUAL_ENV
 
 out="$("$bin")" || fail "non-zero exit"
 [[ "$out" == *'> ' ]] || fail "the left prompt lost its trailer"
+[[ "$out" != *'3.11'* ]] || fail "a hostile .python-version rendered"
+[[ "$out" != *'>=18'* ]] || fail "a hostile package.json rendered"
+
+printf '3.11\n' > .python-version
+printf '{"engines":{"node":">=18"}}' > package.json
+out="$("$bin")" || fail "non-zero exit"
+[[ "$out" == *'3.11'* ]] || fail "python_env did not read .python-version"
 [[ "$out" == *'>=18'* ]] || fail "node_env did not read package.json"
-[[ "$out" != *$'\033]'* ]] || fail "OSC from a project file reached stdout"
-[[ "$out" != *$'\a'* ]] || fail "BEL from a project file reached stdout"
-[[ "$out" != *$'\033[31m'* ]] || fail "SGR from a project file reached stdout"
-[[ "$out" != *$'\302\233'* ]] || fail "a C1 CSI from a project file reached stdout"
+
+# Text with no shape rule goes through the sanitizer, so this is the check that the
+# shipped binary calls it. The last part is the C1 pair that a dropped byte used to
+# reassemble (audit 2026-11-06, T-03).
+export VIRTUAL_ENV=$'/venvs/3.11\033[31mX\033]0;t\007\302\001\233Y'
+out="$("$bin")" || fail "non-zero exit"
+[[ "$out" == *'3.11'* ]] || fail "python_env lost VIRTUAL_ENV"
+[[ "$out" != *$'\033]'* ]] || fail "OSC from VIRTUAL_ENV reached stdout"
+[[ "$out" != *$'\a'* ]] || fail "BEL from VIRTUAL_ENV reached stdout"
+[[ "$out" != *$'\033[31m'* ]] || fail "SGR from VIRTUAL_ENV reached stdout"
+[[ "$out" != *$'\302\233'* ]] || fail "a C1 CSI from VIRTUAL_ENV reached stdout"
 
 right="$("$bin" --side=right)" || fail "--side=right: non-zero exit"
 [[ "$right" != *'> '* ]] || fail "--side=right painted the trailer"
 [[ "$right" == *'3.11'* ]] || fail "--side=right lost its segment"
+unset VIRTUAL_ENV
 
 # A version probe must never see the repo. The stand-in `node` records where it ran and
 # what it was given, in a project with no pin. ADR 0014.
@@ -129,6 +143,70 @@ tools t6 0.2; budgets 1 1 1000
 printf '[[prompt]]\nsegments = ["node_env"]\n[[segments.node_env]]\nbudget_ms = 5000\n' > probehome/.commandress
 [[ "$(render_in allthree "$probes/t1" 2>&1 >/dev/null)" == *'budget_ms in [[segments.node_env]]'* ]] \
     || fail "a bad budget_ms was not reported with shellout off"
+
+# A pin that is a symlink must keep its name, whatever the file holds. ADR 0015.
+mkdir -p links/shared
+touch links/package.json
+printf 'hunter2\n' > token
+printf '20\n' > links/shared/.nvmrc
+printf '[[prompt]]\nsegments = ["node_env"]\ntrailer = ""\n[[segments.node_env]]\nfg = "default"\n' > probehome/.commandress
+ln -s shared/.nvmrc links/.nvmrc
+[[ "$(render_in links "$probes/t1")" == '20' ]] || fail "a pin linked under its own name was lost"
+rm links/.nvmrc
+ln -s ../token links/.nvmrc
+[[ -z "$(render_in links "$probes/t1")" ]] || fail "a pin linked to another name was shown"
+rm links/.nvmrc
+# A one-word file, so the shape rule cannot be what stops it.
+ln -s /proc/self/comm links/.nvmrc
+[[ -z "$(render_in links "$probes/t1")" ]] || fail "a proc file reached the prompt"
+rm links/.nvmrc
+
+# ~/.commandress is the user's own, so a dotfile manager may link it from any name.
+mv probehome/.commandress probehome/dotfile.cyml
+ln -s dotfile.cyml probehome/.commandress
+printf '20\n' > links/.nvmrc
+[[ "$(render_in links "$probes/t1")" == '20' ]] || fail "a linked ~/.commandress was refused"
+rm links/.nvmrc probehome/.commandress probehome/dotfile.cyml
+
+# Every segment takes max_length, from its own slot. A long enough value for each.
+mkdir -p capped
+printf '3.12.1\n' > capped/.python-version
+printf '20.11.1\n' > capped/.nvmrc
+printf '1.79.0\n' > capped/rust-toolchain
+printf '[package]\n' > capped/cyrius.cyml
+printf '1.2.3\n' > capped/VERSION
+printf '#!/bin/sh\nprintf "On branch feature\\nChanges not staged\\n"\n' > t1/sit
+chmod +x t1/sit
+for seg in exit vcs time hostname user cyrius_env python_env node_env rustup_env; do
+    printf '[[prompt]]\nsegments = ["%s"]\ntrailer = ""\n[[segments.%s]]\nfg = "default"\nmax_length = 2\n' "$seg" "$seg" > probehome/.commandress
+    capped_out="$(cd capped && HOME="$probes/probehome" PATH="$probes/t1:/usr/bin:/bin" AGNOSHI_LAST_EXIT=127 "$bin")"
+    [[ "$capped_out" == '..' ]] || fail "$seg did not take its own max_length: '$capped_out'"
+done
+printf '[[prompt]]\nsegments = ["vcs"]\ntrailer = ""\n[[segments.vcs]]\nfg = "default"\nmax_length = 6\n' > probehome/.commandress
+[[ "$(render_in capped "$probes/t1")" == 'fe...*' ]] || fail "a cut lost the dirty marker"
+
+# The default, on what a repo can reach: a branch name that would flood the screen.
+mkdir -p t7 flood
+printf '#!/bin/sh\nprintf "On branch %%08000d\\nnothing to commit, working tree clean\\n" 0\n' > t7/sit
+chmod +x t7/sit
+printf '[[prompt]]\nsegments = ["vcs"]\ntrailer = ""\n[[segments.vcs]]\nfg = "default"\n' > probehome/.commandress
+flooded="$(render_in flood "$probes/t7")"
+[[ "${#flooded}" == 128 ]] || fail "a long branch rendered ${#flooded} bytes, not the default 128"
+[[ "$flooded" == *... ]] || fail "a cut branch did not end in dots"
+
+# A VERSION the rule refuses stops the segment, as any pin does. Showing the toolchain
+# there would present it as the project's version.
+mkdir -p badversion
+printf '[package]\n' > badversion/cyrius.cyml
+printf '1:2.3\n' > badversion/VERSION
+printf '#!/bin/sh\necho "cyrius $*" >> %s/tools.log\necho "cyrius 9.9.9"\n' "$probes" > t1/cyrius
+chmod +x t1/cyrius
+printf '[[prompt]]\nsegments = ["cyrius_env"]\ntrailer = ""\n[[segments.cyrius_env]]\nfg = "default"\n' > probehome/.commandress
+rm -f tools.log
+[[ -z "$(render_in badversion "$probes/t1")" ]] || fail "a refused VERSION fell through to the toolchain"
+[[ ! -e tools.log ]] || fail "cyrius ran past a refused VERSION"
+rm badversion/VERSION
+[[ "$(render_in badversion "$probes/t1")" == '9.9.9' ]] || fail "no VERSION at all must still ask the toolchain"
 cd "$work"
 
 [[ -z "$("$bin" --help 2>/dev/null)" ]] || fail "--help wrote to stdout"

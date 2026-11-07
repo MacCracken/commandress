@@ -62,6 +62,8 @@ A few constraints frame the choice:
     > **Update 2026-11-06** (annotation, not a revision — the decision below stands): `rust-toolchain.toml` shipped at 1.2.2 through bayan's TOML parser, not a hand-rolled scanner. `package.json engines.node` is still open, on the roadmap's 1.4.x line.
 
     > **Update 2026-11-06** (annotation, not a revision — the decision below stands): `package.json engines.node` shipped at 1.4.0 through bayan's flat JSON parser, so no hand-rolled scanner was needed. See [ADR 0013](0013-package-json-via-flat-bayan-json.md).
+
+    > **Update 2026-11-06** (annotation, not a revision — the decision below stands): since 1.5.0 "read and trim" is the first word of the first line that is not blank or a comment, at most 64 ASCII characters, and a symlinked pin must end at a file of the same name. See [ADR 0015](0015-pins-keep-their-name-and-shape.md).
 - **Neutral**
   - The shellout-fallback slot in the pattern is currently only used by `cyrius_env`. Reserving the layer in the contract (rather than the implementation) keeps room for `python --version` / `node --version` / `rustup show` to land later without an ADR amendment.
     > **Update 2026-11-06** (annotation, not a revision — the decision below stands): those three landed at 1.4.1, opt-in. This ADR's "1–3 ms per shellout" did not hold for them, and running them in the cwd proved unsafe, so they run from `/` with a 60 s per-tool cache. See [ADR 0014](0014-version-probes-never-see-the-repo.md).

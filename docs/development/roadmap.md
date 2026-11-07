@@ -15,11 +15,11 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.4.1**. The 1.1.x line was toolchain refreshes, the cmdit
+this file. Current release is **1.5.0**. The 1.1.x line was toolchain refreshes, the cmdit
 CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line was toolchain and
 dependency refreshes, the quick roadmap items, and the
 [2026-11-06 audit](../audit/2026-11-06-audit.md). The 1.3.x line completed the colour model reserved
-at the freeze, and the 1.4.x line finished the language-env segments. The public API is frozen
+at the freeze, the 1.4.x line finished the language-env segments, and 1.5.0 closed the audit's symlink and length gaps. The public API is frozen
 per [ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
 not-frozen surface, or routed through the documented 3-step deprecation path. No item here
 breaks a v1 config.
@@ -33,16 +33,13 @@ breaks a v1 config.
 
 ## 1.5.x — Per-segment control
 
-Knobs the config schema was always shaped for but never grew, plus the output-shape gap the
-2026-08-26 audit recorded.
+Knobs the config schema was always shaped for but never grew.
 
 | Release | Item | Source of the deferral |
 |---|---|---|
-| **1.5.0** | **Per-segment output length cap** — a hostile repository can push text into every redraw: 255 bytes from a pin file, 8,182 from a `sit` branch, and an environment can push more through `VIRTUAL_ENV`. Sanitized and inert, but visually disruptive; `max_length` applies to `cwd` only. | [2026-11-06 audit](../audit/2026-11-06-audit.md), *Known gaps* |
-| **1.5.0** | **What a pin file may look like** — a probe follows symlinks, so `.python-version -> ~/.ssh/id_ed25519` shows the start of that file in the prompt, and a co-tenant's `/tmp/.python-version` applies under `/tmp`. `O_NOFOLLOW` would blank monorepo pins, so the better fix is a shape rule for a version string, which also cuts the length problem above. | [2026-11-06 audit](../audit/2026-11-06-audit.md) T-05, T-06 |
 | **1.5.1** | **Local time and `TZ`** — the `time` segment is UTC-only; `TZ` lookup plus offset application is its own piece of work. | `src/segments/time.cyr:23` |
 
-**Gate**: none. Both are additive per-segment config fields.
+**Gate**: none. It is an additive change to one segment.
 
 ---
 
@@ -57,6 +54,7 @@ what would unblock it, so the gate is checkable rather than folkloric.
 | **Retire `src/pathlookup.cyr`** — 99 lines re-implementing `execvp`'s PATH walk, because `execve(2)` does not do PATH lookup and no stdlib helper exposes one. | Cyrius grows a `which()`-equivalent (papercut Item 8) | Re-checked 2026-11-06 against the 6.7.18 snapshot: **still open**, no public stdlib fn resolves a bare name against `$PATH`. The workaround ships and is correct, with one known gap: `access(X_OK)` passes a directory, so a directory named `node` in a `PATH` entry ahead of the real tool hides it and the segment renders empty. A repo cannot reach this, because relative `PATH` entries are skipped. |
 | **`--bogus --side=right` honours the side** — cmdit stops at the first bad token, so a flag before `--side=right` renders the left prompt. No adapter produces that order. | cmdit grows a continue-on-error mode | [2026-11-06 audit](../audit/2026-11-06-audit.md) D-05 |
 | **cmdit's stderr escaper strips C1** — a C1 pair in a bad flag reaches stderr. Argv is not an attacker position. | cmdit filters `0x80..0x9F` | [2026-11-06 audit](../audit/2026-11-06-audit.md) D-06 |
+| **`sit status` follows a symlinked `.git` or `.sit/HEAD`** — a repo can show the branch name of another repo it can name a path to. `sit` only prints something shaped `ref: refs/...`, so a token file shows `(detached)`, and `cmdrs` only sees the output. | `sit` refuses to follow them | [ADR 0015](../adr/0015-pins-keep-their-name-and-shape.md). Ran on sit 1.13.0 |
 | **`cyrius deps --locked` fails on a stale pin** — it prints a `note:` saying fail-closed, and exits 0. `scripts/lock-check.sh` does not need this, but it would make `--locked` usable alone. | Upstream cyrius | [Architecture 003](../architecture/003-cyrius-lock-shape.md) § 3 |
 
 > **Check the gate before repeating it.** Two of the three "blocked on Cyrius" claims in

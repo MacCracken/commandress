@@ -1673,7 +1673,7 @@ fn test_cyrius_env_read_version_whitespace_only(): i64 {
     file_close(fd);
 
     var ver = cyrius_env_read_version("/tmp/cmdrs_env_tst_ws");
-    assert_eq(ver, 0, "read_version on whitespace-only file returns 0 (falls through to shellout)");
+    assert_eq(ver, 0, "read_version on whitespace-only file returns 0 (the segment renders empty)");
 
     syscall(SYS_UNLINK, "/tmp/cmdrs_env_tst_ws/VERSION");
     syscall(SYS_RMDIR, "/tmp/cmdrs_env_tst_ws");
@@ -1788,6 +1788,492 @@ fn test_python_env_render_smoke(): i64 {
     # of the test cwd has a .python-version. Don't assert — just call
     # to verify it doesn't crash.
     assert(1, "render: no-VIRTUAL_ENV path executed (no crash)");
+    return 0;
+}
+
+# ---- pin files (ADR 0015) ----
+
+fn _pw(s): i64 { return pin_word(s, strlen(s)); }
+
+# Each form here is one a tool's own docs or source accepts.
+fn test_pin_word_takes_what_the_tools_take(): i64 {
+    _streq_or_dump(_pw("3.12.1\n"), "3.12.1", "a version");
+    _streq_or_dump(_pw("18"), "18", "no newline");
+    _streq_or_dump(_pw("  3.12.1  \n"), "3.12.1", "padding");
+    _streq_or_dump(_pw("3.12.1\r\n"), "3.12.1", "a CRLF file");
+    _streq_or_dump(_pw("\n\n3.12.1\n"), "3.12.1", "blank lines first");
+    _streq_or_dump(_pw("# pinned\n3.12.1\n"), "3.12.1", "a comment line");
+    _streq_or_dump(_pw("  # pinned\n\n# again\n3.12\n"), "3.12", "several");
+    _streq_or_dump(_pw("3.12.1\n3.11.4\n"), "3.12.1", "pyenv: the first of two versions");
+    _streq_or_dump(_pw("3.12.1 # lts\n"), "3.12.1", "the rest of the line is not read");
+    _streq_or_dump(_pw("3.12.1\t# lts\n"), "3.12.1", "after a tab too");
+    _streq_or_dump(_pw("3.12.1 3.11.4\n"), "3.12.1", "pyenv: the first word of a line");
+    _streq_or_dump(_pw("my-venv\n"), "my-venv", "a pyenv virtualenv name");
+    _streq_or_dump(_pw("pypy3.10-7.3.12\n"), "pypy3.10-7.3.12", "a pyenv implementation");
+    _streq_or_dump(_pw("cpython@3.12\n"), "cpython@3.12", "uv: implementation@version");
+    _streq_or_dump(_pw(">=3.12,<3.13\n"), ">=3.12,<3.13", "uv: a specifier");
+    _streq_or_dump(_pw("3.13+freethreaded\n"), "3.13+freethreaded", "uv: a variant");
+    _streq_or_dump(_pw("cpython-3.12.3-linux-x86_64-gnu\n"), "cpython-3.12.3-linux-x86_64-gnu", "uv: a full key");
+    _streq_or_dump(_pw("lts/iron\n"), "lts/iron", "nvm: an lts name");
+    _streq_or_dump(_pw("lts/*\n"), "lts/*", "nvm: the latest lts");
+    _streq_or_dump(_pw("lts/-1\n"), "lts/-1", "nvm: the one before");
+    _streq_or_dump(_pw("v18.16.0\n"), "v18.16.0", "nvm: a v");
+    _streq_or_dump(_pw("~=3.14\n"), "~=3.14", "uv: a compatible release");
+    _streq_or_dump(_pw("!=3.9\n"), "!=3.9", "uv: an exclusion");
+    _streq_or_dump(_pw("==3.12.1\n"), "==3.12.1", "uv: an exact one");
+    _streq_or_dump(_pw("cpython>=3.12\n"), "cpython>=3.12", "uv: implementation and specifier");
+    _streq_or_dump(_pw(">=3.12, <3.20\n"), ">=3.12", "uv with a space: the first clause, without its comma");
+    _streq_or_dump(_pw("20#pinned\n"), "20", "nvm: a comment can start anywhere");
+    _streq_or_dump(_pw("foo=bar\n20\n"), "20", "nvm: a key=value line is not the version");
+    _streq_or_dump(_pw("a_b-c=1\nd=2\n3.12\n"), "3.12", "several");
+    _streq_or_dump(_pw("a=1 b\n20\n"), "20", "the whole line goes with it");
+    _streq_or_dump(_pw("k1=v\n20\n"), "20", "a key may hold a digit");
+    return 0;
+}
+
+# The whole alphabet, byte by byte, so a character cannot slip in unnoticed behind another
+# test's failing on something else.
+fn _in_set(set, c): i64 {
+    var i = 0;
+    while (load8(set + i) != 0) {
+        if (load8(set + i) == c) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_pin_alphabet_exactly(): i64 {
+    var word = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.+-_@*/=<>,~!";
+    var c = 0;
+    var bad = 0;
+    while (c < 256) {
+        if (_pin_char(c, 0) != _in_set(word, c)) { bad = bad + 1; }
+        var r = _in_set(word, c);
+        if (c == 32) { r = 1; }
+        if (c == 94) { r = 1; }
+        if (c == 124) { r = 1; }
+        if (_pin_char(c, 1) != r) { bad = bad + 1; }
+        c = c + 1;
+    }
+    assert_eq(bad, 0, "every byte, in both alphabets");
+    return 0;
+}
+
+fn test_pin_word_refuses_what_is_not_a_version(): i64 {
+    assert_eq(_pw(""), 0, "empty");
+    assert_eq(_pw("# only a comment\n"), 0, "only a comment");
+    assert_eq(_pw("a:b\n"), 0, "a colon");
+    assert_eq(_pw("{\n"), 0, "a brace");
+    assert_eq(_pw("[default]\n"), 0, "a bracket");
+    assert_eq(_pw("\"3.12\"\n"), 0, "a quote");
+    assert_eq(_pw("$(id)\n"), 0, "a dollar");
+    assert_eq(_pw("`id`\n"), 0, "a backtick");
+    assert_eq(_pw("3.12;id\n"), 0, "a semicolon");
+    assert_eq(_pw("x|y\n"), 0, "a pipe");
+    assert_eq(_pw("3.12\x1b[31m\n"), 0, "an escape");
+    assert_eq(_pw("caf\xc3\xa9\n"), 0, "a non-ASCII letter");
+    assert_eq(_pw("\xe2\x80\xae3.12\n"), 0, "a bidi override");
+    assert_eq(pin_word("a\x00b\n", 4), 0, "a NUL");
+    assert_eq(_pw("a:b\n3.12\n"), 0, "a bad first word does not fall through to the next line");
+    assert_eq(_pw("TOKEN=abc123\n"), 0, "a lone key=value is not a version");
+    return 0;
+}
+
+# A file over the read cap is cut mid-line, and a cut word is a wrong version: a comment
+# that fills the cap would turn `3.11.14` into `3.11.1`. So stop at the last whole line.
+fn test_pin_word_of_file_never_shows_a_cut_word(): i64 {
+    var buf = alloc(600);
+    memset(buf, 35, 300);
+    store8(buf + 249, 10);
+    memcpy(buf + 250, "3.11.14\n", 8);
+    _streq_or_dump(pin_word_of_file(buf, 258, 300), "3.11.14", "under the cap");
+    assert_eq(pin_word_of_file(buf, 258, 256), 0, "over it, the cut line is gone");
+    memcpy(buf + 250, "3.1\n# x\n", 8);
+    _streq_or_dump(pin_word_of_file(buf, 258, 256), "3.1", "a whole line before the cut stays");
+    memset(buf, 49, 300);
+    assert_eq(pin_word_of_file(buf, 300, 256), 0, "one line longer than the cap is nothing");
+    return 0;
+}
+
+fn test_read_pin_at_a_comment_fills_the_cap(): i64 {
+    _pin_tree_new();
+    var body = alloc(300);
+    memset(body, 35, 300);
+    store8(body + 253, 10);
+    memcpy(body + 254, "3.11.4\n", 7);
+    file_write_all("/tmp/cmdrs_pin_tst/.nvmrc", body, 261);
+    assert_eq(read_pin_at("/tmp/cmdrs_pin_tst", "/.nvmrc"), 0, "not `3`");
+    _pin_tree_clean();
+    return 0;
+}
+
+fn test_pin_word_cap(): i64 {
+    var w = alloc(100);
+    memset(w, 49, PIN_WORD_MAX);
+    store8(w + PIN_WORD_MAX, 10);
+    assert_neq(pin_word(w, PIN_WORD_MAX + 1), 0, "at the cap");
+    assert_eq(strlen(pin_word(w, PIN_WORD_MAX + 1)), PIN_WORD_MAX, "all of it");
+    memset(w, 49, PIN_WORD_MAX + 1);
+    store8(w + PIN_WORD_MAX + 1, 10);
+    assert_eq(pin_word(w, PIN_WORD_MAX + 2), 0, "past the cap");
+    return 0;
+}
+
+fn test_pin_shape_ok(): i64 {
+    assert_eq(pin_shape_ok("3.12", 4, 8, 0), 1, "a word");
+    assert_eq(pin_shape_ok("3.12", 4, 3, 0), 0, "over the given cap");
+    assert_eq(pin_shape_ok("", 0, 8, 0), 0, "empty");
+    assert_eq(pin_shape_ok("a b", 3, 8, 0), 0, "a word has no space");
+    assert_eq(pin_shape_ok("1 2", 3, 8, 1), 1, "a range does");
+    assert_eq(pin_shape_ok("^1", 2, 8, 0), 0, "a word has no caret");
+    assert_eq(pin_shape_ok("^1", 2, 8, 1), 1, "a range does");
+    assert_eq(pin_shape_ok("~1", 2, 8, 1), 1, "and a tilde");
+    assert_eq(pin_shape_ok("1|2", 3, 8, 1), 1, "and a pipe");
+    assert_eq(pin_shape_ok("1:2", 3, 8, 1), 0, "a range has no colon either");
+    return 0;
+}
+
+fn test_pin_name_matches(): i64 {
+    assert_eq(pin_name_matches(".nvmrc", ".nvmrc"), 1, "the same name");
+    assert_eq(pin_name_matches(".nvmrc", "nvmrc"), 1, "a dotfile repo drops the dot");
+    assert_eq(pin_name_matches("VERSION", ".VERSION"), 1, "either way round");
+    assert_eq(pin_name_matches("rust-toolchain", "rust-toolchain.toml"), 1, "an extension");
+    assert_eq(pin_name_matches(".python-version", "python-version.txt"), 1, "dotless, and an extension");
+    assert_eq(pin_name_matches(".nvmrc", ".node-version"), 1, "repos link these two");
+    assert_eq(pin_name_matches(".nvmrc", "node-version"), 1, "dotless too");
+    assert_eq(pin_name_matches("package.json", "package.json"), 1, "package.json");
+    assert_eq(pin_name_matches(".python-version", "id_ed25519"), 0, "a key");
+    assert_eq(pin_name_matches(".nvmrc", "environ"), 0, "a proc file");
+    assert_eq(pin_name_matches(".python-version", ".python-versions"), 0, "a longer word is another name");
+    assert_eq(pin_name_matches("VERSION", "VERSIONS"), 0, "and again");
+    assert_eq(pin_name_matches(".python-version", "python"), 0, "a shorter word too");
+    assert_eq(pin_name_matches(".python-version", ".node-version"), 0, "the alias is only for .nvmrc");
+    assert_eq(pin_name_matches(".nvmrc", ""), 0, "no name");
+    assert_eq(pin_name_matches("VERSION", "XXXXXXX"), 0, "the same length is not the same name");
+    assert_eq(pin_name_matches(".nvmrc", "abcde.txt"), 0, "nor is another word with an extension");
+    return 0;
+}
+
+fn _pin_tree_clean(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/.nvmrc");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/VERSION");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/.python-version");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/package.json");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/rust-toolchain");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/rust-toolchain.toml");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/link");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/fifo/.nvmrc");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_pin_tst/dir/.nvmrc");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_pin_tst/dir");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_pin_tst/fifo");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_pin_tst/sub");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/.nvmrc");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/rust-toolchain.toml");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/secret");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_pin_tst");
+    return 0;
+}
+
+fn _pin_tree_new(): i64 {
+    _pin_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_pin_tst", 0x1FF), 0, "mkdir pin root");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_pin_tst/sub", 0x1FF), 0, "mkdir pin sub");
+    file_write_all("/tmp/cmdrs_pin_tst/.nvmrc", "20\n", 3);
+    file_write_all("/tmp/cmdrs_pin_tst/secret", "hunter2\n", 8);
+    return 0;
+}
+
+# What `read_pin_file` returns for the symlink `path -> target`.
+fn _pin_read_through(target): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/.nvmrc");
+    assert_eq(syscall(SYS_SYMLINK, target, "/tmp/cmdrs_pin_tst/sub/.nvmrc"), 0, "make the link");
+    var buf[256];
+    return read_pin_file("/tmp/cmdrs_pin_tst/sub/.nvmrc", &buf, 256);
+}
+
+fn test_read_pin_file_plain(): i64 {
+    _pin_tree_new();
+    var buf[256];
+    assert_eq(read_pin_file("/tmp/cmdrs_pin_tst/.nvmrc", &buf, 256), 3, "a plain file");
+    assert_eq(load8(&buf), 50, "and its bytes");
+    assert(read_pin_file("/tmp/cmdrs_pin_tst/none", &buf, 256) < 0, "a missing file");
+    _pin_tree_clean();
+    return 0;
+}
+
+fn test_read_pin_file_follows_a_link_that_keeps_the_name(): i64 {
+    _pin_tree_new();
+    assert_eq(_pin_read_through("../.nvmrc"), 3, "a monorepo pin");
+    assert_eq(_pin_read_through("/tmp/cmdrs_pin_tst/.nvmrc"), 3, "an absolute one");
+    # A chain counts by where it ends.
+    syscall(SYS_SYMLINK, "../.nvmrc", "/tmp/cmdrs_pin_tst/sub/link");
+    assert_eq(_pin_read_through("link"), 3, "through a differently named link");
+    _pin_tree_clean();
+    return 0;
+}
+
+# The point of the rule: a symlink is how a repo reaches a file it does not contain, and
+# no check of the content can tell a token from a virtualenv name.
+fn test_read_pin_file_refuses_a_link_to_another_name(): i64 {
+    _pin_tree_new();
+    assert(_pin_read_through("../secret") < 0, "a file with another name");
+    assert(_pin_read_through("/proc/self/environ") < 0, "the environment");
+    assert(_pin_read_through("/proc/self/cmdline") < 0, "the command line");
+    assert(_pin_read_through("/proc/version") < 0, "a proc file");
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/link");
+    assert(_pin_read_through("link") < 0, "a chain ending in another name");
+    assert(_pin_read_through("missing/.nvmrc") < 0, "a dangling link");
+    _pin_tree_clean();
+    return 0;
+}
+
+# No answer from /proc is a refusal, and a refusal must not leak the fd it opened: the
+# prompt holds no fds of its own, but a test of this is cheap and a leak is not visible.
+fn test_read_pin_file_refusal_is_clean(): i64 {
+    _pin_tree_new();
+    assert_eq(_pin_link_keeps_name(99999, "/tmp/cmdrs_pin_tst/.nvmrc"), 0, "no answer refuses");
+    var fd = syscall(SYS_DUP, 0);
+    file_close(fd);
+    _pin_read_through("../secret");
+    _pin_read_through("../secret");
+    var after = syscall(SYS_DUP, 0);
+    file_close(after);
+    assert_eq(after, fd, "a refused link leaves no fd open");
+    _pin_tree_clean();
+    return 0;
+}
+
+fn test_read_pin_file_a_good_name_is_not_enough(): i64 {
+    _pin_tree_new();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_pin_tst/fifo", 0x1FF), 0, "mkdir fifo");
+    assert_eq(syscall(SYS_MKNODAT, 0 - 100, "/tmp/cmdrs_pin_tst/fifo/.nvmrc", 0x1180, 0), 0, "mkfifo");
+    assert(_pin_read_through("../fifo/.nvmrc") < 0, "a FIFO with the right name");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_pin_tst/dir", 0x1FF), 0, "mkdir dir");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_pin_tst/dir/.nvmrc", 0x1FF), 0, "mkdir the name");
+    assert(_pin_read_through("../dir/.nvmrc") < 0, "a directory with the right name");
+    _pin_tree_clean();
+    return 0;
+}
+
+# `~/.commandress` is the user's own, and a dotfile manager may link it from anywhere.
+fn test_read_regular_file_still_follows_any_link(): i64 {
+    _pin_tree_new();
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/link");
+    var buf[256];
+    assert_eq(read_regular_file("/tmp/cmdrs_pin_tst/sub/link", &buf, 256), 8, "the config path is not a pin");
+    _pin_tree_clean();
+    return 0;
+}
+
+# Every reader of a repo file goes through the rule, not only the one tested above.
+fn test_every_pin_reader_refuses_a_link_to_another_name(): i64 {
+    _pin_tree_new();
+    var sub = "/tmp/cmdrs_pin_tst/sub";
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/.python-version");
+    assert_eq(python_env_read_pin(sub), 0, ".python-version");
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/VERSION");
+    assert_eq(cyrius_env_read_version(sub), 0, "VERSION");
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/rust-toolchain");
+    assert_eq(rustup_env_for(sub), 0, "rust-toolchain");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_pin_tst/sub/rust-toolchain");
+    var t = "[toolchain]\nchannel = \"hunter2\"\n";
+    file_write_all("/tmp/cmdrs_pin_tst/secret", t, strlen(t));
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/rust-toolchain.toml");
+    assert_eq(rustup_env_for(sub), 0, "rust-toolchain.toml, with a channel to read");
+    file_write_all("/tmp/cmdrs_pin_tst/secret", "{\"engines\":{\"node\":\"18\"}}", 25);
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/package.json");
+    assert_eq(_node_package_range(sub), 0, "package.json");
+    syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/.nvmrc");
+    assert_eq(node_env_for(sub), 0, ".nvmrc");
+    _pin_tree_clean();
+    return 0;
+}
+
+fn test_rustup_file_may_link_to_its_toml(): i64 {
+    _pin_tree_new();
+    var t = "[toolchain]\nchannel = \"1.79.0\"\n";
+    file_write_all("/tmp/cmdrs_pin_tst/rust-toolchain.toml", t, strlen(t));
+    syscall(SYS_SYMLINK, "../rust-toolchain.toml", "/tmp/cmdrs_pin_tst/sub/rust-toolchain");
+    _streq_or_dump(rustup_env_for("/tmp/cmdrs_pin_tst/sub"), "1.79.0", "the same file under the other name");
+    _pin_tree_clean();
+    return 0;
+}
+
+fn test_rustup_channel_has_the_shape_of_a_pin(): i64 {
+    var a = "[toolchain]\nchannel = \"stable extra\"\n";
+    assert_eq(rustup_env_parse_toml(a, strlen(a)), 0, "two words");
+    var b = "[toolchain]\nchannel = \"a:b\"\n";
+    assert_eq(rustup_env_parse_toml(b, strlen(b)), 0, "a colon");
+    var c = "[toolchain]\nchannel = \"nightly-2026-01-01-x86_64-unknown-linux-gnu\"\n";
+    _streq_or_dump(rustup_env_parse_toml(c, strlen(c)), "nightly-2026-01-01-x86_64-unknown-linux-gnu", "the longest real form");
+    return 0;
+}
+
+fn test_node_range_has_a_shape(): i64 {
+    var a = "{\"engines\":{\"node\":\"^18 || >=20.0.0\"}}";
+    _streq_or_dump(node_env_parse_package(a, strlen(a)), "^18 || >=20.0.0", "a real range");
+    var b = "{\"engines\":{\"node\":\"~18.1 - 19.x\"}}";
+    _streq_or_dump(node_env_parse_package(b, strlen(b)), "~18.1 - 19.x", "a hyphen range");
+    var c = "{\"engines\":{\"node\":\"run curl evil.example to fix your shell\"}}";
+    assert_eq(node_env_parse_package(c, strlen(c)), 0, "a sentence is not a range");
+    return 0;
+}
+
+fn _range(s): i64 { return pin_shape_ok(s, strlen(s), 255, 1); }
+
+# Letters come after a number, or a range could spell a sentence.
+fn test_range_words(): i64 {
+    assert_eq(_range("^18 || >=20.0.0"), 1, "alternatives");
+    assert_eq(_range(">= 18"), 1, "an operator alone");
+    assert_eq(_range("1.2.3 - 2.3.4"), 1, "a hyphen range");
+    assert_eq(_range("18.x"), 1, "an x range");
+    assert_eq(_range("x"), 1, "a bare x");
+    assert_eq(_range("X.1"), 1, "a capital one");
+    assert_eq(_range("*"), 1, "a star");
+    assert_eq(_range("v18"), 1, "a v");
+    assert_eq(_range(">=v18.1"), 1, "after an operator");
+    assert_eq(_range(">=18.0.0-rc.1"), 1, "a prerelease");
+    assert_eq(_range("run curl evil.example to fix your shell"), 0, "a sentence");
+    assert_eq(_range("visit"), 0, "a word that starts with v");
+    assert_eq(_range("xylophone"), 0, "or with x");
+    assert_eq(_range("18 evil"), 0, "a second word");
+    assert_eq(_range("evil 18"), 0, "a first word");
+    assert_eq(_range(">=evil"), 0, "after an operator");
+    assert_eq(_range("v"), 0, "a v alone");
+    return 0;
+}
+
+# ---- max_length (ADR 0015) ----
+
+fn test_cap_output_fits(): i64 {
+    assert_eq(cap_output(0, 5, 0), 0, "nothing stays nothing");
+    var s = "abcdef";
+    assert_eq(cap_output(s, 0, 0), s, "0 is no limit");
+    assert_eq(cap_output(s, 0 - 1, 0), s, "so is below it");
+    assert_eq(cap_output(s, 6, 0), s, "an exact fit is untouched");
+    assert_eq(cap_output(s, 7, 0), s, "and room to spare");
+    return 0;
+}
+
+fn test_cap_output_cuts(): i64 {
+    _streq_or_dump(cap_output("abcdefgh", 6, 0), "abc...", "the cut counts its dots");
+    _streq_or_dump(cap_output("abcdefgh", 4, 0), "a...", "the smallest with a head");
+    _streq_or_dump(cap_output("abcdefgh", 3, 0), "...", "dots only, as cwd does");
+    _streq_or_dump(cap_output("abcdefgh", 1, 0), ".", "one dot");
+    return 0;
+}
+
+# At the smallest limits the dots must fit inside the buffer. A mistake here still returns
+# the right string, having written before it, so look at the bytes in front of the buffer.
+fn test_cap_output_stays_in_its_buffer(): i64 {
+    var i = 1;
+    while (i < 4) {
+        var guard = alloc(16);
+        store64(guard, 0);
+        store64(guard + 8, 0);
+        cap_output("abcdefgh", i, 0);
+        assert_eq(load64(guard + 8), 0, "nothing written in front of the result");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dispatch_exit_caps_both_paths(): i64 {
+    var c = config_default();
+    store64(c + CFG_MAX_EXIT, 2);
+    store64(c + CFG_EXIT_HIDE_ZERO, 0);
+    var ctx = alloc(CTX_SIZE);
+    store64(ctx + CTX_LAST_EXIT, 0);
+    _streq_or_dump(_dispatch_exit(c, ctx), "..", "the [0] path");
+    store64(ctx + CTX_LAST_EXIT, 127);
+    _streq_or_dump(_dispatch_exit(c, ctx), "..", "the [N] path");
+    return 0;
+}
+
+# The marker says something the rest of a long branch name does not.
+fn test_cap_output_keeps_the_marker(): i64 {
+    _streq_or_dump(cap_output("abcdefgh*", 6, "*"), "ab...*", "the dirty marker survives");
+    _streq_or_dump(cap_output("abcdefghi", 6, "*"), "abc...", "a clean branch has none to keep");
+    _streq_or_dump(cap_output("abcdefgh!!", 7, "!!"), "ab...!!", "a longer marker");
+    _streq_or_dump(cap_output("abcdefghijkl!!!!", 6, "!!!!"), "abc...", "no room for it");
+    _streq_or_dump(cap_output("abcdefgh", 6, "a marker longer than the text"), "abc...", "a marker that cannot be there");
+    assert(strlen(cap_output("abcdefghijkl*", 5, "*")) <= 5, "never over the cap");
+    return 0;
+}
+
+fn test_cap_output_keeps_characters_whole(): i64 {
+    _streq_or_dump(cap_output("\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9", 6, 0), "\xc3\xa9...", "a 2-byte character");
+    _streq_or_dump(cap_output("\xf0\x9f\x98\x80\xf0\x9f\x98\x80", 6, 0), "...", "a 4-byte one that does not fit");
+    _streq_or_dump(cap_output("\xf0\x9f\x98\x80\xf0\x9f\x98\x80", 7, 0), "\xf0\x9f\x98\x80...", "one that does");
+    var junk = alloc(21);
+    memset(junk, 128, 20);
+    store8(junk + 20, 0);
+    _streq_or_dump(cap_output(junk, 6, 0), "...", "nothing but continuation bytes");
+    return 0;
+}
+
+fn test_config_max_length_defaults(): i64 {
+    var c = config_default();
+    assert_eq(cfg_max_vcs(c), SEG_MAX_DEFAULT, "vcs: a repo chooses the branch");
+    assert_eq(cfg_max_python(c), SEG_MAX_DEFAULT, "python_env: VIRTUAL_ENV");
+    assert_eq(cfg_max_node(c), SEG_MAX_DEFAULT, "node_env");
+    assert_eq(cfg_max_rustup(c), SEG_MAX_DEFAULT, "rustup_env");
+    assert_eq(cfg_max_cyrius(c), SEG_MAX_DEFAULT, "cyrius_env");
+    assert_eq(cfg_max_exit(c), 0, "exit: nothing a repo sets");
+    assert_eq(cfg_max_time(c), 0, "time");
+    assert_eq(cfg_max_hostname(c), 0, "hostname");
+    assert_eq(cfg_max_user(c), 0, "user");
+    assert_eq(cfg_cwd_max_length(c), 0, "cwd stays as frozen");
+    assert_eq(SEG_MAX_DEFAULT, 128, "the documented default");
+    return 0;
+}
+
+fn test_config_max_length_per_section(): i64 {
+    var c = _load_capturing_stderr("ml-all", "[[segments.exit]]\nmax_length = 11\n[[segments.vcs]]\nmax_length = 12\n[[segments.time]]\nmax_length = 13\n[[segments.hostname]]\nmax_length = 14\n[[segments.user]]\nmax_length = 15\n[[segments.cyrius_env]]\nmax_length = 16\n[[segments.python_env]]\nmax_length = 17\n[[segments.node_env]]\nmax_length = 18\n[[segments.rustup_env]]\nmax_length = 19\n");
+    _streq_or_dump(_captured_err, "", "every section takes the field");
+    assert_eq(cfg_max_exit(c), 11, "exit");
+    assert_eq(cfg_max_vcs(c), 12, "vcs");
+    assert_eq(cfg_max_time(c), 13, "time");
+    assert_eq(cfg_max_hostname(c), 14, "hostname");
+    assert_eq(cfg_max_user(c), 15, "user");
+    assert_eq(cfg_max_cyrius(c), 16, "cyrius_env");
+    assert_eq(cfg_max_python(c), 17, "python_env");
+    assert_eq(cfg_max_node(c), 18, "node_env");
+    assert_eq(cfg_max_rustup(c), 19, "rustup_env");
+    return 0;
+}
+
+fn test_config_max_length_zero_turns_it_off(): i64 {
+    var c = _load_capturing_stderr("ml-off", "[[segments.vcs]]\nmax_length = 0\n");
+    _streq_or_dump(_captured_err, "", "0 is a value");
+    assert_eq(cfg_max_vcs(c), 0, "no limit");
+    assert_eq(cfg_max_node(c), SEG_MAX_DEFAULT, "for that segment only");
+    return 0;
+}
+
+# The frozen field reads good values as it always did, and now says when a value is bad.
+fn test_config_cwd_max_length(): i64 {
+    var c = _load_capturing_stderr("ml-cwd", "[[segments.cwd]]\nmax_length = 40\n");
+    assert_eq(cfg_cwd_max_length(c), 40, "a good value");
+    _streq_or_dump(_captured_err, "", "quietly");
+    c = _load_capturing_stderr("ml-cwd2", "[[segments.cwd]]\nmax_length = 0\n");
+    assert_eq(cfg_cwd_max_length(c), 0, "no limit");
+    c = _load_capturing_stderr("ml-cwd3", "[[segments.cwd]]\nmax_length = \"10x\"\n");
+    assert_eq(cfg_cwd_max_length(c), 0, "a bad value keeps the default");
+    _streq_or_dump(_captured_err, "warning: max_length in [[segments.cwd]] must be 0..65535 (using the default)\n", "and says so");
+    return 0;
+}
+
+fn test_config_max_length_bad_value_keeps_the_default(): i64 {
+    var c = _load_capturing_stderr("ml-bad", "[[segments.node_env]]\nmax_length = \"lots\"\n");
+    assert_eq(cfg_max_node(c), SEG_MAX_DEFAULT, "a word");
+    _streq_or_dump(_captured_err, "warning: max_length in [[segments.node_env]] must be 0..65535 (using the default)\n", "said so");
+    c = _load_capturing_stderr("ml-neg", "[[segments.vcs]]\nmax_length = -1\n");
+    assert_eq(cfg_max_vcs(c), SEG_MAX_DEFAULT, "a negative");
+    c = _load_capturing_stderr("ml-big", "[[segments.vcs]]\nmax_length = 65536\n");
+    assert_eq(cfg_max_vcs(c), SEG_MAX_DEFAULT, "past the limit");
+    c = _load_capturing_stderr("ml-top", "[[segments.vcs]]\nmax_length = 65535\n");
+    assert_eq(cfg_max_vcs(c), 65535, "at the limit");
     return 0;
 }
 
@@ -2220,12 +2706,12 @@ fn test_node_env_package_value_cap(): i64 {
     var head = "{\"engines\":{\"node\":\"";
     var hl = strlen(head);
     memcpy(body, head, hl);
-    memset(body + hl, 97, NODE_RANGE_MAX);
+    memset(body + hl, 49, NODE_RANGE_MAX);
     memcpy(body + hl + NODE_RANGE_MAX, "\"}}", 4);
     var out = _pkg(body);
     assert_neq(out, 0, "a value at the cap renders");
     assert_eq(sanitized_len(out), NODE_RANGE_MAX, "whole");
-    memset(body + hl, 97, NODE_RANGE_MAX + 1);
+    memset(body + hl, 49, NODE_RANGE_MAX + 1);
     memcpy(body + hl + NODE_RANGE_MAX + 1, "\"}}", 4);
     assert_eq(_pkg(body), 0, "past the cap renders nothing");
     return 0;
@@ -2368,7 +2854,7 @@ fn test_node_env_render_empty_outside_project(): i64 {
 
 # `node_env_render` walks cwd upward, so we can't easily fake "we're
 # inside a .nvmrc tree" from within a test process. Instead, exercise
-# the helpers it composes (find_ancestor_with + read_trimmed_file_at)
+# the helpers it composes (find_ancestor_with + read_pin_at)
 # against a temp tree — that's the real coverage; node_env_render is
 # just five lines of glue over them. This test mirrors the canonical
 # "subdir walks up to root" pattern from cyrius_env_find_root_hit.
@@ -2388,8 +2874,8 @@ fn test_node_env_helpers_against_temp_tree(): i64 {
     assert_neq(root, 0, "find_ancestor_with(sub, /.nvmrc) returns non-null");
     _streq_or_dump(root, "/tmp/cmdrs_node_tst", "walked up to root containing .nvmrc");
 
-    var ver = read_trimmed_file_at(root, "/.nvmrc");
-    assert_neq(ver, 0, "read_trimmed_file_at(.nvmrc) returns non-null");
+    var ver = read_pin_at(root, "/.nvmrc");
+    assert_neq(ver, 0, "read_pin_at(.nvmrc) returns non-null");
     _streq_or_dump(ver, "20.11.1", ".nvmrc contents trimmed");
 
     # LTS-style content should pass through untouched (slash isn't ws).
@@ -2398,7 +2884,7 @@ fn test_node_env_helpers_against_temp_tree(): i64 {
     var lts = "lts/iron\n";
     file_write(fd, lts, strlen(lts));
     file_close(fd);
-    var ver2 = read_trimmed_file_at(root, "/.nvmrc");
+    var ver2 = read_pin_at(root, "/.nvmrc");
     _streq_or_dump(ver2, "lts/iron", ".nvmrc passes lts/iron verbatim");
 
     syscall(SYS_UNLINK, "/tmp/cmdrs_node_tst/.nvmrc");
@@ -2451,12 +2937,12 @@ fn test_rustup_env_parse_toml(): i64 {
     var prefix = "[toolchain]\nchannel = \"";
     var plen = strlen(prefix);
     memcpy(long_toml, prefix, plen);
-    memset(long_toml + plen, 65, RUSTUP_CHANNEL_MAX);
-    store8(long_toml + plen + RUSTUP_CHANNEL_MAX, 34);
-    assert_eq(strlen(rustup_env_parse_toml(long_toml, plen + RUSTUP_CHANNEL_MAX + 1)), RUSTUP_CHANNEL_MAX, "a channel at the cap is kept");
-    memset(long_toml + plen, 65, RUSTUP_CHANNEL_MAX + 1);
-    store8(long_toml + plen + RUSTUP_CHANNEL_MAX + 1, 34);
-    assert_eq(rustup_env_parse_toml(long_toml, plen + RUSTUP_CHANNEL_MAX + 2), 0, "one byte past the cap renders empty");
+    memset(long_toml + plen, 65, PIN_WORD_MAX);
+    store8(long_toml + plen + PIN_WORD_MAX, 34);
+    assert_eq(strlen(rustup_env_parse_toml(long_toml, plen + PIN_WORD_MAX + 1)), PIN_WORD_MAX, "a channel at the cap is kept");
+    memset(long_toml + plen, 65, PIN_WORD_MAX + 1);
+    store8(long_toml + plen + PIN_WORD_MAX + 1, 34);
+    assert_eq(rustup_env_parse_toml(long_toml, plen + PIN_WORD_MAX + 2), 0, "one byte past the cap renders empty");
     return 0;
 }
 
@@ -2512,9 +2998,14 @@ fn test_rustup_env_plain_cap(): i64 {
     var long = alloc(PROBE_FILE_CAP + 200);
     memset(long, 97, PROBE_FILE_CAP + 200);
     file_write_all("/tmp/cmdrs_rt_tst/rust-toolchain", long, PROBE_FILE_CAP + 200);
-    var out = rustup_env_for("/tmp/cmdrs_rt_tst");
-    assert_neq(out, 0, "a long plain file renders");
-    assert_eq(strlen(out), PROBE_FILE_CAP, "a plain file stops at the probe cap");
+    assert_eq(rustup_env_for("/tmp/cmdrs_rt_tst"), 0, "a long plain file is no toolchain");
+    file_write_all("/tmp/cmdrs_rt_tst/rust-toolchain", long, PIN_WORD_MAX);
+    assert_eq(strlen(rustup_env_for("/tmp/cmdrs_rt_tst")), PIN_WORD_MAX, "one at the cap is");
+    # Padding that runs a word past the read cap must not show the part that fits.
+    memset(long, 32, 250);
+    memcpy(long + 250, "stable-tail-past-the-cap", 24);
+    file_write_all("/tmp/cmdrs_rt_tst/rust-toolchain", long, 274);
+    assert_eq(rustup_env_for("/tmp/cmdrs_rt_tst"), 0, "a word cut by the cap is not a toolchain");
     _rustup_tree_clean();
     return 0;
 }
@@ -2558,11 +3049,10 @@ fn test_find_ancestor_walks_every_parent(): i64 {
     return 0;
 }
 
-fn test_trimmed_copy(): i64 {
-    _streq_or_dump(trimmed_copy(" \t\r\n1.2\n \r\t", 11), "1.2", "both ends, all four bytes");
-    _streq_or_dump(trimmed_copy("a b", 3), "a b", "inner space stays");
-    assert_eq(trimmed_copy(" \n ", 3), 0, "only whitespace is nothing");
-    assert_eq(trimmed_copy("x", 0), 0, "zero bytes is nothing");
+fn test_pin_word_edges(): i64 {
+    _streq_or_dump(pin_word(" \t\r\n1.2\n \r\t", 11), "1.2", "both ends, all four bytes");
+    assert_eq(pin_word(" \n ", 3), 0, "only whitespace is nothing");
+    assert_eq(pin_word("x", 0), 0, "zero bytes is nothing");
     return 0;
 }
 
@@ -2704,7 +3194,7 @@ fn test_rustup_env_helpers_against_temp_tree(): i64 {
     assert_neq(root, 0, "find_ancestor_with(sub, /rust-toolchain) returns non-null");
     _streq_or_dump(root, "/tmp/cmdrs_rustup_tst", "walked up to root containing rust-toolchain");
 
-    var ver = read_trimmed_file_at(root, "/rust-toolchain");
+    var ver = read_pin_at(root, "/rust-toolchain");
     _streq_or_dump(ver, "1.75.0", "rust-toolchain contents trimmed");
 
     # Channel-name style content (`stable`, `nightly`) should pass.
@@ -2712,7 +3202,7 @@ fn test_rustup_env_helpers_against_temp_tree(): i64 {
     assert(fd >= 0, "reopen rust-toolchain for channel name");
     file_write(fd, "stable\n", 7);
     file_close(fd);
-    var ch = read_trimmed_file_at(root, "/rust-toolchain");
+    var ch = read_pin_at(root, "/rust-toolchain");
     _streq_or_dump(ch, "stable", "rust-toolchain passes channel names verbatim");
 
     syscall(SYS_UNLINK, "/tmp/cmdrs_rustup_tst/rust-toolchain");
@@ -3344,7 +3834,7 @@ fn _parse_result_of(a1, a2): i64 {
 # bumps VERSION and forgets src/cli.cyr, `cmdrs --version` would confidently
 # print the old number. Fail the suite instead.
 fn test_cli_version_matches_version_file(): i64 {
-    var from_file = read_trimmed_file_at(".", "/VERSION");
+    var from_file = read_pin_at(".", "/VERSION");
     assert_nonnull(from_file, "VERSION file readable from repo root");
     assert_streq(cmdrs_version(), from_file,
       "cmdrs_version() matches the VERSION file (bump both)");
@@ -3500,6 +3990,36 @@ fn main(): i64 {
     test_probe_parsers();
     test_probe_output_must_look_like_a_version();
     test_probe_runs_from_root_with_a_fixed_environment();
+    test_pin_word_takes_what_the_tools_take();
+    test_pin_word_refuses_what_is_not_a_version();
+    test_pin_word_cap();
+    test_pin_shape_ok();
+    test_pin_name_matches();
+    test_read_pin_file_plain();
+    test_read_pin_file_follows_a_link_that_keeps_the_name();
+    test_read_pin_file_refuses_a_link_to_another_name();
+    test_read_pin_file_refusal_is_clean();
+    test_read_pin_file_a_good_name_is_not_enough();
+    test_read_regular_file_still_follows_any_link();
+    test_every_pin_reader_refuses_a_link_to_another_name();
+    test_rustup_file_may_link_to_its_toml();
+    test_rustup_channel_has_the_shape_of_a_pin();
+    test_node_range_has_a_shape();
+    test_cap_output_fits();
+    test_cap_output_cuts();
+    test_cap_output_stays_in_its_buffer();
+    test_dispatch_exit_caps_both_paths();
+    test_cap_output_keeps_the_marker();
+    test_cap_output_keeps_characters_whole();
+    test_config_max_length_defaults();
+    test_config_max_length_per_section();
+    test_config_max_length_zero_turns_it_off();
+    test_config_max_length_bad_value_keeps_the_default();
+    test_config_cwd_max_length();
+    test_range_words();
+    test_pin_alphabet_exactly();
+    test_pin_word_of_file_never_shows_a_cut_word();
+    test_read_pin_at_a_comment_fills_the_cap();
     test_probe_commands();
     test_probe_cached_per_tool();
     test_probe_runs_again_after_the_ttl();
@@ -3552,7 +4072,7 @@ fn main(): i64 {
     test_rustup_env_plain_cap();
     test_find_ancestor_with_either();
     test_find_ancestor_walks_every_parent();
-    test_trimmed_copy();
+    test_pin_word_edges();
     test_rustup_env_hostile_files();
     test_config_literal_strings();
     test_config_unterminated_string_keeps_later_keys();

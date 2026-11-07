@@ -5,7 +5,7 @@
 #      `rust-toolchain.toml` wins. If one directory holds both, `rust-toolchain`
 #      wins.
 #   2. `rust-toolchain.toml` is TOML: show `[toolchain] channel`.
-#   3. `rust-toolchain` is the legacy one-line format (trimmed contents), or TOML,
+#   3. `rust-toolchain` is the legacy one-line format (its first word), or TOML,
 #      which rustup also accepts under that name. More than one line means TOML,
 #      which is rustup's own rule.
 #   4. With `shellout = true`, under a `Cargo.toml` and with no channel from a file →
@@ -16,12 +16,13 @@
 # in, so this is the first path where bytes an attacker chose reach the TOML
 # parser; everything else it reads is the user's own `~/.commandress`. Four
 # things bound that:
-#   - `read_regular_file` refuses a FIFO or device (audit A-01).
+#   - `read_pin_file` refuses a FIFO or device (audit A-01), and a symlink to a file of
+#     another name (ADR 0015).
 #   - RUSTUP_FILE_CAP bounds the parse. A real file is well under 1 KB, and the
 #     cap keeps bayan's worst case far below the render budget.
-#   - RUSTUP_CHANNEL_MAX bounds the output. Without it a hostile file could put
-#     nearly the whole read cap into every redraw, where the plain format stops at
-#     255 bytes. A longer value is no real toolchain, so it renders empty.
+#   - `pin_shape_ok` bounds the output. Without it a hostile file could put nearly
+#     the whole read cap into every redraw. Anything over PIN_WORD_MAX, or not shaped
+#     like a toolchain name, renders empty.
 #   - The channel goes through `sanitize_segment_output` like all segment output,
 #     so an escape-spelled control byte is stripped before it reaches the terminal.
 #
@@ -30,7 +31,6 @@
 
 enum RustupEnv {
     RUSTUP_FILE_CAP = 4096;
-    RUSTUP_CHANNEL_MAX = 255;
 }
 
 # Pure parser: `channel` from `[toolchain]`, in the `n` bytes at `buf`. Returns a
@@ -45,8 +45,7 @@ fn rustup_env_parse_toml(buf, n): i64 {
     if (pair == 0) { return 0; }
     if (bayan_toml_pair_is_string(pair) == false) { return 0; }
     var channel = bayan_toml_pair_value(pair);
-    if (str_len(channel) == 0) { return 0; }
-    if (str_len(channel) > RUSTUP_CHANNEL_MAX) { return 0; }
+    if (pin_shape_ok(str_data(channel), str_len(channel), PIN_WORD_MAX, 0) == 0) { return 0; }
     return str_cstr(channel);
 }
 
@@ -96,13 +95,12 @@ fn _rustup_file_value(root, suffix, is_toml): i64 {
 
     var buf = alloc(RUSTUP_FILE_CAP);
     if (buf == 0) { return 0; }
-    var n = read_regular_file(path, buf, RUSTUP_FILE_CAP);
+    var n = read_pin_file(path, buf, RUSTUP_FILE_CAP);
     if (n <= 0) { return 0; }
     if (is_toml == 1) { return rustup_env_parse_toml(buf, n); }
 
     if (_rustup_text_is_toml(buf, n) == 1) { return rustup_env_parse_toml(buf, n); }
-    if (n > PROBE_FILE_CAP) { n = PROBE_FILE_CAP; }
-    return trimmed_copy(buf, n);
+    return pin_word_of_file(buf, n, PROBE_FILE_CAP);
 }
 
 # The toolchain in force at `cwd`, or 0.

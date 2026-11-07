@@ -10,12 +10,11 @@
 #       "/.nvmrc") so the root-case join "/" + marker still produces a
 #       valid path; POSIX collapses leading "//" to "/".
 #
-#   read_trimmed_file_at(root, suffix)
-#       Reads `<root><suffix>` (e.g. "/VERSION", "/.python-version",
-#       "/.nvmrc") and returns its trimmed contents as a heap-alloc'd
-#       cstring, or 0 on missing / unreadable / whitespace-only files.
-#       Trim covers space / tab / \n / \r at both ends. 256-byte fixed
-#       read cap — pin files hold semver-shaped strings, not data.
+#   read_pin_at(root, suffix)
+#       Reads the pin `<root><suffix>` (e.g. "/VERSION", "/.python-version",
+#       "/.nvmrc") through `read_pin_file` and returns its word per `pin_word`
+#       as a heap-alloc'd cstring, or 0. 256-byte fixed read cap: pin files
+#       hold version strings, not data.
 #
 # Both lifted from `src/segments/cyrius_env.cyr` and `python_env.cyr`
 # in v0.5.0 once M4 produced three call sites apiece. Each segment's
@@ -134,6 +133,34 @@ fn find_ancestor_with(start_dir, marker): i64 {
     return find_ancestor_with_either(start_dir, marker, 0, &which);
 }
 
+#ifndef CYRIUS_TARGET_AGNOS
+# Read `fd` into `buf`, up to `cap` bytes, if it is a regular file, and close it. Returns
+# the bytes read, or -1.
+fn _read_regular_fd(fd, buf, cap): i64 {
+    # 144 = sizeof(struct stat) on Linux x86_64 (same as src/cache.cyr). A
+    # smaller frame array would let the kernel write past it.
+    var stbuf[144];
+    if (sys_fstat(fd, &stbuf) != 0) { file_close(fd); return 0 - 1; }
+    var st_mode = load32(&stbuf + 24);                  # struct stat: st_mode @ 24
+    if ((st_mode & 0xF000) != 0x8000) {                 # S_IFMT / S_IFREG
+        file_close(fd);
+        return 0 - 1;
+    }
+    var total = 0;
+    var going = 1;
+    while (going == 1) {
+        if (total >= cap) { going = 0; }
+        else {
+            var n = file_read(fd, buf + total, cap - total);
+            if (n <= 0) { going = 0; }
+            else { total = total + n; }
+        }
+    }
+    file_close(fd);
+    return total;
+}
+#endif
+
 # Read a file that an ATTACKER may have chosen the type of.
 #
 # Audit 2026-08-26, A-01 (HIGH). `file_read_all` opens with plain
@@ -174,70 +201,8 @@ fn read_regular_file(path, buf, cap): i64 {
     #ifndef CYRIUS_TARGET_AGNOS
     var fd = file_open(path, O_NONBLOCK, 0);            # O_RDONLY is 0
     if (fd < 0) { return 0 - 1; }
-    # 144 = sizeof(struct stat) on Linux x86_64 (same as src/cache.cyr). A
-    # smaller frame array would let the kernel write past it.
-    var stbuf[144];
-    if (sys_fstat(fd, &stbuf) != 0) { file_close(fd); return 0 - 1; }
-    var st_mode = load32(&stbuf + 24);                  # struct stat: st_mode @ 24
-    if ((st_mode & 0xF000) != 0x8000) {                 # S_IFMT / S_IFREG
-        file_close(fd);
-        return 0 - 1;
-    }
-    var total = 0;
-    var going = 1;
-    while (going == 1) {
-        if (total >= cap) { going = 0; }
-        else {
-            var n = file_read(fd, buf + total, cap - total);
-            if (n <= 0) { going = 0; }
-            else { total = total + n; }
-        }
-    }
-    file_close(fd);
-    return total;
+    return _read_regular_fd(fd, buf, cap);
     #endif
-}
-
-# The `n` bytes at `buf`, trimmed at both ends, as a heap-alloc'd cstring, or 0 when
-# nothing is left.
-fn trimmed_copy(buf, n): i64 {
-    var start = 0;
-    var ltrim = 1;
-    while (ltrim == 1) {
-        if (start >= n) { ltrim = 0; }
-        else {
-            var c = load8(buf + start);
-            if (c == 32) { start = start + 1; }
-            else { if (c == 9) { start = start + 1; }
-                else { if (c == 10) { start = start + 1; }
-                    else { if (c == 13) { start = start + 1; }
-                        else { ltrim = 0; }
-                    }}}
-        }
-    }
-
-    var end = n;
-    var rtrim = 1;
-    while (rtrim == 1) {
-        if (end <= start) { rtrim = 0; }
-        else {
-            var c = load8(buf + end - 1);
-            if (c == 32) { end = end - 1; }
-            else { if (c == 9) { end = end - 1; }
-                else { if (c == 10) { end = end - 1; }
-                    else { if (c == 13) { end = end - 1; }
-                        else { rtrim = 0; }
-                    }}}
-        }
-    }
-
-    var content_len = end - start;
-    if (content_len == 0) { return 0; }
-    var out = alloc(content_len + 1);
-    if (out == 0) { return 0; }
-    memcpy(out, buf + start, content_len);
-    store8(out + content_len, 0);
-    return out;
 }
 
 # `<root><suffix>` as a heap-alloc'd cstring, or 0 if alloc refuses.
@@ -252,14 +217,270 @@ fn join_path(root, suffix): i64 {
     return path;
 }
 
-fn read_trimmed_file_at(root, suffix): i64 {
+# ---- pin files (ADR 0015) ----
+#
+# ⚠ A SYMLINK IS HOW A REPO REACHES A FILE IT DOES NOT CONTAIN. These files come from
+# whatever directory the user is in, and a pin can legally be nearly any bare word: a
+# pyenv virtualenv, an nvm alias, a custom toolchain. So no rule about the content can
+# tell a token from a version, and `.python-version -> ~/.token` would show all of it.
+# `/proc/self/environ` is a regular file too. So what is refused is the link: a pin that
+# is a symlink must end at a file of the same name, which keeps `.nvmrc -> ../.nvmrc`
+# and `~/.nvmrc -> ~/dotfiles/nvmrc` and loses nothing a repo should be able to show.
+#
+# Then the shape. That is not what protects a secret: it bounds what a repo or a co-tenant
+# can put in the prompt, and it reads the file the way the tools do.
+
+enum Pin {
+    PIN_WORD_MAX = 64;
+    PIN_READ_SIZE = 257;                                # PROBE_FILE_CAP, and one to see past it
+    PIN_PATH_MAX = 4096;
+    PIN_O_NOFOLLOW = 131072;
+    PIN_ELOOP = 40;
+}
+
+# 1 if `c` can be in a pin: the characters of pyenv, uv, nvm and rustup names and of PEP 440
+# specifiers. `range` adds what a semver range uses. ASCII only, so a pin cannot carry a
+# bidi override.
+fn _pin_char(c, range): i64 {
+    if (c >= 48) { if (c <= 57) { return 1; } }
+    if (c >= 65) { if (c <= 90) { return 1; } }
+    if (c >= 97) { if (c <= 122) { return 1; } }
+    if (c == 46 || c == 43 || c == 45 || c == 95) { return 1; }     # . + - _
+    if (c == 64 || c == 42 || c == 47) { return 1; }                # @ * /
+    if (c == 61 || c == 60 || c == 62 || c == 44) { return 1; }     # = < > ,
+    if (c == 126 || c == 33) { return 1; }                          # ~ !
+    if (range == 1) {
+        if (c == 32 || c == 94 || c == 124) { return 1; }           # space ^ |
+    }
+    return 0;
+}
+
+# 1 if the `len` bytes at `p` are one word of a semver range: an operator alone, or a
+# version, which after any operator and a `v` starts with a digit or is an x-range. So
+# letters only ever follow a number, and a range cannot spell a sentence.
+fn _range_word_ok(p, len): i64 {
+    var i = 0;
+    var ops = 1;
+    while (ops == 1) {
+        if (i >= len) { ops = 0; }
+        else {
+            var c = load8(p + i);
+            if (c == 60 || c == 61 || c == 62 || c == 94 || c == 126 || c == 124) { i = i + 1; }
+            else { ops = 0; }
+        }
+    }
+    if (i == len) { return 1; }                         # `||`, `>=`
+    if (len == 1) {
+        if (load8(p) == 45) { return 1; }               # the `-` of a hyphen range
+    }
+    if (load8(p + i) == 118) { i = i + 1; }             # `v`
+    if (i >= len) { return 0; }
+    var v = load8(p + i);
+    if (v >= 48) { if (v <= 57) { return 1; } }
+    if (v == 120 || v == 88 || v == 42) {               # x X *
+        if (i + 1 == len) { return 1; }
+        if (load8(p + i + 1) == 46) { return 1; }
+    }
+    return 0;
+}
+
+fn _range_words_ok(p, len): i64 {
+    var start = 0;
+    var i = 0;
+    while (i < len) {
+        if (load8(p + i) == 32) {
+            if (i > start) {
+                if (_range_word_ok(p + start, i - start) == 0) { return 0; }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    if (len > start) { return _range_word_ok(p + start, len - start); }
+    return 1;
+}
+
+# 1 if the `len` bytes at `p` are all pin characters, and there are 1 to `max` of them.
+# With `range`, it must also read as a semver range.
+fn pin_shape_ok(p, len, max, range): i64 {
+    if (len <= 0) { return 0; }
+    if (len > max) { return 0; }
+    var i = 0;
+    while (i < len) {
+        if (_pin_char(load8(p + i), range) == 0) { return 0; }
+        i = i + 1;
+    }
+    if (range == 1) { return _range_words_ok(p, len); }
+    return 1;
+}
+
+# 1 if the word at `p` is `key=value`, which nvm allows in `.nvmrc` beside the version. A
+# version specifier has an operator before its `=`, so it is not one: `cpython>=3.12`.
+fn _pin_is_key_value(p, len): i64 {
+    var i = 0;
+    while (i < len) {
+        var c = load8(p + i);
+        if (c == 61) {
+            if (i > 0) { return 1; }
+            return 0;
+        }
+        var ok = 0;
+        if (c >= 65) { if (c <= 90) { ok = 1; } }
+        if (c >= 97) { if (c <= 122) { ok = 1; } }
+        if (c == 95 || c == 45) { ok = 1; }
+        if (i > 0) {
+            if (c >= 48) { if (c <= 57) { ok = 1; } }
+        }
+        if (ok == 0) { return 0; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The pin in the `n` bytes at `buf`, as a heap-alloc'd cstring, or 0: the first word of the
+# first line that is not blank, a comment or `key=value`. That is how pyenv reads
+# `.python-version` and nvm reads `.nvmrc`, and the rest of the line and the lines after
+# it are not looked at. A `#` ends a word, as it does for nvm. uv writes a specifier with a
+# space as `>=3.12, <3.20`, which shows its first clause. A bad word renders nothing
+# rather than falling through to the next line.
+fn pin_word(buf, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(buf + i);
+        if (c == 32 || c == 9 || c == 13 || c == 10) { i = i + 1; }
+        else {
+            if (c == 35) {
+                while (i < n && load8(buf + i) != 10) { i = i + 1; }
+            } else {
+                var end = i;
+                var seek = 1;
+                while (seek == 1) {
+                    if (end >= n) { seek = 0; }
+                    else {
+                        var w = load8(buf + end);
+                        if (w == 32 || w == 9 || w == 13 || w == 10 || w == 35) { seek = 0; }
+                        else { end = end + 1; }
+                    }
+                }
+                var len = end - i;
+                if (_pin_is_key_value(buf + i, len) == 1) {
+                    i = end;
+                    while (i < n && load8(buf + i) != 10) { i = i + 1; }
+                } else {
+                    if (len > 1) {
+                        if (load8(buf + i + len - 1) == 44) { len = len - 1; }
+                    }
+                    if (pin_shape_ok(buf + i, len, PIN_WORD_MAX, 0) == 0) { return 0; }
+                    var out = alloc(len + 1);
+                    if (out == 0) { return 0; }
+                    memcpy(out, buf + i, len);
+                    store8(out + len, 0);
+                    return out;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+# 1 if `got` is the pin `want`, ignoring a leading dot on either and allowing an extension
+# on `got`: `nvmrc` for `.nvmrc`, `rust-toolchain.toml` for `rust-toolchain`.
+fn _pin_name_is(want, got): i64 {
+    var w = want;
+    if (load8(w) == 46) { w = w + 1; }
+    var g = got;
+    if (load8(g) == 46) { g = g + 1; }
+    var wlen = strlen(w);
+    if (wlen == 0) { return 0; }
+    var glen = strlen(g);
+    if (glen < wlen) { return 0; }
+    if (memeq(w, g, wlen) == 0) { return 0; }
+    if (glen == wlen) { return 1; }
+    if (load8(g + wlen) == 46) { return 1; }
+    return 0;
+}
+
+# 1 if a file named `got` may stand behind a pin named `want`. `.nvmrc` and `.node-version`
+# hold the same thing, and repos link one to the other.
+fn pin_name_matches(want, got): i64 {
+    if (_pin_name_is(want, got) == 1) { return 1; }
+    if (streq(want, ".nvmrc") == 1) { return _pin_name_is(".node-version", got); }
+    return 0;
+}
+
+fn _pin_basename(path): i64 {
+    var base = path;
+    var i = 0;
+    while (load8(path + i) != 0) {
+        if (load8(path + i) == 47) { base = path + i + 1; }
+        i = i + 1;
+    }
+    return base;
+}
+
+#ifndef CYRIUS_TARGET_AGNOS
+# 1 if the file open on `fd`, reached through the symlink `path`, keeps the pin's name. It
+# asks the kernel what `fd` is, so a chain counts by where it ends. With no /proc there is
+# no answer, and that refuses.
+fn _pin_link_keeps_name(fd, path): i64 {
+    var link[40];                                       # 14 for the prefix, 20 digits, NUL
+    var prefix = "/proc/self/fd/";
+    var plen = strlen(prefix);
+    memcpy(&link, prefix, plen);
+    var dlen = fmt_int_buf(fd, &link + plen);
+    store8(&link + plen + dlen, 0);
+    var target = alloc(PIN_PATH_MAX);
+    if (target == 0) { return 0; }
+    var n = syscall(SYS_READLINK, &link, target, PIN_PATH_MAX - 1);
+    if (n <= 0) { return 0; }
+    store8(target + n, 0);
+    return pin_name_matches(_pin_basename(path), _pin_basename(target));
+}
+#endif
+
+# `read_regular_file` for a file the repo chose. O_NOFOLLOW first, so a plain file pays
+# for nothing, and a link is only followed once it can be checked on the open fd, which
+# no swap of the link can get around.
+fn read_pin_file(path, buf, cap): i64 {
+    if (path == 0) { return 0 - 1; }
+    #ifdef CYRIUS_TARGET_AGNOS
+    return file_read_all(path, buf, cap);
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    var fd = file_open(path, O_NONBLOCK | PIN_O_NOFOLLOW, 0);
+    if (fd == (0 - PIN_ELOOP)) {
+        fd = file_open(path, O_NONBLOCK, 0);
+        if (fd >= 0) {
+            if (_pin_link_keeps_name(fd, path) == 0) {
+                file_close(fd);
+                return 0 - 1;
+            }
+        }
+    }
+    if (fd < 0) { return 0 - 1; }
+    return _read_regular_fd(fd, buf, cap);
+    #endif
+}
+
+# `pin_word` of a file `n` bytes of which were read. Past `cap` the read has cut a line, and
+# a cut word is a wrong version: a comment that fills the cap turns `3.11.14` into
+# `3.11.1`. So only whole lines count.
+fn pin_word_of_file(buf, n, cap): i64 {
+    if (n > cap) {
+        n = cap;
+        while (n > 0 && load8(buf + n - 1) != 10) { n = n - 1; }
+    }
+    return pin_word(buf, n);
+}
+
+fn read_pin_at(root, suffix): i64 {
     if (root == 0) { return 0; }
     if (suffix == 0) { return 0; }
     var path = join_path(root, suffix);
     if (path == 0) { return 0; }
 
-    var buf[PROBE_FILE_CAP];
-    var n = read_regular_file(path, &buf, PROBE_FILE_CAP);   # audit A-01: FIFO/device-safe
+    var buf[PIN_READ_SIZE];
+    var n = read_pin_file(path, &buf, PIN_READ_SIZE);    # audit A-01: FIFO/device-safe
     if (n <= 0) { return 0; }
-    return trimmed_copy(&buf, n);
+    return pin_word_of_file(&buf, n, PROBE_FILE_CAP);
 }

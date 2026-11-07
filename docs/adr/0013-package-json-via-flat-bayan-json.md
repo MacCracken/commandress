@@ -49,6 +49,7 @@ All of it fits the 5 ms budget. Without `node_env` in the segments the cost is f
 - **Negative** — The flat parser is forgiving, so a comment or trailing comma still gives a value. A repo can put any string in a valid file, so this adds no capability.
 - **Neutral** — Keys and values compare as written, so `"engines"` is not found. That is the warning in bayan's header, and it matters for allowlists. Here a miss renders nothing.
 - **Neutral** — The prompt shows a range for any Node project with `engines` and no `.nvmrc`. A workspace package does not show its monorepo root's range. Showing the running version is a shellout: roadmap 1.4.1.
+  > **Update 2026-11-06** (annotation, not a revision): since 1.5.0 the value must look like a semver range, so a value with a colon renders empty, and `package.json` goes through the same symlink rule as a pin. All 2,114 real values surveyed pass. See [ADR 0015](0015-pins-keep-their-name-and-shape.md).
 
 ## Alternatives considered
 

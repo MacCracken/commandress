@@ -49,10 +49,10 @@ fn python_env_basename(path): i64 {
     return out;
 }
 
-# Thin delegate over read_trimmed_file_at. Build/trim policy lives in
+# Thin delegate over read_pin_at. What a pin may look like lives in
 # `src/fslookup.cyr`.
 fn python_env_read_pin(root): i64 {
-    return read_trimmed_file_at(root, "/.python-version");
+    return read_pin_at(root, "/.python-version");
 }
 
 # The machine's Python, for a project at or above `cwd`. The caller has already stopped at

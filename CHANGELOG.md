@@ -6,6 +6,103 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-06
+
+A repo can no longer reach a file it does not contain through a symlinked pin. Pin files are read the way the
+tools read them, and every segment takes `max_length`, on by default at 128 bytes wherever a repo or the
+environment chooses the text. The toolchain and dependencies are unchanged. Decision and measurements:
+[ADR 0015](docs/adr/0015-pins-keep-their-name-and-shape.md).
+
+**The roadmap's fix was not enough.** It proposed one shape rule for the symlinks and the length. A pin can
+legally be any bare word, such as a pyenv virtualenv name, so no shape rule can tell one from a one-word token
+file, and 1.4.1 showed such a file in full. It also showed the start of the environment through
+`/proc/self/environ`, which the audit had not listed.
+
+### Breaking
+
+No config stops working. These change what renders, and only for unusual values:
+
+| What | Before | Now | To change it |
+|---|---|---|---|
+| Branch, `VIRTUAL_ENV` name or range over 128 bytes | Shown whole | Cut, ending in `...` | `max_length = 0` on that segment |
+| Pin symlinked to a file of another name | Followed | Empty | Rename the target, or use a real file |
+| Pin over 64 bytes, or with characters outside the version alphabet, such as non-ASCII | Shown | Empty | Use a shorter or ASCII name |
+| `VERSION` that is not a pin, in a Cyrius project | The toolchain's version | Empty | Fix the file, or remove it to fall back |
+| `engines.node` that does not read as a semver range | Shown | Empty | Fix the value |
+| `[[segments.cwd]] max_length = "10x"` | Acted as 10, silently | A warning, and no limit | Use a whole number |
+
+### Security
+
+- **A symlinked pin must end at a file of the same name.** This covers `.python-version`, `.nvmrc`, `VERSION`,
+  `package.json`, `rust-toolchain` and `rust-toolchain.toml`, and closes T-05 from the
+  [2026-11-06 audit](docs/audit/2026-11-06-audit.md).
+  - `.nvmrc -> ../.nvmrc`, `~/.nvmrc -> ~/dotfiles/nvmrc` and `rust-toolchain -> rust-toolchain.toml` still
+    work, and `.nvmrc` may end at `.node-version`.
+  - A token file, a key, a `.env`, `/proc/self/environ` and any chain of links ending in one all render empty.
+  - `~/.commandress` is the user's own file, so a dotfile manager can still link it from anywhere.
+- **Text a hostile repo can put in a default prompt drops from 8,182 bytes to 128.** A pin is at most 64.
+- **A pin is ASCII**, so it cannot carry a bidi override or other Unicode lookalike.
+- **`engines.node` must read as a semver range**, so it can no longer spell a sentence.
+- **Not fixed here:** `sit` follows a symlinked `.git` or `.sit/HEAD`, so a repo can show the branch name of
+  another repo it can name a path to. That fix belongs in `sit`, and it is on the roadmap.
+
+### Added
+
+- **`max_length` on every segment**, in bytes, `0` for no limit. It defaults to 128 on `vcs`, `cyrius_env`,
+  `python_env`, `node_env` and `rustup_env`, and to no limit on `exit`, `time`, `hostname` and `user`. A cut keeps
+  the head, ends in `...`, stays on a character boundary, and keeps the dirty marker.
+- **Benchmarks:** `pin_word`, `cap_output`.
+
+### Fixed
+
+- **A pin is the first word of its first meaningful line**, as pyenv and nvm read it. Two versions on two
+  lines rendered `3.12.13.11.4`, and a comment above a version rendered `# pinned3.12.1`.
+- `#` ends a word and `key=value` lines are skipped, so `.nvmrc` files with `20#pinned` or `foo=bar` read as
+  nvm reads them.
+
+### Changed
+
+- `[[segments.cwd]] max_length` warns on a bad value, as its siblings do. Good values read as before.
+- A file over the 256-byte pin read cap counts only up to its last whole line, because a cut word is a wrong
+  version.
+
+### Performance
+
+| | 1.4.1 | 1.5.0 | Delta |
+|---|---|---|---|
+| Cold start, no config | 300 µs | 302 µs | flat |
+| Cold start, largest theme | 530 µs | 533 µs | flat |
+| Cold start, three plain pins | 352 µs | 354 µs | flat |
+| Cold start, two pins symlinked under their own name | 361 µs | 386 µs | +25 µs, in those directories only |
+| `pin_word` | — | 544 ns | new |
+| `cap_output`, 8 KB to 128 | — | 2.44 µs | new, only when it cuts |
+| `render_prompt` | 10.77 µs | 11.35 µs | +0.58 µs, not visible in a cold start |
+| `config_load`, largest theme | 60.3 µs | 62.2 µs | +1.9 µs |
+| Binary, x86_64 | 186,424 B | 198,872 B | +12,448 B (+6.7 %) |
+| Binary, `--agnos` | 186,752 B | 195,088 B | +8,336 B (+4.5 %) |
+
+Medians of 2,500 interleaved pairs, and lowest mins of 5 alternating bench runs at equal path depth, because
+other work was running on the host. Absolute figures are not comparable with earlier entries.
+
+### Tests
+
+- 951 assertions across 284 tests, from 719 across 254.
+- 264 mutations, all caught. That includes each segment reading another's `max_length`, each reader skipping
+  the symlink rule, and a write in front of the output buffer that still returned the right string. The whole
+  alphabet is checked byte by byte.
+- An independent review found what the first pass missed: `engines.node` could spell a sentence, a comment that
+  filled the read cap turned `3.11.4` into `3`, legal `uv` and `nvm` forms rendered wrongly, `cyrius_env`
+  presented the toolchain's version as the project's, and six tests could not fail. Each got a failing test
+  first.
+- 30,000 hostile repos with canary files and every symlink route to them: no canary on stdout, and every word
+  shaped like a pin. The same fuzz leaks the canary in 794 of 2,000 runs on 1.4.1.
+- 15,000 hostile branch names through random `max_length` values: never over the limit, no control byte. 6,877 of
+  them were cut.
+- 20,000 hostile repo files, 10,000 hostile tool outputs and 40,000 mutated configs: no violation, no crash.
+- All 2,114 real `engines.node` values render unchanged through the binary.
+- Differential 1.4.1 → 1.5.0: of 6,163 cases, 352 are `--version`, and the other 264 are the three hostile
+  fixtures, each losing its hostile text. No output grew.
+
 ## [1.4.1] - 2026-11-06
 
 `python_env`, `node_env` and `rustup_env` can ask the tool for its version when no pin file answers. Off by

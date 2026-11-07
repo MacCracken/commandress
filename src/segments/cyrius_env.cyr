@@ -3,11 +3,12 @@
 # Detects a Cyrius project by walking the current directory upward
 # looking for a `cyrius.cyml` marker. Inside a project, reads
 # `<root>/VERSION` (per CLAUDE.md "VERSION at the project root is the
-# source of truth") and emits the trimmed contents.
+# source of truth") and emits its pin word.
 #
 # Resolution order:
 #   1. <root>/VERSION             — file read, no shellout
-#   2. `cyrius --version`         — shellout via shellout_capture
+#   2. `cyrius --version`         — shellout via shellout_capture, only
+#                                   when there is no VERSION file at all
 #   3. empty                      — no project / no version source
 #
 # The shellout fallback exists so that early-stage Cyrius projects
@@ -33,11 +34,11 @@ fn cyrius_env_find_root(start_dir): i64 {
     return find_ancestor_with(start_dir, "/cyrius.cyml");
 }
 
-# Thin delegate over read_trimmed_file_at — preserved as a named
+# Thin delegate over read_pin_at — preserved as a named
 # helper so callers + tests read naturally. Build/trim policy lives in
 # `src/fslookup.cyr` (lifted v0.5.0 once python_env hit the same shape).
 fn cyrius_env_read_version(root): i64 {
-    return read_trimmed_file_at(root, "/VERSION");
+    return read_pin_at(root, "/VERSION");
 }
 
 # Pure parser for `cyrius --version` stdout. First line is
@@ -86,6 +87,17 @@ fn _cyrius_env_shellout(): i64 {
     return cyrius_env_parse_version(&buf, n);
 }
 
+# 1 if `<root>/VERSION` exists, whatever it holds.
+fn _cyrius_env_has_version(root): i64 {
+    var marker = "/VERSION";
+    var mlen = strlen(marker);
+    var rlen = strlen(root);
+    var path = alloc(rlen + mlen + 1);
+    if (path == 0) { return 1; }
+    memcpy(path, root, rlen);
+    return _marker_exists(path, rlen, marker, mlen);
+}
+
 fn cyrius_env_render(): i64 {
     var buf[4096];
     var n = cmdrs_getcwd(&buf, 4096);
@@ -101,6 +113,9 @@ fn cyrius_env_render(): i64 {
 
     var ver = cyrius_env_read_version(root);
     if (ver != 0) { return ver; }
+    # A VERSION that says nothing usable stops here, as any pin does. The toolchain's
+    # version is not the project's.
+    if (_cyrius_env_has_version(root) == 1) { return 0; }
 
     return _cyrius_env_shellout();
 }

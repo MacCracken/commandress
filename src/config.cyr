@@ -47,6 +47,10 @@
 #   budget_ms    = 5                      # `sit status` watchdog; whole ms, 1..1000
 #   fg = "yellow"
 #
+#   Every segment takes `max_length`, in bytes, 0 for no limit. It defaults to 128 on
+#   vcs and the env segments, whose text a repo or the environment chooses, and to no
+#   limit on the rest. A cut ends in `...`, and cwd cuts at a `/`.
+#
 #   [[segments.<env_segment>]]            # cyrius_env / python_env / node_env / rustup_env
 #   fg = "..."                            # color knobs for the env segments
 #   shellout  = true                      # python_env, node_env, rustup_env: ask the tool
@@ -111,7 +115,16 @@ var CFG_VCS_BUDGET_MS = 264;
 var CFG_PROBE_MS_PYTHON = 272;
 var CFG_PROBE_MS_NODE = 280;
 var CFG_PROBE_MS_RUSTUP = 288;
-var CFG_SIZE = 296;
+var CFG_MAX_EXIT = 296;
+var CFG_MAX_VCS = 304;
+var CFG_MAX_TIME = 312;
+var CFG_MAX_HOSTNAME = 320;
+var CFG_MAX_USER = 328;
+var CFG_MAX_CYRIUS = 336;
+var CFG_MAX_PYTHON = 344;
+var CFG_MAX_NODE = 352;
+var CFG_MAX_RUSTUP = 360;
+var CFG_SIZE = 368;
 
 # Largest ~/.commandress we will parse, in bytes.
 enum ConfigFile { CONFIG_CAP = 65536; }
@@ -124,6 +137,8 @@ enum ConfigFile { CONFIG_CAP = 65536; }
 enum VcsBudget {
     VCS_BUDGET_MS = 5;
     VCS_BUDGET_MAX_MS = 1000;
+    SEG_MAX_DEFAULT = 128;
+    SEG_MAX_LIMIT = 65535;
     PROBE_BUDGET_DEFAULT_MS = 50;                       # src/probe.cyr has the reasons
 }
 
@@ -161,6 +176,15 @@ fn cfg_separator_style(c): i64         { return load64(c + CFG_SEPARATOR_STYLE);
 fn cfg_separator_glyph(c): i64         { return load64(c + CFG_SEPARATOR_GLYPH); }
 fn cfg_right_separator_glyph(c): i64   { return load64(c + CFG_RIGHT_SEPARATOR_GLYPH); }
 fn cfg_vcs_budget_ms(c): i64           { return load64(c + CFG_VCS_BUDGET_MS); }
+fn cfg_max_exit(c): i64                { return load64(c + CFG_MAX_EXIT); }
+fn cfg_max_vcs(c): i64                 { return load64(c + CFG_MAX_VCS); }
+fn cfg_max_time(c): i64                { return load64(c + CFG_MAX_TIME); }
+fn cfg_max_hostname(c): i64            { return load64(c + CFG_MAX_HOSTNAME); }
+fn cfg_max_user(c): i64                { return load64(c + CFG_MAX_USER); }
+fn cfg_max_cyrius(c): i64              { return load64(c + CFG_MAX_CYRIUS); }
+fn cfg_max_python(c): i64              { return load64(c + CFG_MAX_PYTHON); }
+fn cfg_max_node(c): i64                { return load64(c + CFG_MAX_NODE); }
+fn cfg_max_rustup(c): i64              { return load64(c + CFG_MAX_RUSTUP); }
 # 0 is off. Anything else is that probe's budget in ms. src/probe.cyr has the reasons.
 fn cfg_probe_ms_python(c): i64         { return load64(c + CFG_PROBE_MS_PYTHON); }
 fn cfg_probe_ms_node(c): i64           { return load64(c + CFG_PROBE_MS_NODE); }
@@ -211,6 +235,16 @@ fn config_default(): i64 {
     store64(c + CFG_SGR_RUSTUP_ENV, sgr_open_for("red",          0, 0));
     # 0 = no truncation. Users opt in via `[[segments.cwd]] max_length = N`.
     store64(c + CFG_CWD_MAX_LENGTH, 0);
+    # On by default where a repo or the environment chooses the text. ADR 0015.
+    store64(c + CFG_MAX_EXIT, 0);
+    store64(c + CFG_MAX_VCS, SEG_MAX_DEFAULT);
+    store64(c + CFG_MAX_TIME, 0);
+    store64(c + CFG_MAX_HOSTNAME, 0);
+    store64(c + CFG_MAX_USER, 0);
+    store64(c + CFG_MAX_CYRIUS, SEG_MAX_DEFAULT);
+    store64(c + CFG_MAX_PYTHON, SEG_MAX_DEFAULT);
+    store64(c + CFG_MAX_NODE, SEG_MAX_DEFAULT);
+    store64(c + CFG_MAX_RUSTUP, SEG_MAX_DEFAULT);
     # Empty by default — right-prompt is opt-in via [[prompt]] right_segments.
     # An empty vec means `cmdrs --side=right` prints nothing (the shell's
     # `RPROMPT="$(cmdrs --side=right)"` evaluates to "", which zsh treats
@@ -256,22 +290,29 @@ fn _parse_bool(s, dflt): i64 {
     return dflt;
 }
 
-# A whole number of milliseconds in 1..VCS_BUDGET_MAX_MS, or 0 for anything else.
-fn _budget_ms_value(s): i64 {
-    if (s == 0) { return 0; }
+# The whole number spelled by `s` in at most `digits` digits, or -1 for anything else.
+fn _whole_number(s, digits): i64 {
+    if (s == 0) { return 0 - 1; }
     var n = str_len(s);
-    if (n == 0) { return 0; }
-    if (n > 4) { return 0; }
+    if (n == 0) { return 0 - 1; }
+    if (n > digits) { return 0 - 1; }
     var d = str_data(s);
     var v = 0;
     var i = 0;
     while (i < n) {
         var c = load8(d + i);
-        if (c < 48) { return 0; }
-        if (c > 57) { return 0; }
+        if (c < 48) { return 0 - 1; }
+        if (c > 57) { return 0 - 1; }
         v = v * 10 + (c - 48);
         i = i + 1;
     }
+    return v;
+}
+
+# A whole number of milliseconds in 1..VCS_BUDGET_MAX_MS, or 0 for anything else.
+fn _budget_ms_value(s): i64 {
+    var v = _whole_number(s, 4);
+    if (v < 1) { return 0; }
     if (v > VCS_BUDGET_MAX_MS) { return 0; }
     return v;
 }
@@ -474,40 +515,66 @@ fn _warn_nested_keys(sections, section_name): i64 {
 # knobs (no booleans / strings of its own). Loads, allow-lists fg/bg/
 # style, applies. Used by hostname / user / the four env segments —
 # all introduced as configurable-only-for-color sections in v0.6.0.
-fn _load_color_only_section(c, sgr_offset, bg_offset, sections, name, palette): i64 {
+fn _load_color_only_section(c, sgr_offset, bg_offset, max_offset, sections, name, palette): i64 {
     var pairs = _section_pairs(sections, name);
     if (pairs == 0) { return 0; }
     var allowed = vec_new();
+    vec_push(allowed, "max_length");
     vec_push(allowed, "fg");
     vec_push(allowed, "bg");
     vec_push(allowed, "style");
     _warn_unknown_pairs(pairs, allowed, name);
+    _load_max_length(c, max_offset, pairs, name);
     _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette);
     return 0;
 }
 
 # A budget for `section`: `budget_ms` when valid, else `dflt`. A bad value warns.
+fn _warn_bad_field(field, section, limits): i64 {
+    var msg = "warning: ";
+    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+    syscall(SYS_WRITE, STDERR, field, strlen(field));
+    msg = " in [[";
+    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+    syscall(SYS_WRITE, STDERR, section, strlen(section));
+    msg = "]] must be ";
+    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+    syscall(SYS_WRITE, STDERR, limits, strlen(limits));
+    msg = " (using the default)\n";
+    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+    return 0;
+}
+
 fn _section_budget(pairs, section, dflt): i64 {
     var v = bayan_toml_get_by_cstr(pairs, "budget_ms");
     if (v == 0) { return dflt; }
     var ms = _budget_ms_value(v);
     if (ms != 0) { return ms; }
-    var msg = "warning: budget_ms in [[";
-    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
-    syscall(SYS_WRITE, STDERR, section, strlen(section));
-    msg = "]] must be 1..1000 (using the default)\n";
-    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+    _warn_bad_field("budget_ms", section, "1..1000");
     return dflt;
 }
 
-# A language-env section with a tool to ask: `fg`/`bg`/`style`, plus `shellout` and
-# `budget_ms` for its version probe. The result lands in the slot at `probe_offset`.
-fn _load_probe_section(c, sgr_offset, bg_offset, probe_offset, sections, name, palette): i64 {
+# Set the slot at `offset` from a section's `max_length`, if it has a good one. A refused
+# value warns and leaves the slot alone.
+fn _load_max_length(c, offset, pairs, section): i64 {
+    var v = bayan_toml_get_by_cstr(pairs, "max_length");
+    if (v == 0) { return 0; }
+    var ms = _whole_number(v, 5);
+    if (ms < 0) { _warn_bad_field("max_length", section, "0..65535"); return 0; }
+    if (ms > SEG_MAX_LIMIT) { _warn_bad_field("max_length", section, "0..65535"); return 0; }
+    store64(c + offset, ms);
+    return 0;
+}
+
+# A language-env section with a tool to ask: `fg`/`bg`/`style`/`max_length`, plus `shellout`
+# and `budget_ms` for its version probe. The result lands in the slot at `probe_offset`.
+fn _load_probe_section(c, sgr_offset, bg_offset, probe_offset, max_offset, sections, name, palette): i64 {
     var pairs = _section_pairs(sections, name);
     if (pairs == 0) { return 0; }
     var allowed = vec_new();
     vec_push(allowed, "shellout");
     vec_push(allowed, "budget_ms");
+    vec_push(allowed, "max_length");
     vec_push(allowed, "fg");
     vec_push(allowed, "bg");
     vec_push(allowed, "style");
@@ -516,6 +583,7 @@ fn _load_probe_section(c, sgr_offset, bg_offset, probe_offset, sections, name, p
     if (_parse_bool(bayan_toml_get_by_cstr(pairs, "shellout"), 0) == 1) {
         store64(c + probe_offset, budget);
     }
+    _load_max_length(c, max_offset, pairs, name);
     _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette);
     return 0;
 }
@@ -732,8 +800,7 @@ fn config_load(path): i64 {
         var hs_v = bayan_toml_get_by_cstr(cwd_pairs, "home_shorten");
         store64(c + CFG_CWD_HOME_SHORTEN, _parse_bool(hs_v, cfg_cwd_home_shorten(c)));
 
-        var ml_v = bayan_toml_get_by_cstr(cwd_pairs, "max_length");
-        if (ml_v != 0) { store64(c + CFG_CWD_MAX_LENGTH, atoi(str_cstr(ml_v))); }
+        _load_max_length(c, CFG_CWD_MAX_LENGTH, cwd_pairs, "segments.cwd");
         _apply_seg_style(c, CFG_SGR_CWD, CFG_BG_CWD, cwd_pairs, palette);
     }
 
@@ -742,6 +809,7 @@ fn config_load(path): i64 {
     if (exit_pairs != 0) {
         var exit_allowed = vec_new();
         vec_push(exit_allowed, "hide_zero");
+        vec_push(exit_allowed, "max_length");
         vec_push(exit_allowed, "fg");
         vec_push(exit_allowed, "bg");
         vec_push(exit_allowed, "style");
@@ -749,6 +817,7 @@ fn config_load(path): i64 {
 
         var hz_v = bayan_toml_get_by_cstr(exit_pairs, "hide_zero");
         store64(c + CFG_EXIT_HIDE_ZERO, _parse_bool(hz_v, cfg_exit_hide_zero(c)));
+        _load_max_length(c, CFG_MAX_EXIT, exit_pairs, "segments.exit");
         _apply_seg_style(c, CFG_SGR_EXIT, CFG_BG_EXIT, exit_pairs, palette);
     }
 
@@ -759,6 +828,7 @@ fn config_load(path): i64 {
         vec_push(vcs_allowed, "show_dirty");
         vec_push(vcs_allowed, "dirty_marker");
         vec_push(vcs_allowed, "budget_ms");
+        vec_push(vcs_allowed, "max_length");
         vec_push(vcs_allowed, "fg");
         vec_push(vcs_allowed, "bg");
         vec_push(vcs_allowed, "style");
@@ -771,6 +841,7 @@ fn config_load(path): i64 {
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
 
         store64(c + CFG_VCS_BUDGET_MS, _section_budget(vcs_pairs, "segments.vcs", cfg_vcs_budget_ms(c)));
+        _load_max_length(c, CFG_MAX_VCS, vcs_pairs, "segments.vcs");
         _apply_seg_style(c, CFG_SGR_VCS, CFG_BG_VCS, vcs_pairs, palette);
     }
 
@@ -779,6 +850,7 @@ fn config_load(path): i64 {
     if (time_pairs != 0) {
         var time_allowed = vec_new();
         vec_push(time_allowed, "format");
+        vec_push(time_allowed, "max_length");
         vec_push(time_allowed, "fg");
         vec_push(time_allowed, "bg");
         vec_push(time_allowed, "style");
@@ -786,20 +858,24 @@ fn config_load(path): i64 {
 
         var fmt_v = bayan_toml_get_by_cstr(time_pairs, "format");
         if (fmt_v != 0) { store64(c + CFG_TIME_FORMAT, str_cstr(fmt_v)); }
+        _load_max_length(c, CFG_MAX_TIME, time_pairs, "segments.time");
         _apply_seg_style(c, CFG_SGR_TIME, CFG_BG_TIME, time_pairs, palette);
     }
 
     # Color-only sections — segments with no non-color knobs of their
     # own. Each gets its [[segments.X]] block in v0.6.0 so users can
     # recolor without having to touch the dispatcher in code.
-    _load_color_only_section(c, CFG_SGR_HOSTNAME,   CFG_BG_HOSTNAME,   sections, "segments.hostname",   palette);
-    _load_color_only_section(c, CFG_SGR_USER,       CFG_BG_USER,       sections, "segments.user",       palette);
-    _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, CFG_BG_CYRIUS_ENV, sections, "segments.cyrius_env", palette);
-    _load_probe_section(c, CFG_SGR_PYTHON_ENV, CFG_BG_PYTHON_ENV, CFG_PROBE_MS_PYTHON,
+    _load_color_only_section(c, CFG_SGR_HOSTNAME, CFG_BG_HOSTNAME, CFG_MAX_HOSTNAME,
+                             sections, "segments.hostname", palette);
+    _load_color_only_section(c, CFG_SGR_USER, CFG_BG_USER, CFG_MAX_USER,
+                             sections, "segments.user", palette);
+    _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, CFG_BG_CYRIUS_ENV, CFG_MAX_CYRIUS,
+                             sections, "segments.cyrius_env", palette);
+    _load_probe_section(c, CFG_SGR_PYTHON_ENV, CFG_BG_PYTHON_ENV, CFG_PROBE_MS_PYTHON, CFG_MAX_PYTHON,
                         sections, "segments.python_env", palette);
-    _load_probe_section(c, CFG_SGR_NODE_ENV, CFG_BG_NODE_ENV, CFG_PROBE_MS_NODE,
+    _load_probe_section(c, CFG_SGR_NODE_ENV, CFG_BG_NODE_ENV, CFG_PROBE_MS_NODE, CFG_MAX_NODE,
                         sections, "segments.node_env", palette);
-    _load_probe_section(c, CFG_SGR_RUSTUP_ENV, CFG_BG_RUSTUP_ENV, CFG_PROBE_MS_RUSTUP,
+    _load_probe_section(c, CFG_SGR_RUSTUP_ENV, CFG_BG_RUSTUP_ENV, CFG_PROBE_MS_RUSTUP, CFG_MAX_RUSTUP,
                         sections, "segments.rustup_env", palette);
 
     # Dotted keys never reach the allow-lists above, so check them here.

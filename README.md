@@ -2,7 +2,7 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.4.1** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.5.0** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
 
 ## What it is
 
@@ -35,15 +35,15 @@ cyrius bench tests/commandress.bcyr            # per-segment + full-prompt timin
 | Name | Source | Renders | Per-segment options |
 |---|---|---|---|
 | `cwd` | `getcwd(2)` | Current directory, optionally `~`-shortened, optionally truncated | `home_shorten`, `max_length`, `fg`/`bg`/`style` |
-| `exit` | `$AGNOSHI_LAST_EXIT` | `[N]` on non-zero; empty on success | `hide_zero`, `fg`/`bg`/`style` |
-| `vcs` | `sit status` (cached, 1 s TTL) | `<branch>` / `<branch>*` inside a `sit` repo | `show_dirty`, `dirty_marker`, `fg`/`bg`/`style` |
-| `time` | `CLOCK_REALTIME` | strftime-subset (`%H %M %S %Y %y %m %d %%`) | `format`, `fg`/`bg`/`style` |
-| `hostname` | `uname(2)` nodename | Host short name | `fg`/`bg`/`style` |
-| `user` | `getuid()` + `/etc/passwd` | Current user; falls back to `$USER` | `fg`/`bg`/`style` |
-| `cyrius_env` | `cyrius.cyml` ancestor + `VERSION` | Cyrius project version | `fg`/`bg`/`style` |
-| `python_env` | `$VIRTUAL_ENV` / `.python-version` | venv basename or pinned version | `fg`/`bg`/`style`, `shellout`, `budget_ms` |
-| `node_env` | `.nvmrc` ancestor walk, else the nearest `package.json`'s `engines.node` | Pinned Node version, channel or range | `fg`/`bg`/`style`, `shellout`, `budget_ms` |
-| `rustup_env` | `rust-toolchain` / `rust-toolchain.toml` ancestor walk | Pinned Rust toolchain | `fg`/`bg`/`style`, `shellout`, `budget_ms` |
+| `exit` | `$AGNOSHI_LAST_EXIT` | `[N]` on non-zero; empty on success | `hide_zero`, `max_length`, `fg`/`bg`/`style` |
+| `vcs` | `sit status` (cached, 1 s TTL) | `<branch>` / `<branch>*` inside a `sit` repo | `show_dirty`, `dirty_marker`, `budget_ms`, `max_length`, `fg`/`bg`/`style` |
+| `time` | `CLOCK_REALTIME` | strftime-subset (`%H %M %S %Y %y %m %d %%`) | `format`, `max_length`, `fg`/`bg`/`style` |
+| `hostname` | `uname(2)` nodename | Host short name | `max_length`, `fg`/`bg`/`style` |
+| `user` | `getuid()` + `/etc/passwd` | Current user; falls back to `$USER` | `max_length`, `fg`/`bg`/`style` |
+| `cyrius_env` | `cyrius.cyml` ancestor + `VERSION` | Cyrius project version | `max_length`, `fg`/`bg`/`style` |
+| `python_env` | `$VIRTUAL_ENV` / `.python-version` | venv basename or pinned version | `max_length`, `fg`/`bg`/`style`, `shellout`, `budget_ms` |
+| `node_env` | `.nvmrc` ancestor walk, else the nearest `package.json`'s `engines.node` | Pinned Node version, channel or range | `max_length`, `fg`/`bg`/`style`, `shellout`, `budget_ms` |
+| `rustup_env` | `rust-toolchain` / `rust-toolchain.toml` ancestor walk | Pinned Rust toolchain | `max_length`, `fg`/`bg`/`style`, `shellout`, `budget_ms` |
 
 Default segment order is `["cwd", "vcs", "exit"]` — `vcs` became default-on in v0.7.0 once the 1 s TTL probe cache (`src/cache.cyr`) made it cheap enough (~7.6 µs hot avg vs ~1.8 ms cold). Outside a `sit` repo the `vcs` segment renders empty, so the prompt stays clean for non-VCS directories.
 
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.4.1
+cmdrs 1.5.0
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```

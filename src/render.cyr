@@ -23,6 +23,42 @@ include "src/segments/python_env.cyr"
 include "src/segments/node_env.cyr"
 include "src/segments/rustup_env.cyr"
 
+# `out` cut to at most `max` bytes, counting the `...` that marks the cut, or `out` itself if
+# it fits or `max` is 0. `keep`, or 0, is a suffix to carry past the cut: a dirty marker
+# says something the rest of a long branch name does not. Under 4 this is dots alone, as
+# `_truncate_cwd` does. See ADR 0015.
+#
+# This runs before `sanitize_segment_output`, which only ever removes bytes, so the limit
+# still holds on what reaches the terminal. It keeps characters whole, to show a clean
+# cut on valid text. Whether the result is safe is the sanitizer's job, not this one's.
+fn cap_output(out, max, keep): i64 {
+    if (out == 0) { return 0; }
+    if (max <= 0) { return out; }
+    var len = strlen(out);
+    if (len <= max) { return out; }
+
+    var dots = 3;
+    if (max < 3) { dots = max; }
+    var room = max - dots;
+    var klen = 0;
+    if (keep != 0) {
+        klen = strlen(keep);
+        if (klen > len) { klen = 0; }
+        else { if (memeq(out + len - klen, keep, klen) == 0) { klen = 0; } }
+    }
+    if (room - klen < 1) { klen = 0; }
+    room = room - klen;
+    while (room > 0 && (load8(out + room) & 0xC0) == 0x80) { room = room - 1; }
+
+    var r = alloc(max + 1);
+    if (r == 0) { return 0; }
+    memcpy(r, out, room);
+    memset(r + room, 46, dots);
+    if (klen > 0) { memcpy(r + room + dots, out + len - klen, klen); }
+    store8(r + room + dots + klen, 0);
+    return r;
+}
+
 # Dispatcher for the `cwd` segment. Pulls HOME from ctx, gates the
 # home-shorten path on cfg.cwd_home_shorten, forwards max_length for
 # byte-bounded truncation at '/' boundaries.
@@ -37,14 +73,14 @@ fn _dispatch_cwd(cfg, ctx): i64 {
 # the user gets a visible success indicator.
 fn _dispatch_exit(cfg, ctx): i64 {
     var code = ctx_last_exit(ctx);
-    if (code != 0) { return exit_render(code); }
+    if (code != 0) { return cap_output(exit_render(code), cfg_max_exit(cfg), 0); }
     if (cfg_exit_hide_zero(cfg) == 1) { return 0; }
     var out = alloc(4);
     store8(out, 91);
     store8(out + 1, 48);
     store8(out + 2, 93);
     store8(out + 3, 0);
-    return out;
+    return cap_output(out, cfg_max_exit(cfg), 0);
 }
 
 # Dispatcher for the `vcs` segment. Forwards the dirty-marker config
@@ -54,51 +90,50 @@ fn _dispatch_exit(cfg, ctx): i64 {
 fn _dispatch_vcs(cfg, ctx): i64 {
     var marker = 0;
     if (cfg_vcs_show_dirty(cfg) == 1) { marker = cfg_vcs_dirty_marker(cfg); }
-    return vcs_render(marker, cfg_vcs_budget_ms(cfg));
+    return cap_output(vcs_render(marker, cfg_vcs_budget_ms(cfg)), cfg_max_vcs(cfg), marker);
 }
 
 # Dispatcher for the `time` segment. Forwards the configured strftime-
 # subset format to `time_render`. Renders empty when format is null/
 # empty (won't happen with defaults, but the user can clear it).
 fn _dispatch_time(cfg, ctx): i64 {
-    return time_render(cfg_time_format(cfg));
+    return cap_output(time_render(cfg_time_format(cfg)), cfg_max_time(cfg), 0);
 }
 
-# Dispatcher for the `hostname` segment. Pure passthrough — the
-# segment has no config knobs in M3.
+# Dispatcher for the `hostname` segment.
 fn _dispatch_hostname(cfg, ctx): i64 {
-    return hostname_render();
+    return cap_output(hostname_render(), cfg_max_hostname(cfg), 0);
 }
 
-# Dispatcher for the `user` segment. Pure passthrough — pwd lookup +
-# $USER fallback are policy decisions baked into user_render itself.
+# Dispatcher for the `user` segment. Pwd lookup + $USER fallback are
+# policy decisions baked into user_render itself.
 fn _dispatch_user(cfg, ctx): i64 {
-    return user_render();
+    return cap_output(user_render(), cfg_max_user(cfg), 0);
 }
 
-# Dispatcher for the `cyrius_env` segment. Pure passthrough — project
+# Dispatcher for the `cyrius_env` segment. Project
 # detection (cyrius.cyml walk) + VERSION-file vs shellout fallback are
 # all internal to cyrius_env_render.
 fn _dispatch_cyrius_env(cfg, ctx): i64 {
-    return cyrius_env_render();
+    return cap_output(cyrius_env_render(), cfg_max_cyrius(cfg), 0);
 }
 
 # Dispatcher for the `python_env` segment. Forwards the probe budget (0 = off);
 # $VIRTUAL_ENV basename vs .python-version walk is internal.
 fn _dispatch_python_env(cfg, ctx): i64 {
-    return python_env_render(cfg_probe_ms_python(cfg));
+    return cap_output(python_env_render(cfg_probe_ms_python(cfg)), cfg_max_python(cfg), 0);
 }
 
 # Dispatcher for the `node_env` segment. Forwards the probe budget (0 = off);
 # the .nvmrc and package.json walks are internal.
 fn _dispatch_node_env(cfg, ctx): i64 {
-    return node_env_render(cfg_probe_ms_node(cfg));
+    return cap_output(node_env_render(cfg_probe_ms_node(cfg)), cfg_max_node(cfg), 0);
 }
 
 # Dispatcher for the `rustup_env` segment. Forwards the probe budget (0 = off);
 # the rust-toolchain ancestor walk is internal.
 fn _dispatch_rustup_env(cfg, ctx): i64 {
-    return rustup_env_render(cfg_probe_ms_rustup(cfg));
+    return cap_output(rustup_env_render(cfg_probe_ms_rustup(cfg)), cfg_max_rustup(cfg), 0);
 }
 
 # Registry — name → dispatcher fn pointer. Returns 0 for unknown names

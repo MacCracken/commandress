@@ -77,6 +77,8 @@ The exhaustive set of accepted fields per `[[…]]` section. Unknown fields warn
 
 > **Update 2026-11-06** (annotation, not a revision): since 1.4.1 `python_env`, `node_env` and `rustup_env` also take `shellout` (bool, default false) and `budget_ms` (1 to 1000, default 50). Additive. See [ADR 0014](0014-version-probes-never-see-the-repo.md).
 
+> **Update 2026-11-06** (annotation, not a revision): since 1.5.0 every segment takes `max_length` (int, 0 to 65535, `0` for no limit). It defaults to 128 on `vcs`, `cyrius_env`, `python_env`, `node_env` and `rustup_env`, and to `0` on `exit`, `time`, `hostname` and `user`. A refused value warns and keeps the default. A cut keeps the head and ends in `...`. `[[segments.cwd]] max_length` is unchanged. See [ADR 0015](0015-pins-keep-their-name-and-shape.md).
+
 ### 3. Colour value space
 
 | Form | Example | Accepted |

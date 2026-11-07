@@ -51,6 +51,12 @@ show_dirty = true
 # from starship/p10k.
 dirty_marker = "*"
 
+# Every segment takes max_length, in bytes, 0 for no limit. A cut ends in
+# "...", and this one keeps the dirty marker. It defaults to 128 here and
+# on the language segments, because a repo chooses the text. The other
+# segments default to no limit.
+# max_length = 32
+
 # Milliseconds `sit status` may run before the segment renders empty. A
 # whole number from 1 to 1000; anything else warns and keeps the default.
 # Raise it for a slow disk or a very large repo. A hung `sit` then costs
@@ -58,6 +64,10 @@ dirty_marker = "*"
 budget_ms = 5
 
 [[segments.node_env]]
+# A pin is the first word of its first line that is not blank or a # comment,
+# at most 64 ASCII characters. A pin that is a symlink must end at a file of
+# the same name. See docs/adr/0015.
+#
 # python_env, node_env and rustup_env can ask the tool when there is no pin file, inside a
 # project. Off by default. It runs from / so a repo cannot steer it, which means it shows
 # your machine's version, cached for 60 s. See docs/adr/0014.
