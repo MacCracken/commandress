@@ -21,6 +21,11 @@ separator = " "
 trailer = " $ "
 
 [[segments.cwd]]
+# Every segment takes `fg`, `bg` and `style`. A color is one of the 16 names ("red",
+# "bright_cyan"), a 256-colour index ("117"), or hex ("#8be9fd"), which needs a
+# truecolor terminal. Anything else renders with no color and no warning. `style` is
+# any of: bold italic underline reverse.
+#
 # When true and the cwd is exactly $HOME or under it, the HOME prefix
 # is rewritten as "~". Strict prefix only — /home/macroX won't match
 # /home/macro.

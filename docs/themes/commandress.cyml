@@ -7,9 +7,8 @@
 #
 # Best on a terminal running a saturated 16-color theme (papercolor-
 # dark, ayu-dark, catppuccin-mocha all have rich purples + gold).
-# Hex / 256-color refinement will land in a later v0.6.x once those
-# value spaces are supported; until then the named-ANSI slots are
-# faithful enough that the royal intent comes through.
+# Named-ANSI slots are faithful enough that the royal intent comes through.
+# For exact shades, replace a slot with a hex or 256-colour value (1.3.0).
 
 [[prompt]]
 segments  = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]

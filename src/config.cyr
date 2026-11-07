@@ -32,7 +32,7 @@
 #
 #   [[segments.cwd]]
 #   home_shorten = true
-#   fg    = "cyan"          # named color or "default"; v0.6.0 named-only
+#   fg    = "cyan"          # named color, "default", "#rrggbb", or an index "0".."255"
 #   bg    = "default"
 #   style = "bold"          # space-separated: bold | italic | underline | reverse
 #

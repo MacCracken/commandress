@@ -70,6 +70,21 @@ hide_zero = true
 fg        = "red"
 ```
 
+A color can be a name, a 256-colour index, or hex, in `fg`, `bg` or a `[[palette]]` slot:
+
+```cyml
+[[segments.cwd]]
+fg = "cyan"          # one of the 16 named colors; your terminal's theme picks the shade
+bg = "24"            # a 256-colour index, 0 to 255
+style = "bold"
+
+[[segments.vcs]]
+fg = "#8be9fd"       # exact, in a truecolor terminal
+```
+
+Anything else renders with no colour and no warning. `cmdrs` emits the form you wrote, so a
+hex value on a terminal without truecolor shows however that terminal chooses.
+
 Missing config file → baked-in defaults. Unknown field → warning on stderr, render
 continues with defaults for that field. Every knob is listed in
 [`../examples/commandress.cyml.example`](../examples/commandress.cyml.example); drop-in

@@ -187,16 +187,16 @@ fn _emit(buf, len): i64 {
     return off;
 }
 
-# Emit a powerline transition glyph: `\x1b[<fg=prev_bg>;<bg=next_bg>m<glyph>\x1b[0m`.
-# Either bg may be 0 (treated as terminal-default); when both are 0 the
-# glyph paints as plain text. The transition fg comes from the prev
-# segment's bg via `color_to_sgr_fg(prev_bg)` — that's correct because
-# the GLYPH's fg should match the PREVIOUS BLOCK's color so the visual
-# bridge between blocks renders seamlessly.
-fn _emit_powerline_transition(prev_bg, next_bg, glyph): i64 {
+# Emit a powerline transition glyph: `\x1b[<fg=glyph_fg>;<bg=glyph_bg>m<glyph>\x1b[0m`.
+# Either may be 0 (terminal default); when both are 0 the glyph paints as plain text.
+#
+# The glyph's fg is the block it extends, so which block that is depends on the side.
+# A right-pointing arrow extends the block to its LEFT: fg is that block's bg, and bg is
+# the next block's. A left-pointing arrow extends the block to its RIGHT, so the two swap.
+fn _emit_powerline_transition(glyph_fg, glyph_bg, glyph): i64 {
     var glen = strlen(glyph);
     if (glen == 0) { return 0; }
-    var sgr = sgr_open_for(prev_bg, next_bg, 0);
+    var sgr = sgr_open_for(glyph_fg, glyph_bg, 0);
     if (sgr != 0) { _emit(sgr, strlen(sgr)); }
     _emit(glyph, glen);
     if (sgr != 0) { _emit(SGR_RESET, strlen(SGR_RESET)); }
@@ -212,10 +212,11 @@ fn _emit_powerline_transition(prev_bg, next_bg, glyph): i64 {
 #
 #   - plain (0): segments are joined by `cfg.separator`; SGR wraps
 #     each segment individually; no transitions.
-#   - powerline (1): segments form bg-blocks; the separator BETWEEN
-#     segments is the glyph painted as `fg=prev_bg, bg=next_bg`; a
-#     trailing glyph closes the chain (`fg=last_bg, bg=default`)
-#     unless the last segment had no bg set.
+#   - powerline (1): segments form bg-blocks joined by a glyph. On the left the arrows
+#     point right, so a glyph after each block carries it into the next, and a last one
+#     closes the chain. On the right they point left, so a glyph BEFORE each block
+#     carries it back into the one before, the first opens the chain, and nothing
+#     trails. A segment with no `bg` has no block, so it gets no opening or closing glyph.
 fn render_prompt(cfg, ctx, side): i64 {
     var segs = cfg_segments(cfg);
     if (side != 0) { segs = cfg_right_segments(cfg); }
@@ -260,9 +261,16 @@ fn render_prompt(cfg, ctx, side): i64 {
                     var seg_bg = _bg_for(cfg, name);
                     if (painted == 1) {
                         if (powerline == 1) {
-                            _emit_powerline_transition(prev_bg, seg_bg, glyph);
+                            if (side == 0) { _emit_powerline_transition(prev_bg, seg_bg, glyph); }
+                            else { _emit_powerline_transition(seg_bg, prev_bg, glyph); }
                         } else {
                             _emit(sep, sep_len);
+                        }
+                    } else {
+                        if (powerline == 1) {
+                            if (side != 0) {
+                                if (seg_bg != 0) { _emit_powerline_transition(seg_bg, 0, glyph); }
+                            }
                         }
                     }
                     var sgr = _sgr_for(cfg, name);
@@ -277,19 +285,15 @@ fn render_prompt(cfg, ctx, side): i64 {
         i = i + 1;
     }
 
-    # Trailing transition closes the final block in powerline mode
-    # (fg = last segment's bg, bg = terminal default). Skipped when the
-    # last segment had no bg (no block to close) — the helper returns
-    # immediately when there's nothing to emit.
-    # On the right prompt this still draws the closing glyph AFTER the last block, so a
-    # left-pointing arrow trails the text instead of leading it. Pinned: roadmap 1.3.x.
-    if (powerline == 1) {
-        if (painted == 1) {
-            if (prev_bg != 0) { _emit_powerline_transition(prev_bg, 0, glyph); }
-        }
-    }
-
+    # The left prompt ends by closing its last block (fg = that block's bg, bg = terminal
+    # default), unless it had no bg, so no block to close. The right prompt opened with
+    # its glyph and has nothing to close.
     if (side == 0) {
+        if (powerline == 1) {
+            if (painted == 1) {
+                if (prev_bg != 0) { _emit_powerline_transition(prev_bg, 0, glyph); }
+            }
+        }
         var trailer = cfg_trailer(cfg);
         _emit(trailer, strlen(trailer));
     }

@@ -6,6 +6,62 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-06
+
+Hex and 256-colour values, the two forms [ADR 0007](docs/adr/0007-schema-freeze.md) reserved at the v1.0
+freeze, and right-prompt powerline transitions that point the right way. Additive: no existing config
+changes meaning, and the left prompt is byte-identical. The toolchain and deps are unchanged.
+
+### Added
+
+- **Hex and 256-colour values.** `fg = "#8be9fd"` and `fg = "33"` work anywhere a color does: `fg`, `bg`,
+  `[[palette]]` slots, and powerline transitions.
+  - Hex is `#` and six hex digits, in either case. An index is 1 to 3 digits, 0 to 255.
+  - Anything else in those shapes, such as `#abc`, `256` or `33;1`, keeps the behaviour ADR 0007 froze:
+    no code, no error.
+  - **The value is parsed to integers and formatted again**, so nothing from it is copied into the
+    escape, and `33;1` cannot add a parameter.
+  - `cmdrs` emits the form you wrote. It does not read `$COLORTERM` or downgrade, so a hex value on a
+    terminal without truecolor shows however that terminal chooses.
+- **`right_segments = ["time"]` in the powerline theme**, which waited on the fix below.
+
+### Fixed
+
+- **Right-prompt powerline glyphs pointed the wrong way.** With `--side=right` the closing glyph trailed
+  the last block, so a left-pointing arrow sat after the text: `01:13<`. A left-pointing glyph is filled
+  by the block on its right, so it now opens the first block and joins each pair with those colours
+  swapped, and nothing trails: `<01:13`. The left prompt is unchanged.
+
+### Performance
+
+| | 1.2.3 | 1.3.0 | Delta |
+|---|---|---|---|
+| Cold start, no config | 421 µs | 423 µs | flat |
+| Cold start, largest theme | 546 µs | 546 µs | flat |
+| `render_prompt` | 12.09 µs | 12.20 µs | +0.9 %, flat |
+| `config_load`, largest theme | 66.95 µs | 66.44 µs | flat |
+| `sgr_open_for`, named color | 420 ns | 435 ns | about +20 ns a call, for one length check |
+| `config_default` | 3.11 µs | 3.36 µs | +0.25 µs: 10 of those calls |
+| Binary, x86_64 | 158,000 B | 158,016 B | +16 B |
+| Binary, `--agnos` | 150,128 B | 150,144 B | +16 B |
+
+These are p10 cold starts of 3,000 interleaved pairs, and lowest mins of 5 alternating bench runs, because
+other work was running on the host. Absolute figures are not comparable with the 1.2.3 entry.
+
+### Tests
+
+- 513 assertions across 207 tests, from 472 across 194.
+- **The suite now runs `render_prompt`.** It did not include `render.cyr`, so no test pinned a transition, a
+  trailer or the call to the sanitizer. A capture helper asserts its output byte for byte, and the expected
+  right-prompt bytes were worked out by hand from how the glyphs draw. Only `smoke.sh` could see that
+  chokepoint before.
+- 69 mutations, all caught.
+- Every byte value in every hex position, and every number from 0 to 999, is checked against the rule.
+- Verified on a real parser and a real shell: kitty stored `rgb(139,233,253)` on `palette 200` for those
+  values, and zsh's `RPROMPT` went from `01:13<` to `<01:13`.
+- Differential 1.2.3 → 1.3.0: 6,163 cases, 0 hangs, 44 differences, all `--side=right` under the powerline
+  theme. Config fuzz: 30,000 runs, no crashes.
+
 ## [1.2.3] - 2026-11-06
 
 A P(-1) audit, hardening, optimization and security sweep, and its repairs. Five independent reviewers

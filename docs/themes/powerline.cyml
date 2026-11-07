@@ -9,9 +9,13 @@
 #
 # Pairs best with a terminal running any 16-colour theme. The blocks use only named
 # colours, so your terminal's palette decides the exact shades.
+#
+# On the right prompt the glyph leads each block, so the arrow points away from the
+# text. Needs a shell with a right prompt: bash renders the left side only.
 
 [[prompt]]
 segments              = ["cwd", "vcs", "cyrius_env", "python_env", "node_env", "rustup_env", "exit"]
+right_segments        = ["time"]
 trailer               = " "
 separator_style       = "powerline"
 separator_glyph       = ""

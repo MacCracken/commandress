@@ -13,6 +13,7 @@ include "lib/fmt.cyr"
 include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
+include "lib/fnptr.cyr"
 include "lib/bayan-cyml.cyr"
 include "lib/bayan-toml.cyr"
 include "lib/tagged.cyr"
@@ -23,24 +24,14 @@ include "lib/assert.cyr"
 include "lib/args.cyr"
 include "lib/cmdit.cyr"
 
+# The same order as src/main.cyr. render.cyr brings in context, config and the segments.
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
 include "src/color.cyr"
 include "src/cache.cyr"
 include "src/cli.cyr"
-include "src/context.cyr"
 include "src/shellout.cyr"
-include "src/segments/cwd.cyr"
-include "src/segments/exit.cyr"
-include "src/segments/vcs.cyr"
-include "src/segments/time.cyr"
-include "src/segments/hostname.cyr"
-include "src/segments/user.cyr"
-include "src/segments/cyrius_env.cyr"
-include "src/segments/python_env.cyr"
-include "src/segments/node_env.cyr"
-include "src/segments/rustup_env.cyr"
-include "src/config.cyr"
+include "src/render.cyr"
 
 fn _streq_or_dump(got, want, name): i64 {
     # A missing value must fail this assertion, not fault the whole run.
@@ -770,6 +761,7 @@ fn test_theme_powerline(): i64 {
     assert_eq(cfg_separator_style(c), 1, "powerline theme selects powerline mode");
     _streq_or_dump(cfg_separator_glyph(c), "\xee\x82\xb0", "left glyph decodes to U+E0B0");
     _streq_or_dump(cfg_right_separator_glyph(c), "\xee\x82\xb2", "right glyph decodes to U+E0B2");
+    assert_eq(vec_len(cfg_right_segments(c)), 1, "the theme uses the right prompt");
     assert_neq(cfg_bg_cwd(c), 0, "cwd has a block");
     assert_neq(cfg_bg_vcs(c), 0, "vcs has a block");
     assert_neq(cfg_bg_exit(c), 0, "exit has a block");
@@ -780,6 +772,209 @@ fn test_theme_powerline(): i64 {
     assert_neq(cfg_bg_python_env(c), 0, "python_env has a block");
     assert_neq(cfg_bg_node_env(c), 0, "node_env has a block");
     assert_neq(cfg_bg_rustup_env(c), 0, "rustup_env has a block");
+    return 0;
+}
+
+# ---- render_prompt, byte for byte ----
+
+# What render_prompt writes to stdout, as a cstring. The suite never ran this function
+# until 1.3.0, so nothing pinned a transition, a trailer or a call to the sanitizer.
+fn _render_capture(cfg, ctx, side): i64 {
+    var path = "/tmp/cmdrs-test-render-out";
+    var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x180);
+    assert(fd >= 0, "open the capture file");
+    var saved = syscall(SYS_DUP, 1);
+    sys_dup2(fd, 1);
+    file_close(fd);
+    render_prompt(cfg, ctx, side);
+    sys_dup2(saved, 1);
+    file_close(saved);
+    var buf = alloc(4096);
+    var n = file_read_all(path, buf, 4095);
+    syscall(SYS_UNLINK, path);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return buf;
+}
+
+# Two blocks: `time` renders T on blue, `exit` renders [7]. `segs` is the line choosing
+# the segments, and `extra` is any more of the exit section.
+fn _powerline_config(segs, extra): i64 {
+    var head = "[[prompt]]\n";
+    var rest = "separator_style = \"powerline\"\nseparator_glyph = \">\"\nright_separator_glyph = \"<\"\ntrailer = \"$ \"\n[[segments.time]]\nformat = \"T\"\nfg = \"black\"\nbg = \"blue\"\n[[segments.exit]]\nfg = \"white\"\n";
+    var buf = alloc(1024);
+    var n = 0;
+    memcpy(buf + n, head, strlen(head));
+    n = n + strlen(head);
+    memcpy(buf + n, segs, strlen(segs));
+    n = n + strlen(segs);
+    memcpy(buf + n, rest, strlen(rest));
+    n = n + strlen(rest);
+    memcpy(buf + n, extra, strlen(extra));
+    n = n + strlen(extra);
+    store8(buf + n, 0);
+    var path = _write_test_config("powerline-render", buf);
+    var c = config_load(path);
+    syscall(SYS_UNLINK, path);
+    return c;
+}
+
+# The left prompt must not move. These are the bytes it has always produced.
+fn test_render_powerline_left(): i64 {
+    var c = _powerline_config("segments = [\"time\", \"exit\"]\n", "bg = \"red\"\n");
+    _streq_or_dump(_render_capture(c, context_new(0, 7), 0),
+        "\x1b[30;44mT\x1b[0m\x1b[34;41m>\x1b[0m\x1b[37;41m[7]\x1b[0m\x1b[31m>\x1b[0m$ ",
+        "left: glyph between blocks, closing glyph after the last");
+    return 0;
+}
+
+# A left-pointing glyph is filled by the block on its RIGHT, over the block on its left.
+# So it opens the first block, sits between blocks with those colours swapped, and
+# nothing trails the last block.
+fn test_render_powerline_right(): i64 {
+    var c = _powerline_config("right_segments = [\"time\", \"exit\"]\n", "bg = \"red\"\n");
+    _streq_or_dump(_render_capture(c, context_new(0, 7), 1),
+        "\x1b[34m<\x1b[0m\x1b[30;44mT\x1b[0m\x1b[31;44m<\x1b[0m\x1b[37;41m[7]\x1b[0m",
+        "right: glyph leads each block, nothing trails");
+    return 0;
+}
+
+# A segment with no `bg` has no block to open. Same rule as the left prompt's closer.
+fn test_render_powerline_right_no_block_no_glyph(): i64 {
+    var c = _powerline_config("right_segments = [\"exit\", \"time\"]\n", "");
+    _streq_or_dump(_render_capture(c, context_new(0, 7), 1),
+        "\x1b[37m[7]\x1b[0m\x1b[34m<\x1b[0m\x1b[30;44mT\x1b[0m",
+        "right: a first segment with no bg has no leading glyph");
+    return 0;
+}
+
+# An empty segment paints nothing, so it must not leave a glyph behind.
+fn test_render_powerline_right_skips_empty_segment(): i64 {
+    var c = _powerline_config("right_segments = [\"exit\", \"time\"]\n", "bg = \"red\"\n");
+    _streq_or_dump(_render_capture(c, context_new(0, 0), 1),
+        "\x1b[34m<\x1b[0m\x1b[30;44mT\x1b[0m",
+        "right: the hidden exit segment opens nothing");
+    return 0;
+}
+
+fn test_render_plain_right_has_no_trailer(): i64 {
+    var content = "[[prompt]]\nright_segments = [\"time\"]\ntrailer = \"$ \"\n[[segments.time]]\nformat = \"T\"\nfg = \"default\"\n";
+    var path = _write_test_config("plain-right", content);
+    var c = config_load(path);
+    syscall(SYS_UNLINK, path);
+    _streq_or_dump(_render_capture(c, context_new(0, 0), 1), "T", "right prompt: no trailer");
+    return 0;
+}
+
+# The chokepoint itself, which only smoke.sh could see until this file included render.cyr.
+fn test_render_sanitizes_segment_output(): i64 {
+    var content = "[[prompt]]\nsegments = [\"time\"]\ntrailer = \"\"\n[[segments.time]]\nformat = \"a\\u001b[31mb\"\nfg = \"default\"\n";
+    var path = _write_test_config("chokepoint", content);
+    var c = config_load(path);
+    syscall(SYS_UNLINK, path);
+    _streq_or_dump(_render_capture(c, context_new(0, 0), 0), "a[31mb", "render_prompt filters what a segment returns");
+    return 0;
+}
+
+# ---- hex and 256-colour values (ADR 0007 § 3) ----
+
+fn test_color_256_index(): i64 {
+    _streq_or_dump(sgr_open_for("33", 0, 0), "\x1b[38;5;33m", "fg index");
+    _streq_or_dump(sgr_open_for(0, "200", 0), "\x1b[48;5;200m", "bg index");
+    _streq_or_dump(sgr_open_for("0", 0, 0), "\x1b[38;5;0m", "index 0 is a colour, not an absence");
+    _streq_or_dump(sgr_open_for("255", "0", 0), "\x1b[38;5;255;48;5;0m", "both ends of the range");
+    return 0;
+}
+
+fn test_color_hex(): i64 {
+    _streq_or_dump(sgr_open_for("#8be9fd", 0, 0), "\x1b[38;2;139;233;253m", "fg hex");
+    _streq_or_dump(sgr_open_for(0, "#5FAFFF", 0), "\x1b[48;2;95;175;255m", "bg hex, upper case");
+    _streq_or_dump(sgr_open_for("#000000", 0, 0), "\x1b[38;2;0;0;0m", "black is a colour, not an absence");
+    return 0;
+}
+
+fn test_color_forms_combine(): i64 {
+    _streq_or_dump(sgr_open_for("#010203", "200", "bold"), "\x1b[1;38;2;1;2;3;48;5;200m", "mods, then fg, then bg");
+    _streq_or_dump(sgr_open_for("red", "#010203", 0), "\x1b[31;48;2;1;2;3m", "named beside hex");
+    # The longest SGR this function can build.
+    var longest = sgr_open_for("#ffffff", "#ffffff", "bold italic underline reverse");
+    assert_eq(strlen(longest), 44, "every code at its longest fits the buffer");
+    return 0;
+}
+
+# Reserved at 0.6.0 as "no code, never errors", and that still holds for anything that is
+# not exactly these forms. Nothing from the value is copied into the escape: it is parsed
+# to integers and formatted again, so `33;1` or `#ff0000m` cannot add a parameter.
+fn test_color_malformed_is_no_code(): i64 {
+    assert_eq(sgr_open_for("256", 0, 0), 0, "past the 256-colour range");
+    assert_eq(sgr_open_for("999", 0, 0), 0, "well past it");
+    assert_eq(sgr_open_for("1000", 0, 0), 0, "too many digits");
+    assert_eq(sgr_open_for("0033", 0, 0), 0, "too many digits, even in range");
+    assert_eq(sgr_open_for("33;1", 0, 0), 0, "no smuggled parameter");
+    assert_eq(sgr_open_for("-1", 0, 0), 0, "no sign");
+    assert_eq(sgr_open_for("3a", 0, 0), 0, "not all digits");
+    assert_eq(sgr_open_for("#abc", 0, 0), 0, "the short form was not reserved");
+    assert_eq(sgr_open_for("#ff00000", 0, 0), 0, "too long");
+    assert_eq(sgr_open_for("#ff000", 0, 0), 0, "too short");
+    assert_eq(sgr_open_for("#ff00g0", 0, 0), 0, "not all hex");
+    assert_eq(sgr_open_for("#", 0, 0), 0, "a lone hash");
+    assert_eq(sgr_open_for("ff0000", 0, 0), 0, "no hash");
+    return 0;
+}
+
+# Every byte value in every position of each form, so a range check cannot be off by one.
+fn test_color_parser_exhaustive(): i64 {
+    var buf = alloc(8);
+    var bad = 0;
+    var pos = 1;
+    while (pos < 7) {
+        var b = 1;
+        while (b < 256) {
+            memcpy(buf, "#000000", 8);
+            store8(buf + pos, b);
+            var is_hex = 0;
+            if (b >= 48) { if (b <= 57) { is_hex = 1; } }
+            if (b >= 65) { if (b <= 70) { is_hex = 1; } }
+            if (b >= 97) { if (b <= 102) { is_hex = 1; } }
+            var got = sgr_open_for(buf, 0, 0);
+            if (is_hex == 1) { if (got == 0) { bad = bad + 1; } }
+            if (is_hex == 0) { if (got != 0) { bad = bad + 1; } }
+            b = b + 1;
+        }
+        pos = pos + 1;
+    }
+    assert_eq(bad, 0, "exactly the hex digits are accepted, in every position");
+    var n = 0;
+    while (n < 1000) {
+        var len = fmt_int_buf(n, buf);
+        store8(buf + len, 0);
+        var got = sgr_open_for(buf, 0, 0);
+        if (n <= 255) { if (got == 0) { bad = bad + 1; } }
+        if (n > 255) { if (got != 0) { bad = bad + 1; } }
+        n = n + 1;
+    }
+    assert_eq(bad, 0, "exactly 0..255 are accepted");
+    return 0;
+}
+
+fn test_config_colors_through_palette_and_blocks(): i64 {
+    var content = "[[palette]]\naccent = \"#8be9fd\"\nmuted = \"244\"\n[[prompt]]\nsegments = [\"time\"]\ntrailer = \"\"\n[[segments.time]]\nformat = \"T\"\nfg = \"palette:accent\"\nbg = \"palette:muted\"\n";
+    var path = _write_test_config("palette-hex", content);
+    var c = config_load(path);
+    syscall(SYS_UNLINK, path);
+    _streq_or_dump(cfg_sgr_time(c), "\x1b[38;2;139;233;253;48;5;244m", "a palette slot can hold either form");
+    return 0;
+}
+
+# A transition reuses the raw bg value, so the new forms must work there too.
+fn test_render_powerline_with_new_colors(): i64 {
+    var content = "[[prompt]]\nsegments = [\"time\", \"exit\"]\nseparator_style = \"powerline\"\nseparator_glyph = \">\"\ntrailer = \"\"\n[[segments.time]]\nformat = \"T\"\nfg = \"default\"\nbg = \"#010203\"\n[[segments.exit]]\nfg = \"default\"\nbg = \"33\"\n";
+    var path = _write_test_config("powerline-hex", content);
+    var c = config_load(path);
+    syscall(SYS_UNLINK, path);
+    _streq_or_dump(_render_capture(c, context_new(0, 7), 0),
+        "\x1b[48;2;1;2;3mT\x1b[0m\x1b[38;2;1;2;3;48;5;33m>\x1b[0m\x1b[48;5;33m[7]\x1b[0m\x1b[38;5;33m>\x1b[0m",
+        "a block's colour becomes the glyph's fg");
     return 0;
 }
 
@@ -2589,6 +2784,19 @@ fn main(): i64 {
     test_cache_key_is_fnv1a64();
     test_config_vcs_budget_ms();
     test_theme_powerline();
+    test_render_powerline_left();
+    test_render_powerline_right();
+    test_render_powerline_right_no_block_no_glyph();
+    test_render_powerline_right_skips_empty_segment();
+    test_render_plain_right_has_no_trailer();
+    test_render_sanitizes_segment_output();
+    test_color_256_index();
+    test_color_hex();
+    test_color_forms_combine();
+    test_color_malformed_is_no_code();
+    test_color_parser_exhaustive();
+    test_config_colors_through_palette_and_blocks();
+    test_render_powerline_with_new_colors();
     test_rustup_env_parse_toml();
     test_rustup_env_precedence();
     test_sanitize_invariant_exhaustive();

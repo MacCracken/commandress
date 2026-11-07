@@ -15,11 +15,11 @@ Curated `~/.commandress` configurations that exercise the v0.6.0 [palette layer]
 
 ## How named colors map to your terminal
 
-`commandress` v0.6.x speaks the 16 named ANSI colors only (8 standard + 8 bright + `default`). The *actual* color shown for `fg = "blue"` is whatever your terminal has bound to ANSI slot 34 — that's the terminal's job, not the prompt's.
+The shipped themes use the 16 named ANSI colors (8 standard + 8 bright + `default`). The *actual* color shown for `fg = "blue"` is whatever your terminal has bound to ANSI slot 34 — that's the terminal's job, not the prompt's.
 
 In practice this means: **install the matching theme in your terminal** (`alacritty`, `kitty`, `wezterm`, etc. all support 16-color theme files for nord / dracula / gruvbox / monokai / etc.) and the commandress theme picks up that mapping automatically. Without the terminal-side theme, the prompt still works — it just uses your terminal's default 16-color palette.
 
-Hex / 256-color support lands in a later release; once it does, these themes will land more faithfully without requiring terminal-side cooperation.
+To pin an exact shade instead, use a value that does not go through your terminal's palette: `fg = "#8be9fd"`, or a 256-colour index like `fg = "117"`. Both work anywhere a color does, including `bg` and `[[palette]]` slots, since 1.3.0. Hex needs a truecolor terminal: `cmdrs` emits what you wrote and does not downgrade it.
 
 ## Installing a theme
 
@@ -59,7 +59,7 @@ Set `separator_style = "powerline"` plus a `separator_glyph` (and optionally `ri
 segments              = ["cwd", "vcs", "cyrius_env", "exit"]
 separator_style       = "powerline"
 separator_glyph       = ""                 # U+E0B0; needs a nerd-patched font
-right_separator_glyph = ""                 # U+E0B2; for right-prompt
+right_separator_glyph = ""                 # U+E0B2; for right-prompt, leads each block
 trailer               = " $ "
 
 [[segments.cwd]]

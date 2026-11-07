@@ -1,9 +1,13 @@
 # color.cyr — ANSI SGR color / style helpers for the prompt theme layer.
 #
-# Named-color model (M5 v0.6.0 scope per ADR-pending):
+# Color values (ADR 0007 § 3):
 #   - 16 ANSI named colors (8 standard + 8 bright) plus "default"
+#   - A 256-colour index, "0" to "255"
+#   - Hex, "#rrggbb", in either case
 #   - Style modifiers: bold | italic | underline | reverse
-#   - Hex / 256-color / palette references are deferred (v0.6.x+)
+#
+# `cmdrs` emits the form you wrote. It does not read $COLORTERM and does not
+# downgrade: a terminal without truecolor shows a hex value however it chooses to.
 #
 # Render closes every styled segment with "\x1b[0m" (`SGR_RESET`) so
 # unstyled parts of the prompt fall back to terminal defaults cleanly.
@@ -12,6 +16,7 @@
 # Public API:
 #   color_to_sgr_fg(name): i64   → 30..37, 90..97; 0 for absent/default/unknown
 #   color_to_sgr_bg(name): i64   → 40..47, 100..107; 0 for absent/default/unknown
+#       Named colors only. sgr_open_for is the one that takes all three forms.
 #   style_to_sgr_mods(s, codes, max): i64
 #       parses space-separated tokens, writes SGR mod ints into `codes`
 #       (8 bytes each), returns count written (capped at `max`)
@@ -212,6 +217,67 @@ fn color_to_sgr_bg(name): i64 {
     return fg + 10;
 }
 
+# A color as one integer: 0 for no code, an SGR foreground code for a named color,
+# or one of these flags with the value in its low bits. The flags sit above 24 bits of
+# RGB, and they are what make index 0 and #000000 colors rather than absences.
+enum ColorSpec {
+    COLOR_INDEXED = 0x1000000;
+    COLOR_RGB = 0x2000000;
+}
+
+# The value of hex digit `c`, or -1.
+fn _hex_digit(c): i64 {
+    if (c >= 48) { if (c <= 57) { return c - 48; } }
+    if (c >= 97) { if (c <= 102) { return c - 87; } }
+    if (c >= 65) { if (c <= 70) { return c - 55; } }
+    return 0 - 1;
+}
+
+# "0" to "255", or 0 if `s` (length `n`) is anything else.
+fn _color_spec_index(s, n): i64 {
+    if (n > 3) { return 0; }
+    var v = 0;
+    var i = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if (c < 48) { return 0; }
+        if (c > 57) { return 0; }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    if (v > 255) { return 0; }
+    return COLOR_INDEXED | v;
+}
+
+# "#rrggbb", or 0 if `s` (length `n`) is anything else.
+fn _color_spec_hex(s, n): i64 {
+    if (n != 7) { return 0; }
+    var v = 0;
+    var i = 1;
+    while (i < 7) {
+        var d = _hex_digit(load8(s + i));
+        if (d < 0) { return 0; }
+        v = v * 16 + d;
+        i = i + 1;
+    }
+    return COLOR_RGB | v;
+}
+
+# Parse a color value in any of the three forms. ADR 0007 froze these as "no code,
+# never errors" for anything malformed, so 0 is the only failure. The first byte picks
+# the form, because no color name starts with a digit or `#`.
+fn _color_spec(name): i64 {
+    if (name == 0) { return 0; }
+    var n = strlen(name);
+    if (n == 0) { return 0; }
+    var c = load8(name);
+    if (c == 35) { return _color_spec_hex(name, n); }
+    if (c >= 48) {
+        if (c <= 57) { return _color_spec_index(name, n); }
+    }
+    return color_to_sgr_fg(name);
+}
+
 # Parses `style` (space-separated tokens, e.g. "bold underline"). Writes
 # each recognized modifier's SGR code as an i64 into `codes` (8 bytes
 # per entry), in input order. Unknown tokens are silently skipped.
@@ -268,7 +334,7 @@ fn style_to_sgr_mods(s, codes, max): i64 {
 
 # Writes the ASCII decimal of `code` into `out` at offset `pos`; returns
 # the new offset. `code` is bounded to 0..999 (we only ever emit SGR
-# ints in 0..107 in this module), so the inline three-branch path is
+# ints and 0..255 color values here), so the inline three-branch path is
 # strictly faster than calling fmt_int_buf + memmove.
 fn _emit_sgr_int(out, pos, code): i64 {
     if (code >= 100) {
@@ -286,18 +352,46 @@ fn _emit_sgr_int(out, pos, code): i64 {
     return pos + 1;
 }
 
+# Writes one color's SGR parameters at `out + pos` and returns the new offset. `is_bg` is
+# 0 or 1. Only integers reach the buffer, so nothing from a config value is copied into
+# the escape: `#ff0000;5m` is refused at the parse, and cannot add a parameter here.
+fn _emit_color(out, pos, spec, is_bg): i64 {
+    var base = 38;
+    if (is_bg == 1) { base = 48; }
+    if ((spec & COLOR_RGB) != 0) {
+        pos = _emit_sgr_int(out, pos, base);
+        store8(out + pos, 59);
+        store8(out + pos + 1, 50);                      # ;2
+        store8(out + pos + 2, 59);
+        pos = _emit_sgr_int(out, pos + 3, (spec >> 16) & 255);
+        store8(out + pos, 59);
+        pos = _emit_sgr_int(out, pos + 1, (spec >> 8) & 255);
+        store8(out + pos, 59);
+        return _emit_sgr_int(out, pos + 1, spec & 255);
+    }
+    if ((spec & COLOR_INDEXED) != 0) {
+        pos = _emit_sgr_int(out, pos, base);
+        store8(out + pos, 59);
+        store8(out + pos + 1, 53);                      # ;5
+        store8(out + pos + 2, 59);
+        return _emit_sgr_int(out, pos + 3, spec & 255);
+    }
+    # Background codes are exactly +10 from foreground codes.
+    return _emit_sgr_int(out, pos, spec + is_bg * 10);
+}
+
 # Builds the SGR opening escape `"\x1b[<mods>;<fg>;<bg>m"` from the
 # resolved style. Returns 0 (no allocation) when there's nothing to
 # emit — the empty / all-default case. Order is modifiers first, then
 # fg, then bg, matching the convention most terminals + style guides
 # use.
 #
-# Buffer size: 64 bytes covers the maximum payload (4 mods + fg + bg,
-# each up to 3 digits, plus 5 semicolons + `\x1b[` + `m` + NUL = 27 B).
-# Bumping for safety; alloc is bump-cheap.
+# Buffer size: 64 bytes covers the maximum payload: `\x1b[`, 4 one-digit mods and their
+# 3 semicolons, 2 colors at `38;2;255;255;255`, 2 more semicolons, `m` and NUL, which is
+# 45 B. Pinned by test_color_forms_combine. alloc is bump-cheap.
 fn sgr_open_for(fg, bg, style): i64 {
-    var fg_code = color_to_sgr_fg(fg);
-    var bg_code = color_to_sgr_bg(bg);
+    var fg_code = _color_spec(fg);
+    var bg_code = _color_spec(bg);
     var mods[32];                                       # 4 codes * 8 B
     var mod_count = style_to_sgr_mods(style, &mods, 4);
 
@@ -307,6 +401,7 @@ fn sgr_open_for(fg, bg, style): i64 {
     if (total == 0) { return 0; }
 
     var out = alloc(64);
+    if (out == 0) { return 0; }
     var pos = 0;
     store8(out + pos, 27);     pos = pos + 1;          # ESC
     store8(out + pos, 91);     pos = pos + 1;          # [
@@ -321,12 +416,12 @@ fn sgr_open_for(fg, bg, style): i64 {
     }
     if (fg_code != 0) {
         if (written > 0) { store8(out + pos, 59); pos = pos + 1; }
-        pos = _emit_sgr_int(out, pos, fg_code);
+        pos = _emit_color(out, pos, fg_code, 0);
         written = written + 1;
     }
     if (bg_code != 0) {
         if (written > 0) { store8(out + pos, 59); pos = pos + 1; }
-        pos = _emit_sgr_int(out, pos, bg_code);
+        pos = _emit_color(out, pos, bg_code, 1);
         written = written + 1;
     }
 

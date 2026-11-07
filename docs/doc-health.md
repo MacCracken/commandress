@@ -63,7 +63,7 @@ scripts whose header comments carry rationale.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-11-06 | ✅ Fresh | Status line, layout tree, roadmap pointers. |
-| `CHANGELOG.md` | 2026-11-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.2.3. |
+| `CHANGELOG.md` | 2026-11-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.3.0. |
 | `CLAUDE.md` | 2026-08-26 | 🔵 Evergreen | Process + rules. |
 | `adapters/README.md` | 2026-11-06 | ✅ Fresh | Security section rewritten around the reference rule (ADR 0011). |
 
@@ -71,8 +71,8 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `state.md` | 2026-11-06 | ✅ Fresh | **Rotates every release.** Through 1.2.3. |
-| `roadmap.md` | 2026-11-06 | ✅ Fresh | 1.2.3 moved to the CHANGELOG. New items at 1.5.0 and 1.x.x, each pinned to the audit. |
+| `state.md` | 2026-11-06 | ✅ Fresh | **Rotates every release.** Through 1.3.0. |
+| `roadmap.md` | 2026-11-06 | ✅ Fresh | 1.2.3 and 1.3.0 moved to the CHANGELOG. New items at 1.5.0 and 1.x.x, each pinned to the audit. |
 
 ### `docs/adr/` — 12 records
 
@@ -85,7 +85,7 @@ scripts whose header comments carry rationale.
 | `0004-vcs-probe-via-sit.md` | 2026-05-17 | 🟢 Current | Accepted. |
 | `0005-language-env-probe-pattern.md` | 2026-11-06 | ✅ Fresh | Accepted. Annotated at 1.2.2. |
 | `0006-config-path-rename.md` | 2026-05-18 | 🟢 Current | Accepted. |
-| `0007-schema-freeze.md` | 2026-11-06 | ✅ Fresh | Accepted, and load-bearing. Annotated at 1.2.2. |
+| `0007-schema-freeze.md` | 2026-11-06 | ✅ Fresh | Accepted, and load-bearing. Annotated at 1.2.2 and 1.3.0, when the reserved colour forms shipped. |
 | `0008-cli-parsing-via-cmdit.md` | 2026-08-26 | 🟢 Current | Accepted. |
 | `0009-config-parsing-via-bayan.md` | 2026-11-06 | ✅ Fresh | Accepted. Its "never reads a repo-local config" is annotated as out of date. |
 | `0010-dead-code-elimination-on-every-build.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.2.2. |
@@ -114,7 +114,7 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `getting-started.md` | 2026-11-06 | ✅ Fresh | Updated at 1.2.2. |
+| `getting-started.md` | 2026-11-06 | ✅ Fresh | Updated at 1.2.2 and 1.2.3. Colour forms at 1.3.0. |
 | `zsh-setup.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** New paste, executed under attack. |
 | `bash-setup.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** New paste, executed under attack. |
 
@@ -123,7 +123,7 @@ scripts whose header comments carry rationale.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `prompt-tour.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** The warning no longer describes the old hook as safe. |
-| `commandress.cyml.example` | 2026-11-06 | ✅ Fresh | Gained `budget_ms` at 1.2.2. |
+| `commandress.cyml.example` | 2026-11-06 | ✅ Fresh | Gained `budget_ms` at 1.2.2, and the colour forms at 1.3.0. |
 
 ### `docs/benchmarks*` and `docs/themes/`
 
@@ -132,8 +132,8 @@ scripts whose header comments carry rationale.
 | `benchmarks.md` | 2026-11-06 | ✅ Fresh | Budget section now separates the two gates and gives real cold-start figures. Its per-segment table is still the v1.1.6 run; `state.md` carries current numbers. |
 | `benchmarks/README.md` | 2026-05-18 | 🟢 Current | Column semantics; unchanged. |
 | `benchmarks/history.csv` | 2026-11-06 | ✅ Fresh | Rows through 1.2.3. |
-| `themes/README.md` | 2026-11-06 | ✅ Fresh | Six themes. |
-| `themes/*.cyml` (6) | 2026-11-06 | 🟢 Current | commandress / nord / dracula / gruvbox / monokai, plus powerline at 1.2.2. |
+| `themes/README.md` | 2026-11-06 | ✅ Fresh | Six themes. No longer says the colour forms are coming. |
+| `themes/*.cyml` (6) | 2026-11-06 | ✅ Fresh | commandress / nord / dracula / gruvbox / monokai, plus powerline at 1.2.2, which gained `right_segments` at 1.3.0. |
 | `doc-health.md` | 2026-11-06 | ✅ Fresh | This ledger. |
 
 ---

@@ -15,7 +15,7 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.2.3**. The 1.1.x line was toolchain refreshes, the cmdit
+this file. Current release is **1.3.0**. The 1.1.x line was toolchain refreshes, the cmdit
 CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line was toolchain and
 dependency refreshes, the quick roadmap items, and the
 [2026-11-06 audit](../audit/2026-11-06-audit.md). The public API is frozen
@@ -34,13 +34,12 @@ breaks a v1 config.
 
 ## 1.3.x — Colour and theming completion
 
-The colour model shipped deliberately narrow at 0.6.0 (16 named colours). Every slot below was
-reserved at schema freeze, so all of it is additive.
+The colour model shipped deliberately narrow at 0.6.0 (16 named colours). Hex and 256-colour
+values and right-prompt powerline transitions shipped at 1.3.0. What remains was reserved at
+schema freeze, so it is additive.
 
 | Release | Item | Source of the deferral |
 |---|---|---|
-| **1.3.0** | **Hex and 256-colour values** — `fg = "#8be9fd"` / `fg = "33"` alongside the named set. These are the two forms ADR 0007 § 3 reserved; an earlier draft here said `"38;5;117"`, which is not what was frozen. | `src/color.cyr:6` — *"Hex / 256-color / palette references are deferred (v0.6.x+)"* |
-| **1.3.0** | **Right-prompt powerline transitions** — on `--side=right` the closing glyph trails the last block, so a left-pointing arrow sits after the text instead of leading it. The shipped powerline theme leaves `right_segments` out until this lands. | `src/render.cyr`, end of `render_prompt` |
 | **1.3.1** | **Multi-palette** — `[[palettes.<name>]]` tables plus a top-level `palette = "<name>"` selector. Single-palette `[[palette]]` shipped 0.6.0; the multi form was reserved, not built. | [ADR 0007](../adr/0007-schema-freeze.md) reserved-for-additive; `state.md` post-v1 theme track |
 
 **Gate**: none. All of it is additive config surface plus `src/color.cyr` and `src/render.cyr` work.

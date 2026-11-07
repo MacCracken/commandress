@@ -41,6 +41,8 @@ The exhaustive set of accepted fields per `[[…]]` section. Unknown fields warn
 
 **`[[palette]]`** — named colour slots. Key-value pairs of `name = "color"`. Names are arbitrary user-chosen identifiers; values are 16-named-ANSI strings (see §3) or the literal `"default"`.
 
+> **Update 2026-11-06** (annotation, not a revision): since 1.3.0 a palette value can be any accepted form in §3, including hex and a 256-colour index.
+
 **`[[segments.cwd]]`**:
 
 | Field | Type | Default | Semantic |
@@ -82,6 +84,8 @@ The exhaustive set of accepted fields per `[[…]]` section. Unknown fields warn
 | Palette reference | `"palette:primary"` | yes — resolved at config-load |
 | Hex (`#rrggbb`) | `"#5fafff"` | **reserved** — accepted as a future extension (returns "no code" today; never errors) |
 | 256-colour index | `"33"` | **reserved** — same as hex |
+
+> **Update 2026-11-06** (annotation, not a revision): hex and 256-colour shipped at 1.3.0, in exactly these two forms. A hex value is `#` plus six hex digits in either case, and an index is 1 to 3 digits, 0 to 255. Anything else in those shapes, such as `#abc`, `256` or `33;1`, still means "no code, never errors". The value is parsed to integers and formatted again, so nothing from it is copied into the escape. `cmdrs` emits the form you wrote: it does not read `$COLORTERM` or downgrade.
 
 The 16 named colours are: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, and their `bright_*` variants.
 
@@ -138,6 +142,7 @@ The cache layout is implementation-bound but the public-facing `/tmp/commandress
 - **The set of named colours.** Could extend to a wider named palette if we ever need it (e.g. `gray`, `orange`); current 16 stay accepted.
 - **The set of style modifiers.** `dim`, `strikethrough`, `blink` could land later; current four stay accepted.
 - **Hex / 256-colour values.** Reserved in §3 — when implemented, they become first-class accepted values without breaking anyone.
+  > **Update 2026-11-06** (annotation, not a revision): delivered at 1.3.0. See §3.
 - **Multi-palette via `[[palettes.<name>]]` + top-level `palette = "<name>"` selector.** This is the v1 theme-switching path committed during the M5 colour work; lands in a v1.x release as additive grammar. Single `[[palette]]` (the v0.6.0 form) stays accepted.
 - **Per-segment `budget_ms` / cache TTL override.** The M2 follow-up slot for `[[segments.vcs]]`; additive.
   > **Update 2026-11-06** (annotation, not a revision): `[[segments.vcs]] budget_ms` shipped at 1.2.2. It is additive, in whole milliseconds from 1 to 1000, and a refused value warns and keeps the default of 5.
