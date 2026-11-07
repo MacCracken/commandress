@@ -15,66 +15,20 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.2.2**. The 1.1.x line was toolchain refreshes, the cmdit
-CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line so far is
-toolchain and dependency refreshes plus the quick roadmap items. The public API is frozen
+this file. Current release is **1.2.3**. The 1.1.x line was toolchain refreshes, the cmdit
+CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line was toolchain and
+dependency refreshes, the quick roadmap items, and the
+[2026-11-06 audit](../audit/2026-11-06-audit.md). The public API is frozen
 per [ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
 not-frozen surface, or routed through the documented 3-step deprecation path. No item here
 breaks a v1 config.
 
 | Slot | Theme |
 |---|---|
-| **1.2.3** | P(-1) audit, hardening, optimization and security sweep, with repairs |
 | **1.3.x** | Colour and theming completion |
 | **1.4.x** | Language-env depth |
 | **1.5.x** | Per-segment control |
 | **1.x.x** | Unscheduled: gated on something outside this repo |
-
----
-
-## 1.2.3 — P(-1) audit, hardening, optimization and security sweep
-
-The third pass over the whole codebase, after [2026-05-18](../audit/2026-05-18-audit.md) and
-[2026-08-26](../audit/2026-08-26-audit.md). A sweep and its repairs, not a feature release.
-
-**Why now.** The 2026-08-26 report named what should trigger the next audit, and all of it has
-happened: cmdit moved 1.2.4 → 1.5.0 with a changed public surface, the config parser was replaced
-with bayan, `rust-toolchain.toml` became the first repo-controlled input to reach that parser, and
-`budget_ms` added a config field.
-
-**Scope.** All of `src/`, `adapters/`, `scripts/`, `.github/workflows/` and `cyrius.cyml`. Vendored
-`lib/` stays out of scope as a dependency, except how this repo calls into it, and except bayan's
-TOML and CYML sublibs and cmdit, which are reviewed from the consumer side.
-
-**Method.** As in 2026-08-26, because it found what neither track would have alone:
-
-1. A parallel read of the first-party code, with an adversarial reviewer on every candidate finding.
-2. Live attack testing of the built binary through real shells.
-3. An optimization pass that measures first and changes only what the numbers justify.
-
-**Seed list.** Known work this slot starts from. The sweep will add to it.
-
-| Item | Track | Source |
-|---|---|---|
-| **Repo-controlled input to bayan** — attack `rust-toolchain.toml` end to end, since it is parser input a hostile repo chooses. | Security | `src/segments/rustup_env.cyr` |
-| **cmdit 1.2.4 → 1.5.0 and bayan, from the consumer side** — neither has been audited here since it changed or arrived. | Security | 2026-08-26 audit, *Next audit* |
-| **Re-open "Confirmed but deliberately not fixed"** — each decision was made against the code as it stood. `cmdit_argv`'s failure return, for one, has an error path now. | Security | 2026-08-26 audit |
-| **Boot the `--agnos` build** — every release since 1.1.0 compiles it, and none has run it. Use the agnos repo's smoke harness, and cover `--side=right` argv and the config path. | Security | `CHANGELOG.md` 1.2.0, 1.2.1 |
-| **CI lock guard** — `cyrius deps --locked` catches an altered vendored file that `scripts/lock-check.sh` misses. Neither fails on a stale `commit` line. Decide what CI runs, and whether to fail on that `note:`. | Hardening | [architecture 003](../architecture/003-cyrius-lock-shape.md) § 3–4 |
-| **`alloc` return guards beyond the chokepoint** — 1.1.6 guarded `sanitize_segment_output`, the one path every segment crosses. Moved here from the old hygiene slot. | Hardening | 2026-08-26 audit, *Known gaps* |
-| **Cache eviction** — entries are tiny but never collected, one per (segment, cwd) forever, and the pre-1.2.2 8-hex keys are now orphans. Moved here from the old hygiene slot. | Hardening | `src/cache.cyr:30` |
-| **Config read cap** — F-6 proposed lowering it from 64 KB to about 16 KB. Decide on current numbers: bayan's worst case is far lower than when that was written. | Hardening | [2026-05-18 audit](../audit/2026-05-18-audit.md) F-6 |
-| **Cold start** — about 410 µs with no config, against 11 µs for `render_prompt`. Find where the rest goes. | Optimization | `state.md` benchmarks |
-| **`config_load`** — a 64 KB buffer per redraw and eleven `_warn_nested_keys` sweeps. | Optimization | `src/config.cyr` |
-| **`rustup_env` walks twice** — once per file name, 4.9 → 9.5 µs. One walk could test both. | Optimization | `src/segments/rustup_env.cyr` |
-| **`docs/doc-health.md`** — last refreshed at 1.1.6. | Repairs | `doc-health.md` |
-
-**Done means:**
-
-- A dated report in [`docs/audit/`](../audit/), in the 2026-08-26 format: *Findings*, *Verified clean*, *Confirmed but deliberately not fixed*, *Known gaps*, *Next audit*.
-- Every finding reproduced before it is fixed, and every fix pinned by a test shown to fail on the old code.
-- No schema additions. As 2026-08-26 said of the output length cap, those belong in a feature release, so a finding that needs one gets a slot below.
-- Differential, fuzz and CI rehearsal clean, with benchmark numbers for any performance claim.
 
 ---
 
@@ -117,7 +71,8 @@ Knobs the config schema was always shaped for but never grew, plus the output-sh
 
 | Release | Item | Source of the deferral |
 |---|---|---|
-| **1.5.0** | **Per-segment output length cap** — a hostile repository can push ~255 printable characters into every redraw via a language-env pin file. Sanitized and inert, but visually disruptive; `max_length` applies to `cwd` only. | [2026-08-26 audit](../audit/2026-08-26-audit.md) — *Known gaps* |
+| **1.5.0** | **Per-segment output length cap** — a hostile repository can push text into every redraw: 255 bytes from a pin file, 8,182 from a `sit` branch, and an environment can push more through `VIRTUAL_ENV`. Sanitized and inert, but visually disruptive; `max_length` applies to `cwd` only. | [2026-11-06 audit](../audit/2026-11-06-audit.md), *Known gaps* |
+| **1.5.0** | **What a pin file may look like** — a probe follows symlinks, so `.python-version -> ~/.ssh/id_ed25519` shows the start of that file in the prompt, and a co-tenant's `/tmp/.python-version` applies under `/tmp`. `O_NOFOLLOW` would blank monorepo pins, so the better fix is a shape rule for a version string, which also cuts the length problem above. | [2026-11-06 audit](../audit/2026-11-06-audit.md) T-05, T-06 |
 | **1.5.1** | **Local time and `TZ`** — the `time` segment is UTC-only; `TZ` lookup plus offset application is its own piece of work. | `src/segments/time.cyr:23` |
 
 **Gate**: none. Both are additive per-segment config fields.
@@ -131,8 +86,11 @@ what would unblock it, so the gate is checkable rather than folkloric.
 
 | Item | Real gate | Checked |
 |---|---|---|
-| **agnoshi adoption** — flips on when agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw. The 5-point contract is already specified in `adapters/agnoshi.sh`; **no commandress change is required**. | agnoshi implements the contract | Re-checked 2026-11-06: `agnoshi/src` does not read it yet. `adapters/agnoshi.sh:16` — *"agnoshi has not yet adopted it"* |
+| **agnoshi adoption** — flips on when agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw. The 5-point contract is specified in `adapters/agnoshi.sh`. **It needs one commandress change**: agnos has no `getcwd` by design, so `cmdrs_getcwd` must read `$PWD`, which agnsh has passed since 2.2.0. Every cwd-based segment is empty there until then, and the default prompt is bare ` $ `. That change makes repo-controlled files reachable on a target where `read_regular_file` has neither guard, so it needs that reviewed at the same time. | agnoshi implements the contract | Re-checked 2026-11-06: `agnoshi/src` does not read it yet. `adapters/agnoshi.sh:16` — *"agnoshi has not yet adopted it"* |
 | **Retire `src/pathlookup.cyr`** — 99 lines re-implementing `execvp`'s PATH walk, because `execve(2)` does not do PATH lookup and no stdlib helper exposes one. | Cyrius grows a `which()`-equivalent (papercut Item 8) | Re-checked 2026-11-06 against the 6.7.18 snapshot: **still open**, no public stdlib fn resolves a bare name against `$PATH`. The workaround ships and is correct. |
+| **`--bogus --side=right` honours the side** — cmdit stops at the first bad token, so a flag before `--side=right` renders the left prompt. No adapter produces that order. | cmdit grows a continue-on-error mode | [2026-11-06 audit](../audit/2026-11-06-audit.md) D-05 |
+| **cmdit's stderr escaper strips C1** — a C1 pair in a bad flag reaches stderr. Argv is not an attacker position. | cmdit filters `0x80..0x9F` | [2026-11-06 audit](../audit/2026-11-06-audit.md) D-06 |
+| **`cyrius deps --locked` fails on a stale pin** — it prints a `note:` saying fail-closed, and exits 0. `scripts/lock-check.sh` does not need this, but it would make `--locked` usable alone. | Upstream cyrius | [Architecture 003](../architecture/003-cyrius-lock-shape.md) § 3 |
 
 > **Check the gate before repeating it.** Two of the three "blocked on Cyrius" claims in
 > this repo were stale by the time anyone re-read them — Item 3 had shipped, and the

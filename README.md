@@ -2,7 +2,7 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.2.2** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit. **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.2.3** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
 
 ## What it is
 
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.2.2
+cmdrs 1.2.3
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```
@@ -126,7 +126,7 @@ commandress/
 │   ├── commandress.tcyr                       # 308 assertions across 146 tests
 │   ├── commandress.bcyr                       # benchmark suite
 │   └── commandress.fcyr                       # fuzz stub
-├── scripts/                                   # bench-gate, bench-history, lock-check
+├── scripts/                                   # CI gates: lock-check, smoke, adapter-check, bench-gate
 └── docs/
     ├── adr/                                   # decision records (0001–0008)
     ├── architecture/                          # non-obvious invariants
@@ -136,7 +136,7 @@ commandress/
     ├── themes/                                # curated drop-in palettes
     ├── examples/                              # runnable examples + annotated config
     └── development/
-        ├── roadmap.md                         # post-v1 sequencing (1.2.3 →)
+        ├── roadmap.md                         # post-v1 sequencing (1.3.x →)
         └── state.md                           # live state snapshot
 ```
 
@@ -147,7 +147,7 @@ commandress/
 - [`docs/examples/commandress.cyml.example`](docs/examples/commandress.cyml.example) — annotated config showing every knob
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build + first run
 - [`docs/development/state.md`](docs/development/state.md) — current version, sizes, benchmarks, in-flight work
-- [`docs/development/roadmap.md`](docs/development/roadmap.md) — post-v1 sequencing (1.2.3 →), every item pinned to the line that defers it
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — post-v1 sequencing (1.3.x →), every item pinned to the line that defers it
 - [`docs/adr/`](docs/adr/) — architectural decisions (rendering model, config format, VCS-via-sit, schema freeze, cmdit adoption, config parsing via bayan, build DCE)
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants (prompt render budget, shellout watchdog, etc.)
 - [`docs/audit/2026-08-26-audit.md`](docs/audit/2026-08-26-audit.md) — latest security audit (1.1.6 P-1 sweep); prior pass [2026-05-18](docs/audit/2026-05-18-audit.md)

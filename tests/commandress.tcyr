@@ -319,22 +319,331 @@ fn test_config_crlf_divider(): i64 {
     return 0;
 }
 
+# Audit 2026-11-06, O-1. A render uses a few KB, and with THP set to `always` the
+# first heap touch made the kernel zero a whole 2 MB page. PR_GET_THP_DISABLE is 42.
+fn test_thp_opt_out(): i64 {
+    thp_opt_out();
+    var got = syscall(SYS_PRCTL, 42, 0, 0, 0, 0);
+    if (got >= 0) { assert_eq(got, 1, "the process has opted out of transparent huge pages"); }
+    return 0;
+}
+
+# Build a config of exactly `size` bytes: a trailer, then comment padding.
+fn _sized_config(size): i64 {
+    var head = "[[prompt]]\ntrailer = \"AA> \"\n";
+    var hlen = strlen(head);
+    var buf = alloc(size + 1);
+    memcpy(buf, head, hlen);
+    var i = hlen;
+    while (i < size) { store8(buf + i, 35); i = i + 1; }
+    store8(buf + size, 0);
+    return buf;
+}
+
+# Audit 2026-11-06, D-03. A file past the cap used to be cut at the cap and parsed, so
+# the keys after the cut vanished with no warning, and a cut inside a string blanked
+# that value. A half-read config is worse than none, so it is all or nothing.
+fn test_config_over_cap_falls_back_to_defaults(): i64 {
+    var path = _write_test_config("overcap", _sized_config(CONFIG_CAP + 1));
+    _streq_or_dump(cfg_trailer(config_load(path)), " $ ", "a config past the cap is not half-read");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+fn test_config_at_cap_still_loads(): i64 {
+    var path = _write_test_config("atcap", _sized_config(CONFIG_CAP));
+    _streq_or_dump(cfg_trailer(config_load(path)), "AA> ", "a config of exactly the cap still loads");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 # 1.2.2: the key was a 32-bit djb2, where these two sibling names always collide
 # (33 * 'a' + 'z' == 33 * 'b' + 'Y') and one directory showed the other's branch.
 fn test_cache_key_separates_djb2_collisions(): i64 {
-    assert_eq(streq(_cache_path("vcs", "/p/az"), _cache_path("vcs", "/p/bY")), 0, "az and bY get separate entries");
-    assert_eq(streq(_cache_path("vcs", "/p/Ez"), _cache_path("vcs", "/p/FY")), 0, "Ez and FY get separate entries");
+    assert_eq(streq(_cache_key_hex("/p/az"), _cache_key_hex("/p/bY")), 0, "az and bY get separate keys");
+    assert_eq(streq(_cache_key_hex("/p/Ez"), _cache_key_hex("/p/FY")), 0, "Ez and FY get separate keys");
     return 0;
 }
 
 # Published FNV-1a 64 test vectors, so the hash cannot be subtly wrong.
 fn test_cache_key_is_fnv1a64(): i64 {
+    _streq_or_dump(_cache_key_hex("a"), "af63dc4c8601ec8c", "FNV-1a 64 of 'a'");
+    _streq_or_dump(_cache_key_hex("foobar"), "85944171f73967e8", "FNV-1a 64 of 'foobar'");
+    _streq_or_dump(_cache_key_hex(""), "cbf29ce484222325", "the offset basis for empty input");
+    return 0;
+}
+
+# Audit 2026-11-06, eviction. A file name is one of 256 slots, so the directory cannot
+# grow past 256 entries per segment however many directories the user visits.
+fn test_cache_path_is_a_bounded_slot(): i64 {
     var dir_len = strlen(cache_dir());
-    var p = _cache_path("s", "a");
-    assert_eq(strlen(p), dir_len + 1 + 1 + 1 + 16, "the key is 16 hex digits");
-    _streq_or_dump(p + dir_len + 3, "af63dc4c8601ec8c", "FNV-1a 64 of 'a'");
-    _streq_or_dump(_cache_path("s", "foobar") + dir_len + 3, "85944171f73967e8", "FNV-1a 64 of 'foobar'");
-    _streq_or_dump(_cache_path("s", "") + dir_len + 3, "cbf29ce484222325", "the offset basis for empty input");
+    assert_eq(strlen(_cache_path("s", "a")), dir_len + 1 + 1 + 1 + 2, "a slot is two hex digits");
+    _streq_or_dump(_cache_path("s", "a") + dir_len + 3, "8c", "the slot is the low byte of the key");
+    return 0;
+}
+
+# Two directories in one slot: each write replaces the other, and neither ever reads
+# the other's value. The key inside the entry is what keeps 1.2.2's fix.
+fn test_cache_slot_collision_is_a_miss(): i64 {
+    cache_init();
+    var first = "/slot/0";
+    var other = 0;
+    var name = alloc(32);
+    var i = 1;
+    while (other == 0) {
+        memcpy(name, "/slot/", 6);
+        var nlen = fmt_int_buf(i, name + 6);
+        store8(name + 6 + nlen, 0);
+        if (streq(_cache_path("tst_slot", first), _cache_path("tst_slot", name)) == 1) { other = name; }
+        i = i + 1;
+    }
+    cache_put("tst_slot", first, "ONE", 3);
+    assert_eq(cache_get("tst_slot", other, 1), 0, "a slot neighbour does not read this value");
+    cache_put("tst_slot", other, "TWO", 3);
+    assert_eq(cache_get("tst_slot", first, 1), 0, "a slot neighbour replaced the entry");
+    _streq_or_dump(cache_get("tst_slot", other, 1), "TWO", "the latest writer reads its value");
+    syscall(SYS_UNLINK, _cache_path("tst_slot", first));
+    return 0;
+}
+
+# A FIFO at an entry used to hang: the open blocked. The test stalls here if it does.
+fn test_cache_fifo_entry_does_not_hang(): i64 {
+    cache_init();
+    var path = _cache_path("tst_fifo", "/cwd/fifo");
+    syscall(SYS_UNLINK, path);
+    assert_eq(syscall(SYS_MKNODAT, 0 - 100, path, 0x1180, 0), 0, "mkfifo fixture");
+    assert_eq(cache_get("tst_fifo", "/cwd/fifo", 60), 0, "a FIFO is a miss");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# Audit 2026-08-26, A-12. An mtime in the future counts as a miss, or a backwards clock
+# step would pin the entry for the life of the file. That audit checked this by hand and
+# left no test. Mutation testing in 2026-11-06 found the gap.
+fn test_cache_future_mtime_is_a_miss(): i64 {
+    cache_init();
+    cache_put("tst_future", "/cwd/future", "x", 1);
+    var path = _cache_path("tst_future", "/cwd/future");
+    var times[32];
+    store64(&times, 0);
+    store64(&times + 8, 0);
+    store64(&times + 16, clock_epoch_secs() + 3600);
+    store64(&times + 24, 0);
+    assert_eq(syscall(SYS_UTIMENSAT, 0 - 100, path, &times, 0), 0, "set a future mtime");
+    assert_eq(cache_get("tst_future", "/cwd/future", 60), 0, "a future mtime is a miss");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# No real value is this long, so an entry this size is refused before it is allocated.
+fn test_cache_oversized_entry_is_a_miss(): i64 {
+    cache_init();
+    var len = CACHE_ENTRY_MAX + 1;
+    var big = alloc(len);
+    memset(big, 65, len);
+    memcpy(big, _cache_key_hex("/cwd/big"), CACHE_KEY_DIGITS);
+    var path = _cache_path("tst_big", "/cwd/big");
+    file_write_all(path, big, len);
+    assert_eq(cache_get("tst_big", "/cwd/big", 60), 0, "an oversized entry is a miss");
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# <path>.tmp.<pid>, the name cache_put gives its temp.
+fn _cache_tmp_name(path): i64 {
+    var plen = strlen(path);
+    var out = alloc(plen + 32);
+    memcpy(out, path, plen);
+    memcpy(out + plen, ".tmp.", 5);
+    var n = fmt_int_buf(syscall(SYS_GETPID), out + plen + 5);
+    store8(out + plen + 5 + n, 0);
+    return out;
+}
+
+# A rename that fails must not leave the temp behind. A directory at the entry fails it.
+fn test_cache_failed_rename_leaves_no_temp(): i64 {
+    cache_init();
+    var path = _cache_path("tst_ren", "/cwd/ren");
+    syscall(SYS_RMDIR, path);
+    assert_eq(syscall(SYS_MKDIR, path, 0x1C0), 0, "directory fixture");
+    cache_put("tst_ren", "/cwd/ren", "x", 1);
+    assert_neq(syscall(SYS_ACCESS, _cache_tmp_name(path), 0), 0, "the temp is gone");
+    syscall(SYS_RMDIR, path);
+    return 0;
+}
+
+# `ulimit -f 0` used to kill the process with SIGXFSZ inside cache_put: the prompt was
+# cut short and a temp was left behind on every redraw. Runs in a child, because the
+# limit and the signal both belong to the process.
+fn test_cache_put_survives_file_size_limit(): i64 {
+    cache_init();
+    var pid = sys_fork();
+    if (pid == 0) {
+        var lim[16];
+        store64(&lim, 0);
+        store64(&lim + 8, 0);
+        syscall(160, 1, &lim);                          # setrlimit(RLIMIT_FSIZE)
+        cache_put("tst_lim", "/cwd/lim", "x", 1);
+        var path = _cache_path("tst_lim", "/cwd/lim");
+        if (syscall(SYS_ACCESS, _cache_tmp_name(path), 0) == 0) { sys_exit(3); }
+        sys_exit(0);
+    }
+    var status[8];
+    sys_waitpid(pid, &status, 0);
+    assert_eq(load32(&status), 0, "cache_put survives RLIMIT_FSIZE and leaves no temp");
+    return 0;
+}
+
+# Audit 2026-11-06. SIGKILL is not synchronous: a child stuck on a wedged filesystem, or
+# held by a ptracer, stays unreapable, and a blocking wait had no deadline at all.
+fn test_shellout_reap_does_not_block(): i64 {
+    var pid = sys_fork();
+    if (pid == 0) {
+        sleep_ms(500);
+        sys_exit(0);
+    }
+    var start_ms = clock_now_ms();
+    _shellout_reap(pid);
+    var elapsed_ms = clock_now_ms() - start_ms;
+    assert(elapsed_ms < 100, "reaping gives up rather than waiting for a live child");
+    sys_kill(pid, SIGKILL);
+    var status[8];
+    sys_waitpid(pid, &status, 0);
+    return 0;
+}
+
+fn _sh_argv(script): i64 {
+    var argv = alloc(32);
+    store64(argv, "/bin/sh");
+    store64(argv + 8, "-c");
+    store64(argv + 16, script);
+    store64(argv + 24, 0);
+    return argv;
+}
+
+# With stderr closed, /dev/null opens as fd 2, and the old dup2-then-close closed it
+# again, so the child's next open became its stderr.
+fn test_shellout_stderr_closed_at_exec(): i64 {
+    var envp = alloc(8);
+    store64(envp, 0);
+    var saved = syscall(SYS_DUP, 2);
+    syscall(SYS_CLOSE, 2);
+    var buf[64];
+    var n = shellout_capture("/bin/sh", _sh_argv("if [ -e /proc/self/fd/2 ]; then echo open; else echo closed; fi"), envp, 2000, &buf, 63);
+    sys_dup2(saved, 2);
+    syscall(SYS_CLOSE, saved);
+    assert_eq(n, 5, "the child reports on its stderr");
+    assert_eq(memeq(&buf, "open", 4), 1, "the child has a stderr");
+    return 0;
+}
+
+# With stdin and stdout closed, the pipe's write end IS fd 1, and the old dup2-then-close
+# closed the child's stdout, so nothing it printed reached us.
+fn test_shellout_stdout_closed_at_exec(): i64 {
+    var envp = alloc(8);
+    store64(envp, 0);
+    var saved0 = syscall(SYS_DUP, 0);
+    var saved1 = syscall(SYS_DUP, 1);
+    syscall(SYS_CLOSE, 0);
+    syscall(SYS_CLOSE, 1);
+    var buf[64];
+    var n = shellout_capture("/bin/sh", _sh_argv("echo ok"), envp, 2000, &buf, 63);
+    sys_dup2(saved0, 0);
+    sys_dup2(saved1, 1);
+    syscall(SYS_CLOSE, saved0);
+    syscall(SYS_CLOSE, saved1);
+    assert_eq(n, 3, "the child's stdout reaches the capture");
+    return 0;
+}
+
+# A stop and continue interrupts epoll_wait with EINTR even with no handler installed.
+# That read as a hard failure, and the empty result was then cached for the TTL.
+fn test_shellout_survives_stop_and_continue(): i64 {
+    var envp = alloc(8);
+    store64(envp, 0);
+    var me = syscall(SYS_GETPID);
+    var helper = sys_fork();
+    if (helper == 0) {
+        sleep_ms(30);
+        sys_kill(me, 19);                               # SIGSTOP
+        sleep_ms(20);
+        sys_kill(me, 18);                               # SIGCONT
+        sys_exit(0);
+    }
+    var buf[64];
+    var n = shellout_capture("/bin/sh", _sh_argv("sleep 0.2; echo ok"), envp, 2000, &buf, 63);
+    var status[8];
+    sys_waitpid(helper, &status, 0);
+    assert_eq(n, 3, "the capture carries on after a stop and continue");
+    return 0;
+}
+
+# A path 2,000 levels deep made the four env segments take 472 ms a redraw, because each
+# access(2) re-walks the whole path. Past the cap the walk does not start.
+fn test_find_ancestor_depth_cap(): i64 {
+    _rustup_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst", 0x1FF), 0, "mkdir root");
+    file_write_all("/tmp/cmdrs_rt_tst/.nvmrc", "20", 2);
+    var p = alloc(2048);
+    memcpy(p, "/tmp/cmdrs_rt_tst", 17);
+    var n = 17;
+    var d = 2;
+    while (d < ANCESTOR_DEPTH_MAX) {
+        store8(p + n, 47);
+        store8(p + n + 1, 120);
+        n = n + 2;
+        d = d + 1;
+    }
+    store8(p + n, 0);
+    assert_neq(find_ancestor_with(p, "/.nvmrc"), 0, "a path at the cap walks");
+    store8(p + n, 47);
+    store8(p + n + 1, 120);
+    store8(p + n + 2, 0);
+    assert_eq(find_ancestor_with(p, "/.nvmrc"), 0, "a path past the cap does not");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/.nvmrc");
+    _rustup_tree_clean();
+    return 0;
+}
+
+# The kernel can hand back `(unreachable)/...`, which is relative to the real cwd.
+fn test_find_ancestor_refuses_relative_paths(): i64 {
+    assert_eq(find_ancestor_with("tests", "/commandress.tcyr"), 0, "a relative start is not walked");
+    return 0;
+}
+
+# rustup: exactly one line is the legacy format, anything else is TOML. The 1.2.2 sniff
+# looked for a leading `[`, so a commented file printed itself as the channel.
+fn test_rustup_env_comment_before_table(): i64 {
+    _rustup_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst", 0x1FF), 0, "mkdir root");
+    _rustup_write("/tmp/cmdrs_rt_tst/rust-toolchain", "# pinned\n[toolchain]\nchannel = \"1.80\"\n");
+    _streq_or_dump(rustup_env_for("/tmp/cmdrs_rt_tst"), "1.80", "a comment before the table is still TOML");
+    _rustup_write("/tmp/cmdrs_rt_tst/rust-toolchain", "stable\nnightly\n");
+    assert_eq(rustup_env_for("/tmp/cmdrs_rt_tst"), 0, "two lines are neither legacy nor TOML");
+    _rustup_write("/tmp/cmdrs_rt_tst/rust-toolchain", "\n  1.75.0 \r\n\n");
+    _streq_or_dump(rustup_env_for("/tmp/cmdrs_rt_tst"), "1.75.0", "blank lines around one line stay legacy");
+    _rustup_tree_clean();
+    return 0;
+}
+
+# A channel is a string. Anything else used to render as its source text.
+fn test_rustup_env_channel_must_be_a_string(): i64 {
+    assert_eq(rustup_env_parse_toml("[toolchain]\nchannel = 1\n", 23), 0, "a number is not a channel");
+    assert_eq(rustup_env_parse_toml("[toolchain]\nchannel = true\n", 26), 0, "a bool is not a channel");
+    assert_eq(rustup_env_parse_toml("[toolchain]\nchannel = [\"x\"]\n", 27), 0, "an array is not a channel");
+    _streq_or_dump(rustup_env_parse_toml("[toolchain]\nchannel = 'x'\n", 25), "x", "a literal string is");
+    return 0;
+}
+
+# Real `sit` lists an untracked name indented by two spaces, so a repo could add a file
+# called this and hide its own dirty marker from a substring scan.
+fn test_vcs_clean_message_is_a_whole_line(): i64 {
+    var s = "On branch main\n\nUntracked files:\n  nothing to commit, working tree clean\n";
+    _streq_or_dump(vcs_parse_render(s, strlen(s), "*"), "main*", "a file with that name does not read as clean");
+    var c = "On branch main\n\nnothing to commit, working tree clean\n";
+    _streq_or_dump(vcs_parse_render(c, strlen(c), "*"), "main", "the real message still does");
+    var t = "On branch main\n\nnothing to commit, working tree clean, really\n";
+    _streq_or_dump(vcs_parse_render(t, strlen(t), "*"), "main*", "it must be the whole line");
     return 0;
 }
 
@@ -1304,6 +1613,179 @@ fn test_rustup_env_hostile_files(): i64 {
     return 0;
 }
 
+# The legacy format keeps its 256-byte read cap now that the file is read only once.
+fn test_rustup_env_plain_cap(): i64 {
+    _rustup_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst", 0x1FF), 0, "mkdir root");
+    var long = alloc(PROBE_FILE_CAP + 200);
+    memset(long, 97, PROBE_FILE_CAP + 200);
+    file_write_all("/tmp/cmdrs_rt_tst/rust-toolchain", long, PROBE_FILE_CAP + 200);
+    var out = rustup_env_for("/tmp/cmdrs_rt_tst");
+    assert_neq(out, 0, "a long plain file renders");
+    assert_eq(strlen(out), PROBE_FILE_CAP, "a plain file stops at the probe cap");
+    _rustup_tree_clean();
+    return 0;
+}
+
+# One walk finds whichever name is nearest, and the first name wins inside a directory.
+fn test_find_ancestor_with_either(): i64 {
+    _rustup_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst", 0x1FF), 0, "mkdir root");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst/a", 0x1FF), 0, "mkdir a");
+    var which[8];
+    assert_eq(find_ancestor_with_either("/tmp/cmdrs_rt_tst/a", "/rust-toolchain", "/rust-toolchain.toml", &which), 0, "no marker, no root");
+    assert_eq(load64(&which), 0, "which is 0 on a miss");
+
+    file_write_all("/tmp/cmdrs_rt_tst/rust-toolchain.toml", "x", 1);
+    var root = find_ancestor_with_either("/tmp/cmdrs_rt_tst/a", "/rust-toolchain", "/rust-toolchain.toml", &which);
+    _streq_or_dump(root, "/tmp/cmdrs_rt_tst", "the second name is found on the walk up");
+    assert_eq(load64(&which), 2, "which reports the second name");
+
+    file_write_all("/tmp/cmdrs_rt_tst/rust-toolchain", "x", 1);
+    find_ancestor_with_either("/tmp/cmdrs_rt_tst/a", "/rust-toolchain", "/rust-toolchain.toml", &which);
+    assert_eq(load64(&which), 1, "in one directory the first name wins");
+
+    assert_eq(find_ancestor_with_either("relative/path", "/rust-toolchain", 0, &which), 0, "a relative path ends the walk");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rt_tst/a");
+    _rustup_tree_clean();
+    return 0;
+}
+
+# The cut must land on a '/': the walk tests the parent, and never a truncated name.
+fn test_find_ancestor_walks_every_parent(): i64 {
+    _rustup_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst", 0x1FF), 0, "mkdir root");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst/aa", 0x1FF), 0, "mkdir aa");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_rt_tst/aa/bb", 0x1FF), 0, "mkdir bb");
+    file_write_all("/tmp/cmdrs_rt_tst/aa/.nvmrc", "20", 2);
+    _streq_or_dump(find_ancestor_with("/tmp/cmdrs_rt_tst/aa/bb///", "/.nvmrc"), "/tmp/cmdrs_rt_tst/aa", "trailing slashes and one level up");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_rt_tst/aa/.nvmrc");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rt_tst/aa/bb");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_rt_tst/aa");
+    _rustup_tree_clean();
+    return 0;
+}
+
+fn test_trimmed_copy(): i64 {
+    _streq_or_dump(trimmed_copy(" \t\r\n1.2\n \r\t", 11), "1.2", "both ends, all four bytes");
+    _streq_or_dump(trimmed_copy("a b", 3), "a b", "inner space stays");
+    assert_eq(trimmed_copy(" \n ", 3), 0, "only whitespace is nothing");
+    assert_eq(trimmed_copy("x", 0), 0, "zero bytes is nothing");
+    return 0;
+}
+
+# Audit 2026-11-06, T-03. The invariant the filter owes the terminal, checked on its
+# output: no C0, no DEL, and a byte in 0x80..0x9F only inside a well-formed sequence
+# for a code point at or above U+00A0. Returns 1 when `s` (length `n`) holds it.
+fn _sanitized_ok(s, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(s + i);
+        if (c < 32) { return 0; }
+        if (c == 127) { return 0; }
+        if (c >= 128) {
+            if (c <= 159) { return 0; }                 # a continuation byte with no lead
+            var seq = _utf8_seq_len(s + i, n - i);
+            if (seq > 0) {
+                if (c == 194) {
+                    if (load8(s + i + 1) < 160) { return 0; }
+                }
+                i = i + seq;
+            } else { i = i + 1; }
+        } else { i = i + 1; }
+    }
+    return 1;
+}
+
+# Every string of up to five bytes over the bytes that matter. Each output must hold
+# the invariant and survive a second pass unchanged. Non-idempotence is the shape of
+# this bug: one pass peeled a layer and joined the next one.
+fn test_sanitize_invariant_exhaustive(): i64 {
+    var alpha = "\x01\x1b\x7f\x80\x9b\x9d\x9f\xa0\xc2\xc3\xe0\xe2\xed\xf0\x41";
+    var na = strlen(alpha);
+    var buf = alloc(8);
+    var bad = 0;
+    var cases = 0;
+    var total = 1;
+    var len = 1;
+    while (len <= 5) {
+        total = total * na;
+        var v = 0;
+        while (v < total) {
+            var x = v;
+            var i = 0;
+            while (i < len) {
+                store8(buf + i, load8(alpha + (x % na)));
+                x = x / na;
+                i = i + 1;
+            }
+            store8(buf + len, 0);
+            var once = sanitize_segment_output(buf);
+            if (_sanitized_ok(once, strlen(once)) != 1) { bad = bad + 1; }
+            if (streq(sanitize_segment_output(once), once) != 1) { bad = bad + 1; }
+            cases = cases + 1;
+            v = v + 1;
+        }
+        len = len + 1;
+    }
+    assert_eq(bad, 0, "every short hostile string holds the invariant and is idempotent");
+    assert_eq(cases, 813615, "the sweep covered every string");
+    return 0;
+}
+
+fn test_sanitize_c1_spellings(): i64 {
+    _streq_or_dump(sanitize_segment_output("v\xc2\x01\x9b31m"), "v\xc2\x33\x31m", "a dropped C0 cannot join a C1 pair");
+    _streq_or_dump(sanitize_segment_output("v\xc2\x7f\x9b31m"), "v\xc2\x33\x31m", "a dropped DEL cannot join a C1 pair");
+    _streq_or_dump(sanitize_segment_output("v\xc2\xc2\x9b\x9b31m"), "v\xc2\x33\x31m", "a dropped pair cannot join a C1 pair");
+    _streq_or_dump(sanitize_segment_output("v\xc2\xc2\xc2\x9b\x9b\x9bX"), "v\xc2\xc2X", "nesting does not survive either");
+    _streq_or_dump(sanitize_segment_output("v\x9b31m"), "v31m", "a bare C1 byte is CSI to an 8-bit terminal");
+    _streq_or_dump(sanitize_segment_output("v\xe0\x82\x9bX"), "v\xe0X", "an overlong C1 leaves no continuation bytes");
+    return 0;
+}
+
+# Each segment is filtered alone, so the seam between two must be safe too.
+fn test_sanitize_seam_between_segments(): i64 {
+    var a = sanitize_segment_output("A\xc2");
+    var b = sanitize_segment_output("\x9b31mB");
+    var joined = alloc(strlen(a) + strlen(b) + 1);
+    memcpy(joined, a, strlen(a));
+    memcpy(joined + strlen(a), b, strlen(b) + 1);
+    assert_eq(_sanitized_ok(joined, strlen(joined)), 1, "no C1 pair forms across two segments");
+    return 0;
+}
+
+# Unicode's table of well-formed sequences, at each edge.
+fn test_utf8_seq_len_bounds(): i64 {
+    assert_eq(_utf8_seq_len("\xc2\x80", 2), 2, "U+0080 is the first two-byte value");
+    assert_eq(_utf8_seq_len("\xc1\xbf", 2), 0, "C1 lead bytes are overlong");
+    assert_eq(_utf8_seq_len("\xe0\xa0\x80", 3), 3, "U+0800 is the first three-byte value");
+    assert_eq(_utf8_seq_len("\xe0\x9f\xbf", 3), 0, "below it is overlong");
+    assert_eq(_utf8_seq_len("\xed\x9f\xbf", 3), 3, "U+D7FF is the last before the surrogates");
+    assert_eq(_utf8_seq_len("\xed\xa0\x80", 3), 0, "a surrogate is not a sequence");
+    assert_eq(_utf8_seq_len("\xf0\x90\x80\x80", 4), 4, "U+10000 is the first four-byte value");
+    assert_eq(_utf8_seq_len("\xf0\x8f\xbf\xbf", 4), 0, "below it is overlong");
+    assert_eq(_utf8_seq_len("\xf4\x8f\xbf\xbf", 4), 4, "U+10FFFF is the last value");
+    assert_eq(_utf8_seq_len("\xf4\x90\x80\x80", 4), 0, "past it is not a sequence");
+    assert_eq(_utf8_seq_len("\xf5\x80\x80\x80", 4), 0, "0xF5 is no lead byte");
+    assert_eq(_utf8_seq_len("\xe2\x82\xac", 2), 0, "a sequence cut by the length is not one");
+    assert_eq(_utf8_seq_len("\xe2\x82\x41", 3), 0, "nor is one with a bad last byte");
+    return 0;
+}
+
+fn test_sanitized_len_takes_a_failed_sanitize(): i64 {
+    assert_eq(sanitized_len(0), 0, "a refused alloc is nothing to paint, not a fault");
+    assert_eq(sanitized_len("abc"), 3, "otherwise it is strlen");
+    return 0;
+}
+
+fn test_sanitize_keeps_text(): i64 {
+    _streq_or_dump(sanitize_segment_output("caf\xc3\xa9 \xe2\x82\xac \xf0\x9f\x98\x80"), "caf\xc3\xa9 \xe2\x82\xac \xf0\x9f\x98\x80", "UTF-8 text is untouched");
+    _streq_or_dump(sanitize_segment_output("\xc2\xa0\xe0\xa0\x80\xef\xbf\xbf"), "\xc2\xa0\xe0\xa0\x80\xef\xbf\xbf", "the edges of each UTF-8 length survive");
+    _streq_or_dump(sanitize_segment_output("\xe2\x80\x9c"), "\xe2\x80\x9c", "0x9C is fine as a real continuation byte");
+    _streq_or_dump(sanitize_segment_output("caf\xe9"), "caf\xe9", "a Latin-1 name still renders");
+    return 0;
+}
+
 # ---- rustup_env ----
 
 # Same shape as node_env's empty-outside-project guard.
@@ -1726,16 +2208,24 @@ fn test_cache_get_refuses_symlink(): i64 {
     cache_put("tst_nofollow", "/cwd/nofollow", "legit", 5);
     var path = _cache_path("tst_nofollow", "/cwd/nofollow");
 
-    # Replace the cache file with a symlink. unlink + symlink as a pair
-    # is the canonical attacker move.
+    # Replace the cache file with a symlink. unlink + symlink as a pair is the
+    # canonical attacker move. The target is a valid entry for this cwd, so the only
+    # thing that can refuse it is O_NOFOLLOW: the key inside the entry would pass.
+    var target = "/tmp/cmdrs-test-nofollow-target";
+    var key = _cache_key_hex("/cwd/nofollow");
+    var entry = alloc(CACHE_KEY_DIGITS + 5);
+    memcpy(entry, key, CACHE_KEY_DIGITS);
+    memcpy(entry + CACHE_KEY_DIGITS, "forge", 5);
+    file_write_all(target, entry, CACHE_KEY_DIGITS + 5);
     assert_eq(syscall(SYS_UNLINK, path), 0, "unlink legitimate cache file");
-    assert_eq(syscall(88, "/etc/passwd", path), 0, "create symlink to /etc/passwd");   # SYS_SYMLINK
+    assert_eq(syscall(88, target, path), 0, "create symlink to a forged entry");   # SYS_SYMLINK
 
     var v = cache_get("tst_nofollow", "/cwd/nofollow", 60);
     assert_eq(v, 0, "cache_get on a symlink refuses (O_NOFOLLOW → 0)");
 
     # Cleanup the symlink so the test is hermetic.
     syscall(SYS_UNLINK, path);
+    syscall(SYS_UNLINK, target);
     return 0;
 }
 
@@ -2076,12 +2566,41 @@ fn main(): i64 {
     test_config_bool_with_inline_comment();
     test_config_crlf_bool();
     test_config_crlf_divider();
+    test_cache_path_is_a_bounded_slot();
+    test_cache_slot_collision_is_a_miss();
+    test_cache_fifo_entry_does_not_hang();
+    test_cache_future_mtime_is_a_miss();
+    test_cache_oversized_entry_is_a_miss();
+    test_cache_failed_rename_leaves_no_temp();
+    test_cache_put_survives_file_size_limit();
+    test_shellout_reap_does_not_block();
+    test_shellout_stderr_closed_at_exec();
+    test_shellout_stdout_closed_at_exec();
+    test_shellout_survives_stop_and_continue();
+    test_find_ancestor_depth_cap();
+    test_find_ancestor_refuses_relative_paths();
+    test_rustup_env_comment_before_table();
+    test_rustup_env_channel_must_be_a_string();
+    test_vcs_clean_message_is_a_whole_line();
+    test_thp_opt_out();
+    test_config_over_cap_falls_back_to_defaults();
+    test_config_at_cap_still_loads();
     test_cache_key_separates_djb2_collisions();
     test_cache_key_is_fnv1a64();
     test_config_vcs_budget_ms();
     test_theme_powerline();
     test_rustup_env_parse_toml();
     test_rustup_env_precedence();
+    test_sanitize_invariant_exhaustive();
+    test_sanitize_c1_spellings();
+    test_sanitize_seam_between_segments();
+    test_sanitize_keeps_text();
+    test_utf8_seq_len_bounds();
+    test_sanitized_len_takes_a_failed_sanitize();
+    test_rustup_env_plain_cap();
+    test_find_ancestor_with_either();
+    test_find_ancestor_walks_every_parent();
+    test_trimmed_copy();
     test_rustup_env_hostile_files();
     test_config_literal_strings();
     test_config_unterminated_string_keeps_later_keys();

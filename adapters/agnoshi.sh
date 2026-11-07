@@ -35,8 +35,7 @@
 #      stdout as the prompt string. The captured output may contain
 #      raw ANSI SGR escapes; agnoshi is responsible for any width-
 #      accounting markers its readline-equivalent needs (cf. bash's
-#      \001..\002 wrap in `bash.sh`). zsh / agnoshi can consume the
-#      raw escapes; bash needs wrapping.
+#      \001..\002 wrap in `bash.sh`, and the %{ %} wrap in `zsh.sh`).
 #
 #      AUDIT F-12 (see docs/audit/2026-05-18-audit.md): the captured
 #      bytes are a LITERAL PROMPT STRING. agnoshi MUST NOT pass them
@@ -47,7 +46,7 @@
 #      attacker-controlled segment content containing %-, $-, or
 #      backtick sequences becomes RCE if the consumer re-expands.
 #      The bytes go straight to the terminal. cmdrs's own audit-F-1
-#      sanitization closes the C0/escape side; the no-re-expand rule
+#      sanitization closes the control-byte side; the no-re-expand rule
 #      closes the shell-syntax side.
 #   4. Right-prompt (optional, if agnoshi grows an RPROMPT surface):
 #      agnoshi runs `$AGNOSHI_PROMPT_CMD --side=right` and renders

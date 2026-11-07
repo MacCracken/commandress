@@ -36,3 +36,22 @@ fn parse_last_exit(s): i64 {
     if (v > 65535) { return 65535; }
     return v;
 }
+
+# Keep this process off transparent huge pages. main() must call it before the first
+# heap touch.
+#
+# Audit 2026-11-06, O-1. stdlib `alloc` maps a 256 MB chunk, which the kernel aligns
+# to a huge-page boundary, so with THP set to `always` the first touch zeroes a whole
+# 2 MB page for the few KB a render uses. `args_init`'s 2 MB buffer then moves the bump
+# pointer into a second one. That was 104 us of a 400 us cold start, more than
+# everything else this program does put together.
+#
+# PR_SET_THP_DISABLE is 41. It is best effort: an EINVAL changes nothing. The setting
+# survives fork and exec, so `sit` runs without THP too, which suits a process that
+# gets single-digit milliseconds.
+fn thp_opt_out(): i64 {
+    #ifdef CYRIUS_TARGET_LINUX
+    syscall(SYS_PRCTL, 41, 1, 0, 0, 0);
+    #endif
+    return 0;
+}

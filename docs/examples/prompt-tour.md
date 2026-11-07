@@ -166,15 +166,14 @@ source /path/to/commandress/adapters/zsh.sh    # zsh  — see docs/guides/zsh-se
 source /path/to/commandress/adapters/bash.sh   # bash — see docs/guides/bash-setup.md
 ```
 
-> **Do not hand-roll `PROMPT='$(...)'` with single quotes.** That form only works with
-> zsh's `prompt_subst`, which makes the shell run command substitution on the prompt at
-> every redraw — and `cmdrs` output contains bytes chosen by whatever repository you are
-> standing in. That is arbitrary command execution, confirmed and fixed in v1.1.6
-> ([2026-08-26 audit](../audit/2026-08-26-audit.md), finding P-01). This tour recommended
-> exactly that pattern until the 2026-08-26 doc sweep. The adapters assign a
-> fully-rendered string in a `precmd` / `PROMPT_COMMAND` hook instead, which needs no
-> prompt expansion at all. If you must inline it, copy the vetted paste from the setup
-> guides — both marked-REQUIRED lines included.
+> **Do not hand-roll a prompt hook.** `cmdrs` output contains bytes chosen by whatever
+> repository you are standing in, so those bytes must never sit in `PROMPT` or `PS1`, where
+> the shell can execute them. The adapters keep the bytes in a variable and set the prompt
+> variable to a fixed reference, which is safe in every option state
+> ([ADR 0011](../adr/0011-prompt-holds-a-reference-not-the-bytes.md)). This tour once
+> recommended a pattern that was not, and the fix that replaced it was itself incomplete
+> ([2026-11-06 audit](../audit/2026-11-06-audit.md), T-01). If you must inline it, copy the
+> vetted paste from the setup guides, with every line marked REQUIRED.
 
 ### Smoke-testing the binary directly
 

@@ -104,6 +104,9 @@ var CFG_RIGHT_SEPARATOR_GLYPH = 256;
 var CFG_VCS_BUDGET_MS = 264;
 var CFG_SIZE = 272;
 
+# Largest ~/.commandress we will parse, in bytes.
+enum ConfigFile { CONFIG_CAP = 65536; }
+
 # Per-redraw budget for the `sit status` shellout. The healthy-host measurement was
 # ~1.8 ms (CHANGELOG [0.3.0]); 5 ms gives ~2.5x margin while staying inside the 5 ms
 # total prompt budget. `[[segments.vcs]] budget_ms` overrides it for a slow disk or a
@@ -285,6 +288,7 @@ fn _str_array(s): i64 {
 # first block with something in it wins.
 fn _section_pairs(sections, name): i64 {
     var secs = bayan_toml_get_sections_by_cstr(sections, name);
+    if (secs == 0) { return 0; }                        # a refused alloc, not "no match"
     var n = vec_len(secs);
     var i = 0;
     while (i < n) {
@@ -525,10 +529,19 @@ fn config_load(path): i64 {
     var c = config_default();
     if (path == 0) { return c; }
 
-    var buf = alloc(65536);
+    # One byte past the cap, so a file over it is seen rather than cut. A cut file
+    # parses: the keys past the cut vanish silently, and a cut inside a string blanks
+    # that value (audit 2026-11-06, D-03).
+    var buf = alloc(CONFIG_CAP + 1);
+    if (buf == 0) { return c; }
     # audit A-01: a FIFO at ~/.commandress hung the prompt forever.
-    var n = read_regular_file(path, buf, 65536);
+    var n = read_regular_file(path, buf, CONFIG_CAP + 1);
     if (n <= 0) { return c; }
+    if (n > CONFIG_CAP) {
+        var cap_msg = "warning: config is over 64 KB (using the defaults)\n";
+        syscall(SYS_WRITE, STDERR, cap_msg, strlen(cap_msg));
+        return c;
+    }
 
     var doc = bayan_cyml_parse(buf, n);
     var hdr = bayan_cyml_doc_header(doc);

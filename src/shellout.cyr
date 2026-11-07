@@ -13,13 +13,39 @@
 #            nothing before exiting cleanly)
 #   -1     — system error during setup (pipe / fork / epoll failed);
 #            caller should treat as empty render
-#   -2     — child exceeded `budget_ms`; SIGKILL'd and reaped; caller
-#            should treat as empty render
+#   -2     — child exceeded `budget_ms`; SIGKILL'd; caller should treat as
+#            empty render
 #
 # `argv` and `envp` are caller-owned NULL-terminated arrays of cstring
 # pointers — this fn never allocates them. `budget_ms` is clamped to a
 # 1 ms minimum because epoll_wait timeout is ms-resolution; sub-ms
 # budgets land in M6 alongside parallel segment evaluation.
+
+# Reap a child we have killed, without waiting for it.
+#
+# SIGKILL is not synchronous. A child stuck on a wedged filesystem, or held by a
+# ptracer, stays unreapable for as long as that lasts, and a blocking wait here had no
+# deadline: the budget is enforced by epoll_wait, which we have already left. A-02
+# closed this for a live child and left it open for one that will not finish dying
+# (audit 2026-11-06, R-01).
+#
+# So: a few tries over about half a millisecond, which is what a normal exit takes, and
+# then give up. An unreaped child goes to init when `cmdrs` exits a moment later.
+fn _shellout_reap(pid): i64 {
+    #ifndef CYRIUS_TARGET_AGNOS
+    var status[8];
+    var nap[16];
+    store64(&nap, 0);
+    store64(&nap + 8, 100000);                          # 100 us
+    var tries = 0;
+    while (tries < 5) {
+        if (sys_waitpid(pid, &status, WNOHANG) != 0) { return 1; }
+        syscall(SYS_NANOSLEEP, &nap, 0);
+        tries = tries + 1;
+    }
+    #endif
+    return 0;
+}
 
 fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
     # AGNOS has no userland fork/exec-of-external-binaries yet — that lands with
@@ -46,14 +72,21 @@ fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
     }
     if (pid == 0) {
         sys_close(rfd);
-        sys_dup2(wfd, 1);
-        sys_close(wfd);
+        # Either fd can already be the one we want, when cmdrs started with stdout
+        # or stderr closed. dup2 onto itself does nothing, so the close that follows
+        # would then close the very fd we wanted (audit 2026-11-06, R-02).
+        if (wfd != 1) {
+            sys_dup2(wfd, 1);
+            sys_close(wfd);
+        }
         # O_WRONLY = 1 (mirrors lib/process.cyr::run_capture's literal;
         # io.cyr's constants are a different dependency footgun).
         var devnull = sys_open("/dev/null", 1, 0);
         if (devnull >= 0) {
-            sys_dup2(devnull, 2);
-            sys_close(devnull);
+            if (devnull != 2) {
+                sys_dup2(devnull, 2);
+                sys_close(devnull);
+            }
         }
         sys_execve(cmd_path, argv, envp);
         sys_exit(127);
@@ -69,8 +102,7 @@ fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
     if (ep < 0) {
         sys_kill(pid, SIGKILL);
         sys_close(rfd);
-        var stbuf_err[8];
-        sys_waitpid(pid, &stbuf_err, 0);
+        _shellout_reap(pid);
         return 0 - 1;
     }
     var ev = epoll_event_new(EPOLLIN, rfd);
@@ -90,8 +122,13 @@ fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
         } else {
             var nev = sys_epoll_wait(ep, events_buf, 1, remaining);
             if (nev < 0) {
-                sys_err = 1;
-                done = 1;
+                # EINTR is -4. A stop and continue raises it even with no handler
+                # installed. The loop re-reads the clock, so the budget still holds
+                # (audit 2026-11-06, R-03).
+                if (nev != (0 - 4)) {
+                    sys_err = 1;
+                    done = 1;
+                }
             } else {
                 if (nev == 0) {
                     timed_out = 1;
@@ -101,8 +138,10 @@ fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
                     if (space <= 0) { done = 1; }
                     else {
                         var n = sys_read(rfd, buf + total, space);
-                        if (n <= 0) { done = 1; }
-                        else { total = total + n; }
+                        if (n > 0) { total = total + n; }
+                        else {
+                            if (n != (0 - 4)) { done = 1; }
+                        }
                     }
                 }
             }
@@ -141,13 +180,11 @@ fn shellout_capture(cmd_path, argv, envp, budget_ms, buf, buflen): i64 {
     # whether we are willing to hang.
     sys_kill(pid, SIGKILL);
 
-    # close(rfd) still precedes waitpid — belt and braces for the buffer-full
-    # case, and it releases the fd before we block. Pinned by
-    # tests/commandress.tcyr::test_shellout_oversized_child_does_not_hang and
-    # ::test_shellout_eof_with_live_child_does_not_hang.
+    # close(rfd) still precedes the reap — belt and braces for the buffer-full
+    # case. Pinned by tests/commandress.tcyr::test_shellout_oversized_child_does_not_hang
+    # and ::test_shellout_eof_with_live_child_does_not_hang.
     sys_close(rfd);
-    var stbuf[8];
-    sys_waitpid(pid, &stbuf, 0);
+    _shellout_reap(pid);
 
     if (sys_err == 1) { return 0 - 1; }
     if (timed_out == 1) { return 0 - 2; }

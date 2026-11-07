@@ -11,79 +11,28 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Without this block a direct run takes the repository's default token scope.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned by commit SHA, because a tag can be moved. `persist-credentials: false`
+      # keeps the token out of .git/config, where every later step could read it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
 
       - name: Install Cyrius toolchain
-        # The cyrius.cyml `[package].cyrius` pin is the single source of truth
-        # for the toolchain version (CLAUDE.md "no hardcoded toolchain versions
-        # in CI YAML") — read the pin and hand it to the upstream installer.
-        #
-        # Do NOT hand-roll this by untarring the release asset into
-        # $HOME/.cyrius/{bin,lib}: that is the pre-6.5 layout. From 6.5.x
-        # `cyrius deps` resolves the stdlib snapshot from
-        # $HOME/.cyrius/versions/$CYRIUS_VERSION/lib and hard-fails with
-        # "cyrius.cyml pins version X but it is not installed at ... expected:
-        # ~/.cyrius/versions/<ver>/lib/" if only the flattened dirs exist. The
-        # installer lays out versions/<v>/{bin,lib} and symlinks bin/ + lib/ at
-        # it, and additionally does SHA256 + signature verification the
-        # hand-rolled block skipped. Same pattern as darshana / patra / libro.
-        #
-        # The installer is fetched from the PINNED VERSION TAG, not from `main`
-        # (audit 2026-08-26, P-07). Fetching an executable script from a moving
-        # branch and piping it to sh means every CI run executes whatever that
-        # branch says at that moment — so a bad commit on cyrius `main`, or a
-        # compromise of the account hosting it, reaches this workflow's runner
-        # and its token. The tag is the same one `[package].cyrius` already
-        # pins, so the installer now matches the toolchain it installs and a
-        # change to `main` cannot alter our builds.
-        #
-        # Residual risk, stated rather than hidden: git tags are mutable, so a
-        # force-pushed tag would still move under us. A commit SHA would be
-        # immutable; the tag is the same trust level the [deps.*] pins already
-        # use, and it is a large improvement over `main`.
-        run: |
-          set -e
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf "https://raw.githubusercontent.com/MacCracken/cyrius/$CYRIUS_VERSION/scripts/install.sh" | \
-            CYRIUS_VERSION="$CYRIUS_VERSION" sh
-          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+        # The script reads the pin in cyrius.cyml and says why it is shaped as it is.
+        run: scripts/install-toolchain.sh
 
-      - name: Verify toolchain layout
-        # Guards the exact failure this replaced: a successful-looking install
-        # that leaves no versions/<v>/lib snapshot, so every later cyrius
-        # invocation dies on dep resolution instead of here.
-        run: |
-          set -e
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" \
-            || { echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"; exit 1; }
-          cyrius version
-          echo "toolchain ok: pin $CYRIUS_VERSION, snapshot present"
-
-      - name: Resolve dependencies
-        # Resolves the declared stdlib surface plus [deps.cmdit] (1.1.5, ADR
-        # 0008) — commandress's one first-party AGNOS source dep, git-cloned at
-        # its tag and vendored into lib/. This step needs network access for
-        # that clone. The vendored stdlib snapshot itself is refreshed by
-        # `cyrius lib sync --full` at release time, not here.
-        run: cyrius deps
-
-      - name: Verify the lock is honest
-        # cyrius.lock is committed, and this fails when it disagrees with a clean
-        # resolution of the tags. It was written for a `path = "../cmdit"` override,
-        # which silently beat its tag until cyrius 6.7.6; that can no longer happen
-        # by accident. See docs/architecture/003-cyrius-lock-shape.md.
-        #
-        # The comparison lives in a script because the first version of this step
-        # was an inline `git diff --exit-code -- cyrius.lock` and it false-
-        # positived on its first run: `cyrius deps` does not emit lock entries in
-        # a stable order across machines. See the header of lock-check.sh.
+      - name: Verify lib/ and the lock regenerate from the pins
+        # Works on HEAD in a throwaway worktree, so it does not matter what ran
+        # before it. See the header of lock-check.sh and architecture/003.
         run: scripts/lock-check.sh
 
       - name: Build
@@ -107,18 +56,32 @@ jobs:
         # binary that ships, so a DCE miscompile could not show up here. ADR 0010.
         run: CYRIUS_DCE=1 cyrius test tests/commandress.tcyr
 
-      - name: Cold-start budget gate (≤ 5 ms)
-        # `cyrius bench` runs the full bench suite; the gate script
-        # greps for the `render_prompt` line, normalises its avg to
-        # µs, and fails CI if it exceeds 5000 µs (the budget set by
-        # architecture/001-prompt-render-budget.md). Override with
-        # `BUDGET_US` if a tighter / looser bound is wanted locally.
-        # Bench timings on CI runners are slower than dev hardware —
-        # 5 ms keeps headroom over the typical ~10 µs measured locally.
-        # `set -o pipefail` (audit A-13): GitHub's default shell is `bash -e`,
-        # NOT pipefail, so the pipeline's status is bench-gate's alone. A
-        # `cyrius bench` that emitted a valid render_prompt line and THEN died
-        # would be reported green.
+      - name: Run the shipped binary
+        # The suite never runs src/main.cyr. This does, and it is the only step that
+        # measures a real cold start. See the header of smoke.sh.
+        run: scripts/smoke.sh build/cmdrs
+
+      - name: Prove the adapters treat the prompt as data
+        # zsh is not on the runner image, and a missing shell fails the check.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends zsh
+          scripts/adapter-check.sh build/cmdrs
+
+      - name: Build for agnos
+        # This target has no runner here, so compiling it is the check. It has broken
+        # before on names that exist only on Linux.
+        run: cyrius build --agnos src/main.cyr build/cmdrs-agnos
+
+      - name: Render budget gate (≤ 5 ms)
+        # `cyrius bench` runs the full bench suite; the gate script greps for the
+        # `render_prompt` line, normalises its avg to µs, and fails CI if it exceeds
+        # 5000 µs (architecture/001-prompt-render-budget.md). This is an in-process
+        # figure with no exec in it, so it says nothing about cold start: smoke.sh
+        # measures that. Override with `BUDGET_US` for a local run.
+        # `set -o pipefail` (audit A-13): GitHub's default shell is `bash -e`, NOT
+        # pipefail, so the pipeline's status would be bench-gate's alone, and a
+        # `cyrius bench` that emitted a valid line and THEN died would read green.
         run: |
           set -o pipefail
-          cyrius bench tests/commandress.bcyr | scripts/bench-gate.sh
+          CYRIUS_DCE=1 cyrius bench tests/commandress.bcyr | scripts/bench-gate.sh

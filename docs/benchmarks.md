@@ -15,7 +15,14 @@
 | Render + final write | ≤ 250 µs | bundled into `render_prompt` ~10.9 µs |
 | **Headroom** | ~500 µs | many ms |
 
-The 5 ms gate is enforced in CI via [`scripts/bench-gate.sh`](../scripts/bench-gate.sh) (added in v0.7.0 / M6) — `cyrius bench` output piped through, fails the build if `render_prompt` avg > 5000 µs. Override per-run: `BUDGET_US=3000 scripts/bench-gate.sh`.
+Two CI steps enforce this, and they measure different things:
+
+- [`scripts/smoke.sh`](../scripts/smoke.sh) runs the shipped binary and fails on a **real cold start** over 5 ms, process exec included. This is the only gate that sees exec, and it has done so since 1.2.3. Override with `SMOKE_BUDGET_US`.
+- [`scripts/bench-gate.sh`](../scripts/bench-gate.sh) fails if the in-process `render_prompt` figure exceeds 5000 µs. It cannot see exec or startup: at 1.2.2 a binary that stalled for 200 ms at startup printed `OK: render_prompt 12.415us`. Override with `BUDGET_US`.
+
+**Real cold start at 1.2.3**, on this host with THP set to `always`: **295 µs** with no config, **485 µs** with the largest theme. An empty static binary takes about 190 µs here, so about 105 µs of that is this program. Interleaved medians of 3,000 pairs.
+
+**THP matters more than any code path.** The allocator's 256 MB chunk is aligned to a huge page, so on an `always` host the first heap touch zeroed 2 MB, and `args_init`'s 2 MB buffer moved into a second page. That was 107 µs, more than the rest of the program put together, until `thp_opt_out()` at 1.2.3. On a `madvise` host it never applied.
 
 ## Per-segment
 

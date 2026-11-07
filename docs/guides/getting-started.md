@@ -74,6 +74,7 @@ Missing config file → baked-in defaults. Unknown field → warning on stderr, 
 continues with defaults for that field. Every knob is listed in
 [`../examples/commandress.cyml.example`](../examples/commandress.cyml.example); drop-in
 palettes live in [`../themes/`](../themes/).
+A config over 64 KB warns and uses the defaults, rather than being cut part-way.
 
 ### Writing values
 

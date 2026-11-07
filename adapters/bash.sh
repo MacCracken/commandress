@@ -13,7 +13,9 @@
 #   1. Resolves `cmdrs` once (cached in $_CMDRS) so per-prompt redraw
 #      doesn't re-walk PATH. Override with COMMANDRESS_BIN if needed.
 #   2. Hooks PROMPT_COMMAND to capture $? into $AGNOSHI_LAST_EXIT and
-#      reassign PS1 from `cmdrs` output.
+#      keep the rendered bytes in $_cmdrs_ps1. PS1 is a fixed reference to
+#      that variable. See the security note below: this is what makes the
+#      prompt data rather than a script.
 #   3. Wraps ANSI SGR sequences in \001..\002 markers so bash's prompt-
 #      width accounting treats them as zero-width. Without this, lines
 #      wrap to the wrong column because bash counts colour escape
@@ -35,65 +37,80 @@ if [[ -z "$_CMDRS" ]]; then
   return 1
 fi
 
-# Wrap each ANSI SGR escape (`\x1b[...m`) in \001..\002 so bash's
-# readline-width logic treats them as zero-width. Without this, the
-# cursor on long commands jumps to the wrong column. The pattern
-# matches only SGR (terminating `m`) — sufficient for cmdrs's current
-# emit surface.
-_cmdrs_bash_render() {
-  "$_CMDRS" "$@" | sed $'s/\x1b\\[[0-9;]*m/\x01&\x02/g'
+_cmdrs_ps1=''
+
+# $1 with each ANSI SGR escape (`\x1b[...m`) wrapped in \001..\002, in $REPLY, so
+# readline's width logic treats it as zero-width.
+#
+# An `ESC [` need not open an SGR. The sanitizer removes ESC from segment text, but
+# `trailer`, `separator` and the glyphs are the user's own and may hold any sequence,
+# such as a cursor shape, so the loop passes anything else through. Every path through
+# it shortens `rest`, or a config like that would hang every new shell.
+#
+# Pure bash, because a `sed` here cost a process on every redraw and was found through
+# $PATH, so `.` ahead of /usr/bin ran a `sed` from the repo the user had just entered
+# (audit 2026-11-06, T-04). The patterns are all ASCII after ESC, which no multibyte
+# encoding uses as a lead byte, so this needs no locale of its own. `=~` would be
+# shorter, and it would overwrite a user's BASH_REMATCH between their commands.
+_cmdrs_bash_wrap() {
+  local rest=$1 head params
+  REPLY=''
+  while [[ $rest == *$'\033['* ]]; do
+    head=${rest%%$'\033['*}
+    rest=${rest#"$head"$'\033['}
+    params=${rest%%[!0-9\;]*}
+    if [[ ${rest:${#params}:1} == m ]]; then
+      REPLY+=$head$'\001\033['$params$'m\002'
+      rest=${rest:${#params}+1}
+    else
+      REPLY+=$head$'\033['
+    fi
+  done
+  REPLY+=$rest
 }
 
-# SECURITY — bash expands PS1 with `promptvars` ON BY DEFAULT, which means
-# parameter expansion AND command substitution are performed on the prompt
-# string at every redraw.
+# SECURITY — the prompt is data, and this adapter does not depend on an option.
 #
-# `cmdrs` output carries bytes chosen by whatever repository the user is
-# standing in — branch names, `.python-version` / `.nvmrc` /
-# `rust-toolchain` / `VERSION` contents. `cmdrs` strips control bytes
-# (audit F-1), but `$`, `(` and `)` are ordinary printable characters and
-# pass through as text, correctly so.
+# `cmdrs` output carries bytes chosen by whatever repository the user is standing
+# in: a branch name, a directory name, `.python-version` / `.nvmrc` /
+# `rust-toolchain` / `VERSION` contents. `cmdrs` strips control bytes (audit F-1),
+# but `$`, `(`, `)`, `` ` `` and `\` are ordinary printable characters and pass
+# through as text, correctly.
 #
-# With promptvars left at its default, a repo shipping a `.python-version`
-# containing `$(...)` therefore ran that command on every redraw. Verified
-# as arbitrary command execution in the 2026-08-26 audit (P-01) and fixed
-# here by turning the option off: the prompt is DATA, not a script.
+# Bash handles PS1 in two stages, so those bytes must never be in PS1 itself. They
+# sit in a variable, and PS1 is the fixed text `${_cmdrs_ps1}`:
 #
-# Same class as CVE-2021-3934 / CVE-2021-45444; `adapters/agnoshi.sh`
-# states the same rule for the agnoshi contract (audit F-12).
+#   1. Backslash decoding runs first and is unconditional. It sees only the
+#      fixed text, so a repo's six characters `\e[31m` cannot become a real ESC
+#      (audit 2026-08-26, A-04, which used to need every `\` doubled here).
+#   2. Expansion runs next. It expands the reference once and does not re-parse
+#      the value, so a repo's `$(...)` is text (audit 2026-08-26, P-01).
 #
-# Scoped caveat, stated rather than hidden: `shopt` is shell-global, not
-# per-prompt, so sourcing this adapter turns promptvars off for the whole
-# session. A user whose own PS1 relies on `\$(date)`-style substitution
-# would lose that. That is the correct trade — the alternative is leaving
-# an execution channel open — and it is called out in adapters/README.md.
-shopt -u promptvars
-
-# SECOND, INDEPENDENT channel: bash decodes backslash escapes in PS1
-# (audit 2026-08-26, A-04 · HIGH). This is NOT covered by `shopt -u promptvars`
-# — prompt backslash decoding is unconditional.
+# P-01 used to rely on `shopt -u promptvars` with the bytes in PS1. POSIX mode
+# ignores that option, so `set -o posix`, or just `POSIXLY_CORRECT=1`, brought the
+# command execution back, and so did any later `shopt -s promptvars` (audit
+# 2026-11-06, T-02). So this adapter now turns the option ON, every redraw. If
+# something turns it off afterwards the prompt shows the text `${_cmdrs_ps1}`: ugly,
+# and safe.
 #
-# `cmdrs` strips control BYTES, correctly. But `\` and `e` are printable, so a
-# repo shipping `.python-version` containing the six characters `\e[31m` passes
-# the F-1 sanitizer untouched — and bash's prompt decoder then turns `\e` into a
-# real ESC (0x1b) and `\a` into a real BEL (0x07) inside the shell. The
-# sanitizer is bypassed by reconstructing the control byte on the far side of it.
-#
-# Verified: `cmdrs` emitted `v \ e [ 3 1 m R E D \ a` with no 033 or 007 in it;
-# after `${PS1@P}` the same string contained `033 [ 3 1 m` and `\a`.
-#
-# Doubling `\` -> `\\` makes the decoder emit one literal backslash and stop,
-# so the escape never forms. Applied to the RENDERED bytes only — the \001/\002
-# readline markers added below are raw control bytes, not backslash sequences,
-# so they are unaffected.
+# Same class as CVE-2021-3934 / CVE-2021-45444; git's `git-prompt.sh` uses the same
+# indirection for branch names. `adapters/agnoshi.sh` states the rule for the
+# agnoshi contract (audit F-12).
 _cmdrs_prompt_command() {
   # First statement — captures $? from the user's last command.
   local exit_code=$?
   export AGNOSHI_LAST_EXIT=$exit_code
-  local _raw
-  _raw=$(_cmdrs_bash_render)
-  PS1=${_raw//\\/\\\\}
+  local REPLY
+  _cmdrs_bash_wrap "$("$_CMDRS")"
+  _cmdrs_ps1=$REPLY
+  # Single quotes, deliberately. Never put the rendered bytes in PS1 directly.
+  shopt -s promptvars
+  PS1='${_cmdrs_ps1}'
 }
 
-# Prepend our hook so other tools' PROMPT_COMMAND keeps running too.
-PROMPT_COMMAND="_cmdrs_prompt_command${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+# Prepend our hook so other tools' PROMPT_COMMAND keeps running too. Only once:
+# re-sourcing .bashrc would otherwise run it twice, and the second run sees $? = 0.
+case "$PROMPT_COMMAND" in
+  *_cmdrs_prompt_command*) ;;
+  *) PROMPT_COMMAND="_cmdrs_prompt_command${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
+esac

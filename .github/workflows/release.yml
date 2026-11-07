@@ -23,7 +23,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      # `persist-credentials: false` matters most here. checkout writes the token to
+      # .git/config by default, and this job then runs a remote installer and compiles,
+      # so with the default the write scope would reach every one of those steps.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
 
       - name: Verify version
         run: |
@@ -32,51 +37,34 @@ jobs:
           test "$FILE_VERSION" = "$TAG_VERSION" || { echo "VERSION ($FILE_VERSION) != tag ($TAG_VERSION)"; exit 1; }
 
       - name: Install Cyrius toolchain
-        # See ci.yml for the full rationale. Short version: do NOT hand-roll
-        # this by untarring the release asset into $HOME/.cyrius/{bin,lib} —
-        # that is the pre-6.5 layout, and from 6.5.x `cyrius deps` resolves the
-        # stdlib snapshot from $HOME/.cyrius/versions/$CYRIUS_VERSION/lib and
-        # hard-fails when only the flattened dirs exist. The upstream installer
-        # lays out versions/<v>/{bin,lib}, symlinks bin/ + lib/ at it, and
-        # verifies SHA256 + signature. The cyrius.cyml pin stays the single
-        # source of truth for the version.
-        #
-        # Installer fetched from the PINNED VERSION TAG, not `main` — see the
-        # matching note in ci.yml (audit 2026-08-26, P-07). This job runs with
-        # `contents: write`, so it is the one that most needs it.
-        run: |
-          set -e
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sSf "https://raw.githubusercontent.com/MacCracken/cyrius/$CYRIUS_VERSION/scripts/install.sh" | \
-            CYRIUS_VERSION="$CYRIUS_VERSION" sh
-          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+        # See the script for why it is shaped as it is. This job holds `contents:
+        # write`, so it is the one that most needs the pin checked.
+        run: scripts/install-toolchain.sh
 
-      - name: Verify toolchain layout
-        # Guards the exact failure this replaced: a successful-looking install
-        # that leaves no versions/<v>/lib snapshot, so every later cyrius
-        # invocation dies on dep resolution instead of here.
-        run: |
-          set -e
-          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
-          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" \
-            || { echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"; exit 1; }
-          cyrius version
-          echo "toolchain ok: pin $CYRIUS_VERSION, snapshot present"
+      - name: Verify lib/ and the lock regenerate from the pins
+        # This job builds the binary users download, and the CI gate's build does not
+        # carry over, so it gets its own check.
+        run: scripts/lock-check.sh
 
       - name: Build
         # Binary is `cmdrs`, not the repo name — see ci.yml for the rationale.
         run: |
-          cyrius deps
           mkdir -p build
           cyrius build src/main.cyr build/cmdrs
 
+      - name: Checksum
+        # GitHub's asset digest is only visible through the API. This one travels
+        # with the binary. The build is reproducible, so it can also be checked by
+        # rebuilding from the tag.
+        run: (cd build && sha256sum cmdrs > SHA256SUMS)
+
       - name: Create release
         # Audit 2026-08-26, A-10: pinned by commit SHA, not the mutable `v2`
-        # tag. This is the one step holding the `contents: write` token, so a
+        # tag. This is the one step handed the `contents: write` token, so a
         # retagged `v2` would run new third-party code against it. SHA is
         # v2 as resolved 2026-08-26; bump deliberately, not implicitly.
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: build/*

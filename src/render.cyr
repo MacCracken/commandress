@@ -244,7 +244,7 @@ fn render_prompt(cfg, ctx, side): i64 {
             # are stripped one branch below. Cheap to close, so close it.
             var safe_name = sanitize_segment_output(name);
             syscall(SYS_WRITE, STDERR, "warning: unknown segment '", 26);
-            syscall(SYS_WRITE, STDERR, safe_name, strlen(safe_name));
+            syscall(SYS_WRITE, STDERR, safe_name, sanitized_len(safe_name));
             syscall(SYS_WRITE, STDERR, "' (skipped)\n", 12);
         } else {
             var out = fncall2(fp, cfg, ctx);
@@ -255,7 +255,7 @@ fn render_prompt(cfg, ctx, side): i64 {
                 # attacker input) — saves a stray separator from the
                 # next segment.
                 var safe = sanitize_segment_output(out);
-                var safe_len = strlen(safe);
+                var safe_len = sanitized_len(safe);
                 if (safe_len > 0) {
                     var seg_bg = _bg_for(cfg, name);
                     if (painted == 1) {

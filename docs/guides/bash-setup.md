@@ -35,12 +35,12 @@ Open a new shell — or `exec bash` — and the prompt switches over.
 [`adapters/bash.sh`](../../adapters/bash.sh):
 
 1. Resolves `cmdrs` once at source time and caches it in `$_CMDRS`. Per-redraw cost is one `command -v` lookup at startup, not a PATH walk on every prompt.
-2. Turns **`promptvars` off** (`shopt -u promptvars`) and doubles every `\` in the rendered bytes before assigning `PS1` — both are security-critical, see the note below.
-3. Defines `_cmdrs_prompt_command`: captures `$?` into `$AGNOSHI_LAST_EXIT`, assigns `PS1` from `cmdrs` output.
-4. Wraps each ANSI SGR escape (`\x1b[...m`) in `\001..\002` markers so bash's readline-width accounting treats them as zero-width. Without this, lines wrap to the wrong column because bash counts colour bytes as visible characters.
+2. Defines `_cmdrs_prompt_command`: captures `$?` into `$AGNOSHI_LAST_EXIT` and keeps the rendered bytes in `$_cmdrs_ps1`.
+3. Wraps each ANSI SGR escape (`\x1b[...m`) in `\001..\002` markers so bash's readline-width accounting treats them as zero-width. Without this, lines wrap to the wrong column. It does this in pure bash, so a redraw starts no extra process.
+4. Sets `PS1` to a **fixed reference** to that variable, and turns `promptvars` on so the reference expands. This is what makes the prompt safe: see the security note below.
 5. Prepends to `PROMPT_COMMAND` so other tools' hooks keep running.
 
-The wrap step is bash-specific. zsh handles raw ANSI escapes in `$PROMPT` correctly without markers; bash needs `\001..\002` around non-printables. The adapter handles it via a one-line `sed` filter on `cmdrs` output — `cmdrs` itself stays shell-agnostic.
+zsh needs the same wrap, in its own `%{ %}` form. The adapters handle it; you don't need to think about it.
 
 ## Customize via `COMMANDRESS_BIN`
 
@@ -66,49 +66,81 @@ For curated theme drop-ins, see [`docs/themes/`](../themes/).
 ## Caveats
 
 - **`cmdrs` is single-invocation.** No persistent daemon. The 5 ms cold-start budget ([`docs/architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)) is what governs the per-segment surface; the M6 cache layer (v0.7.0) makes `vcs` cost ~7.6 µs cached.
-- **The `sed` wrap adds a small (~µs) cost per redraw.** Negligible against the prompt-budget envelope.
 
 ## Manual setup (no adapter)
 
 ```bash
-shopt -u promptvars          # REQUIRED — see the security note below
+_cmdrs_ps1=''
+_cmdrs_bash_wrap() {
+  local rest=$1 head params
+  REPLY=''
+  while [[ $rest == *$'\033['* ]]; do
+    head=${rest%%$'\033['*}
+    rest=${rest#"$head"$'\033['}
+    params=${rest%%[!0-9\;]*}
+    if [[ ${rest:${#params}:1} == m ]]; then
+      REPLY+=$head$'\001\033['$params$'m\002'
+      rest=${rest:${#params}+1}
+    else
+      REPLY+=$head$'\033['
+    fi
+  done
+  REPLY+=$rest
+}
 _cmdrs_prompt_command() {
   local exit_code=$?
   export AGNOSHI_LAST_EXIT=$exit_code
-  local _raw
-  _raw=$(cmdrs | sed $'s/\x1b\\[[0-9;]*m/\x01&\x02/g')
-  PS1=${_raw//\\/\\\\}       # REQUIRED — backslashes doubled
+  local REPLY
+  _cmdrs_bash_wrap "$(cmdrs)"
+  _cmdrs_ps1=$REPLY
+  shopt -s promptvars
+  PS1='${_cmdrs_ps1}'        # REQUIRED: single quotes, a reference, never the bytes
 }
-PROMPT_COMMAND="_cmdrs_prompt_command${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+case "$PROMPT_COMMAND" in
+  *_cmdrs_prompt_command*) ;;
+  *) PROMPT_COMMAND="_cmdrs_prompt_command${PROMPT_COMMAND:+; $PROMPT_COMMAND}" ;;
+esac
 ```
 
 Same behavior as the adapter; no path caching.
 
-## Security: the prompt string is data, not a script
+## Security: the prompt variable holds a reference, never the bytes
 
-**This applies to any hand-rolled setup, including the paste above.** Both lines marked
-REQUIRED are load-bearing, and bash needs *both* because they close different channels.
+**This applies to any hand-rolled setup, including the paste above.** The line marked
+REQUIRED is load-bearing.
 
-`cmdrs` renders bytes it does not choose — a `sit` branch name, the contents of
-`.python-version` / `.nvmrc` / `rust-toolchain` / `VERSION`, `$VIRTUAL_ENV`. A repository
-you merely `cd` into picks those bytes. `cmdrs` strips control bytes, but the characters
-below are printable and pass through as text, correctly so.
+`cmdrs` renders bytes it does not choose — a directory name, a `sit` branch name, the
+contents of `.python-version` / `.nvmrc` / `rust-toolchain` / `VERSION`, `$VIRTUAL_ENV`. A
+repository you merely `cd` into picks those bytes. `cmdrs` strips control bytes, but the
+characters below are printable and pass through as text, correctly so.
 
-- **`shopt -u promptvars`.** The option is **on by default**, and it applies parameter
-  expansion *and command substitution* to `PS1` at every redraw — so a repo shipping
-  `.python-version` containing `$(...)` executes it on every keystroke. Confirmed and
-  fixed in v1.1.6 ([2026-08-26 audit](../audit/2026-08-26-audit.md), finding P-01).
-- **Double `\` → `\\`.** Bash's prompt backslash decoding is **unconditional** — turning
-  `promptvars` off does not touch it. `\` and `e` are printable, so `\e[31m` survives the
-  sanitizer and bash then decodes it into a real ESC inside the shell, reconstructing the
-  control byte on the far side of the filter (finding A-04).
+Bash handles `PS1` in two stages, and the bytes must not be in `PS1` for either:
 
-Note the trade-off: `shopt` is shell-global, so this disables `promptvars` for the whole
-session. If your own `PS1` relies on `$(...)` expanding at render time, compute it in
-`PROMPT_COMMAND` instead.
+- **Backslash decoding** runs first and is unconditional. With the bytes in `PS1`, a repo's
+  six characters `\e[31m` become a real ESC inside the shell, past the sanitizer
+  ([2026-08-26 audit](../audit/2026-08-26-audit.md), A-04). With a reference, the decoder
+  only ever sees the fixed text.
+- **Expansion** runs next. With the bytes in `PS1`, a repo's `$(...)` runs at every redraw
+  (P-01). With a reference, bash expands it once and does not re-parse the value.
 
-To self-test any prompt setup: put `$(touch /tmp/x)` in a `.python-version`, `cd` there,
-press enter a few times, and confirm `/tmp/x` does not appear.
+**Do not rely on `promptvars` being off.** Until 1.2.3 this guide said to run
+`shopt -u promptvars`. POSIX mode ignores that option, so `set -o posix`, or just
+`POSIXLY_CORRECT=1`, brought the command execution back
+([2026-11-06 audit](../audit/2026-11-06-audit.md), T-02; [ADR 0011](../adr/0011-prompt-holds-a-reference-not-the-bytes.md)).
+The adapter now turns it on, and nothing depends on it. If something turns it off afterwards,
+the prompt shows the text `${_cmdrs_ps1}`, which is ugly and safe.
+
+Sourcing the adapter leaves `promptvars` on, which is bash's own default.
+
+To self-test any prompt setup, use a directory name, because the default segments do not
+read `.python-version`:
+
+```sh
+mkdir -p '/tmp/t/$(touch PWNED)' && cd '/tmp/t/$(touch PWNED)'
+```
+
+Press enter a few times, then run `ls`. Do this after `set -o posix` as well. No `PWNED` file
+may appear.
 
 ## Reverting to starship
 

@@ -76,6 +76,7 @@ fn _print_help(cli): i64 {
 }
 
 fn main(): i64 {
+    thp_opt_out();
     alloc_init();
     cache_init();
 
@@ -109,9 +110,9 @@ fn main(): i64 {
             return cmdit_version(cli, cmdrs_version());
         }
 
-        # Diagnose on stderr, then fall through: `cli_side_for` maps any
-        # non-clean parse to the left prompt rather than exiting non-zero, so a
-        # typo never blanks the user's prompt. Policy + rationale in src/cli.cyr.
+        # Diagnose on stderr, then fall through: a bad flag renders a prompt rather
+        # than exiting non-zero, so a typo never blanks it. Policy + rationale in
+        # src/cli.cyr.
         if (pr == CMDIT_RESULT_ERR) {
             cmdit_print_error(cli);
         }

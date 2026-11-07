@@ -6,6 +6,131 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-06
+
+A P(-1) audit, hardening, optimization and security sweep, and its repairs. Five independent reviewers
+read 1.2.2, the binary was attacked through real shells and a real VTE, and `--agnos` booted on a real
+kernel for the first time. The report is [`docs/audit/2026-11-06-audit.md`](docs/audit/2026-11-06-audit.md).
+No config field, flag or output format changed. The toolchain and deps are unchanged.
+
+**If you use a shipped adapter, update it.** Two of these are command execution from a directory name.
+
+### Security
+
+- **The zsh adapter ran commands whenever anything set `prompt_subst` (T-01, HIGH).** 1.1.6 stopped
+  setting the option itself, but left the rendered bytes in `PROMPT`, and zsh's own `promptinit` themes
+  set it. With stock `prompt adam2`, a directory named `$(touch PWNED)` ran that command on every redraw,
+  on the default config.
+- **The bash adapter did the same in POSIX mode (T-02, MEDIUM).** POSIX mode ignores `promptvars`, so
+  `set -o posix`, or just `POSIXLY_CORRECT=1`, undid 1.1.6's fix.
+  - Across 8 payloads in 12 option states on real shells, 31 of 96 cases ran a command on 1.2.2.
+  - **The fix**: the bytes no longer go in the prompt variable. They sit in another variable, and
+    `PROMPT` / `PS1` hold a fixed reference to it, which the shell expands once and does not re-parse.
+    In zsh, everything that touches the bytes runs under `emulate -L zsh`. See
+    [ADR 0011](docs/adr/0011-prompt-holds-a-reference-not-the-bytes.md). On 1.2.3, 0 of 120 cases.
+- **The C1 filter could be bypassed, and a repo could drive the terminal (T-03, HIGH).** Deleting a byte
+  could join its neighbours, so `C2 01 9B` came out as `C2 9B`, which is U+009B, CSI. A directory name
+  was enough. On real VTE, which is GNOME Terminal and others, one cleared the screen, set the title and
+  made the terminal type replies back into the shell. The filter now makes a promise about its
+  **output**, and an exhaustive test holds it to that over 813,615 strings. Two segments can no longer
+  form the pair between them either (T-07).
+- **A repo could hide its own dirty marker (T-11).** A file named `nothing to commit, working tree clean`
+  satisfied a substring scan of real `sit` output. It must now be a whole line.
+- **`bash.sh` ran `sed` through `$PATH` on every redraw (T-04).** With `.` ahead of `/usr/bin`, that was
+  a `sed` from the repo just entered. The wrap is now pure bash.
+- **The lock guard could be walked around (SC-01, SC-02).** One commit could drop a module from the
+  manifest, edit it and fix its lock line, and tampered code shipped from a green CI. A deleted lock
+  passed too. `scripts/lock-check.sh` now regenerates `lib/` and the lock from the pins in a throwaway
+  worktree and compares them. It caught all 37 bad states tried, where the old CI missed 14.
+- **The release token sat in `.git/config` while the job ran an installer (SC-04).** Both checkouts now use
+  `persist-credentials: false` and are pinned by SHA.
+- **Smaller CI hardening.** The toolchain pin must look like a version (SC-07), the installer is saved
+  before it runs (SC-06), `ci.yml` has a `permissions:` block (SC-10), and a comment that claimed signature
+  verification now says what happens (SC-05).
+
+### Fixed
+
+- **Long lines overwrote the prompt in zsh (T-08).** Colour was not marked zero-width, so zsh counted it
+  as columns, and typing past the true margin erased the prompt. It now wraps exactly as bash does.
+- **A wedged child could hang the prompt past its budget (R-01).** `waitpid` after `SIGKILL` had no
+  deadline, and a child stuck on a dead FUSE mount never finishes dying. One held `cmdrs` for 6 s against
+  a 5 ms budget. The reap now gives up after about half a millisecond.
+- **A very deep directory stalled every redraw (R-06).** 2,043 levels took four env segments 472 ms. Past
+  128 levels the walk no longer starts, and those segments render empty. Now 0.5 ms.
+- **`ulimit -f 0` killed `cmdrs` (R-04)**, cutting the prompt short and leaving a temp file per redraw.
+- **Starting with stderr or stdout closed broke the child (R-02).** `sit` ran with fd 2 closed, or lost all
+  its output.
+- **A stop and continue lost the branch (R-03)**, and the empty result was cached for the TTL.
+- **The cache could serve a clipped value (R-05)**, and a FIFO at an entry hung.
+- **A commented `rust-toolchain` printed itself as the channel (D-01).** This was a 1.2.2 bug. The format
+  now follows rustup's own rule: one line is legacy, anything else is TOML. A non-string `channel` renders
+  empty (D-02).
+- **Exhausting the heap crashed the render (M-01, M-02).** 1.1.6's guard moved the fault to `strlen(0)` on
+  the next line.
+- Sourcing an adapter twice no longer hooks it twice. In bash that lost the exit status.
+
+### Changed
+
+- **Sourcing an adapter now leaves prompt expansion on**: `prompt_subst` in zsh, `promptvars` in bash. This
+  reverses 1.1.6. If your own `PS2` or similar contains `$`, it will expand. If you copied a manual hook
+  from the guides, **replace it with the new paste**, because the old ones are vulnerable.
+- **A config over 64 KB now warns and uses the defaults (D-03).** It used to be cut at 64 KB and parsed, so
+  the keys past the cut vanished silently. The cap itself is unchanged.
+- **The cache holds 256 slots per segment, with the key inside the entry**, so it cannot grow without bound
+  ([ADR 0012](docs/adr/0012-cache-bounded-by-construction.md)). This replaces the planned eviction. Files
+  from older versions stay until reboot or `systemd-tmpfiles`.
+- **Bare bytes in `0x80..0x9F` are stripped from segment output**, since they are controls on an 8-bit
+  terminal and invalid in UTF-8. Valid UTF-8 and Latin-1 names render as before.
+- **`scripts/lock-check.sh` works on HEAD**, so it ignores uncommitted changes. `--no-resolve` is gone.
+- **Releases now carry `SHA256SUMS`** (SC-09).
+
+### Added
+
+- **CI runs the shipped binary at last (SC-03).** `scripts/smoke.sh` runs `build/cmdrs` on hostile input and
+  takes a real cold start. Until now the suite never ran `src/main.cyr`, so a binary that crashed on its
+  first line passed every gate.
+- **`scripts/adapter-check.sh`** proves the adapters on real zsh and bash, across 111 checks. They had no
+  regression test, which is how T-01 survived. It fails on the 1.2.2 adapters.
+- **`scripts/install-toolchain.sh`** replaces two duplicated workflow blocks.
+- CI compiles `--agnos`. The step misnamed "Cold-start budget gate" is now "Render budget gate".
+
+### Performance
+
+Cold start on this host, interleaved medians, 3,000 pairs. **The first two rows need THP set to `always`**,
+as on Arch and Fedora. On a host set to `madvise`, the 1.2.2 and 1.2.3 figures match.
+
+| | 1.2.2 | 1.2.3 | Delta |
+|---|---|---|---|
+| Cold start, no config | 402 µs | **295 µs** | −107 µs (−27 %) |
+| Cold start, largest theme | 611 µs | **485 µs** | −126 µs (−21 %) |
+| Memory at exit | 4,272 KB | **204 KB** | −95 % |
+| Cold start, `rust-toolchain` found deep in a tree, THP off | 505 µs | **446 µs** | −59 µs (−12 %) |
+| Bash adapter, per redraw | 1,430 µs | **615 µs** | −57 % |
+| `rustup_env_render`, no file found | 33.1 µs | 29.7 µs | −10 %, at equal path depth |
+| `node_env_render`, no file found | 16.9 µs | 15.6 µs | −8 %, at equal path depth |
+| `render_prompt` | 12.41 µs | 12.25 µs | −1 %, with the stricter filter |
+| `config_load`, largest theme | 66.3 µs | 66.5 µs | flat |
+| Binary, x86_64 | 153,808 B | 158,000 B | +4,192 B (+2.7 %) |
+| Binary, `--agnos` | 145,928 B | 150,128 B | +4,200 B (+2.9 %) |
+
+- **Most of the cold-start gain was not in this program's code.** The allocator's 256 MB chunk is aligned to a
+  huge page, so the first heap touch made the kernel zero 2 MB, and `args_init`'s 2 MB buffer then moved
+  into a second page. One `prctl` before the first allocation removes both.
+- The roadmap's suspects in `config_load` were measured and left alone: the 64 KB buffer costs nothing
+  measurable, and the eleven sweeps cost 4.4 µs. The audit has the breakdown.
+
+### Tests
+
+- 472 assertions across 194 tests, from 387 across 165.
+- **Every fix was proved by undoing it: 48 mutations, all caught**, by the suite, `smoke.sh` or
+  `adapter-check.sh`. Three survived the first run and exposed weak tests. One was A-12's guard, which had
+  been verified by hand and never pinned.
+- Differential 1.2.2 → 1.2.3: 6,163 cases, 0 hangs, 242 differences, all accounted for. 154 are the new
+  over-cap warning, and 88 are one fixture, a `rust-toolchain` symlink to `/etc/passwd`, which used to print
+  that file into the prompt and now renders empty.
+- Fuzz: 40,000 configs, 20,000 argv, and 60,000 hostile repos checked with Python's decoder, with no crashes
+  and no violations.
+
 ## [1.2.2] - 2026-11-06
 
 The quick roadmap items: a real cache bug fixed, `rust-toolchain.toml` support, a vcs `budget_ms`,

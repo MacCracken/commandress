@@ -20,7 +20,7 @@
 # reads VERSION and asserts equality, so a forgotten bump fails the suite
 # instead of shipping a `--version` that lies. A fn (not a `var`) so it costs
 # no initialized-globals slot.
-fn cmdrs_version(): i64 { return "1.2.2"; }
+fn cmdrs_version(): i64 { return "1.2.3"; }
 
 # Register commandress's flag table on a fresh handle from `cmdit_new`, which
 # has already registered --help/-h and --version/-V. Returns the `--side` flag
@@ -39,9 +39,7 @@ fn cli_register(cli): i64 {
 
 # Map a cmdit parse result to a render side: 0 = left (default), 1 = right.
 #
-# THE DEGRADE POLICY. Anything that is not a clean parse renders the LEFT
-# prompt instead of exiting non-zero. This preserves 1.1.4 behaviour exactly —
-# the old walk ignored everything that was not literally `--side=right` — and
+# THE DEGRADE POLICY. A bad flag renders a prompt instead of exiting non-zero.
 # ADR 0007 explicitly declines to promise behaviour on unknown flags, so the
 # choice is ours to make. It is made this way because `cmdrs` is invoked as
 # `PROMPT="$(cmdrs)"` once per redraw: exiting 2 with empty stdout would blank
@@ -60,7 +58,11 @@ fn cli_register(cli): i64 {
 # cmdit stores each flag's value as it parses, so a `--side` that parsed fine
 # before an unrelated flag failed is still there to read. The degrade contract
 # is "never exit non-zero and never blank the prompt" — it was never "throw away
-# input we successfully understood". CMDIT_HELP / CMDIT_VERSION never reach here
+# input we successfully understood". The parse stops at the first bad token, though,
+# so `--bogus --side=right` still renders the left prompt. No adapter can produce that
+# order, and the fix belongs in cmdit (audit 2026-11-06, D-05).
+#
+# CMDIT_HELP / CMDIT_VERSION never reach here
 # (main returns first), so CMDIT_OK and CMDIT_RESULT_ERR are the live cases and
 # both should honour the parsed side.
 fn cli_side_for(cli, f_side, pr): i64 {

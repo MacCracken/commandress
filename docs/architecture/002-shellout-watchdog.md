@@ -27,10 +27,10 @@ The 0/-1/-2 split lets callers distinguish "the command succeeded with no output
 3. `clock_now_ms()` baseline; `deadline_ms = now + budget_ms`.
 4. Loop:
    - `remaining = deadline_ms - clock_now_ms()`. If `<= 0` → timeout.
-   - `epoll_wait(timeout=remaining)` for `EPOLLIN`.
+   - `epoll_wait(timeout=remaining)` for `EPOLLIN`. `EINTR` loops, because a stop and continue raises it even with no handler installed, and the loop re-reads the clock.
    - If `nev == 0` → timeout.
    - If readable → `read(buf + total, buflen - total)`. If `n <= 0` → EOF / child closed pipe, done. Else accumulate and loop.
-5. On timeout: `kill(pid, SIGKILL)`. Always: close fds, `waitpid` (reap zombie).
+5. Always, on every exit: `kill(pid, SIGKILL)`, close fds, then a short bounded reap that never blocks. See below.
 
 ## Why epoll, not poll/select
 
@@ -45,39 +45,30 @@ The 0/-1/-2 split lets callers distinguish "the command succeeded with no output
 - **No partial-output behavior.** If the budget fires mid-read, the captured prefix is *discarded* (return `-2`, ignore `total`). Partial-output rendering would force every segment parser to handle truncation; the empty-render-on-timeout shape keeps the parser side simple.
 - **No CPU-bound segment enforcement.** Pure-CPU segments (cwd, exit, time, hostname, user) clear 500 µs trivially and don't go through this watchdog. If a pure-CPU segment ever spins, it's a bug and stays a bug — not a watchdog miss. (`setitimer`-based CPU watchdog would change this; it's out of scope.)
 
-## The one ordering you must not change: `close(rfd)` before `waitpid`
+## Nothing after the loop may block
 
-Established by the 2026-08-26 audit (P-05), which opened this as a suspected deadlock and
-refuted it — but the reason it is safe is not visible from reading the loop, so it is
-recorded here.
+The budget is enforced by `epoll_wait`, so it stops applying the moment the loop exits.
+Everything after that point has to finish on its own, and this has been got wrong twice:
 
-The read loop has **two** exits, and only one of them kills the child:
-
-| Exit | `timed_out` | Child killed? |
+| Exit | Who could hang us | Fixed by |
 |---|---|---|
-| deadline expired / `epoll_wait` returned 0 | `1` | yes, `SIGKILL` |
-| **capture buffer full** (`space <= 0`) | `0` | **no** |
-| child closed the pipe (`n <= 0`) | `0` | not needed, it exited |
+| Capture buffer full, child still writing | `waitpid` on a child blocked in `write()` | `close(rfd)` first, so its next write dies on `EPIPE` (2026-08-26, P-05) |
+| EOF, but the child closed stdout and lives on | `waitpid` on a child that is not writing | `SIGKILL` on every exit, not just a timeout (2026-08-26, A-02) |
+| A child that will not finish dying | `waitpid` after `SIGKILL` | `_shellout_reap` never blocks (2026-11-06, R-01) |
 
-On the buffer-full exit the child is still running and may still be writing. Once the
-64 KB pipe buffer fills it blocks in `write()`. If the parent then called `waitpid` while
-still holding the read end open, both sides would block forever — and **no deadline covers
-this**: the parent is parked in `waitpid`, not in `epoll_wait`, so the budget that the
-whole watchdog exists to enforce does not apply. The user's prompt would hang.
+The third row is the one that looked closed. `SIGKILL` is not synchronous: a child stuck on
+a wedged FUSE filesystem, or held by a ptracer, stays unreapable for as long as that lasts.
+A `sit` holding a file on a FUSE mount that never answered `FLUSH` parked `cmdrs` in
+`do_wait` with no deadline, and a ptrace helper held it for 6 s against a 5 ms budget.
 
-It does not hang because `sys_close(rfd)` runs first. Closing the last read end makes the
-child's next `write` fail with `EPIPE`/`SIGPIPE`, so the child dies and `waitpid` reaps it
-immediately.
+`_shellout_reap` tries `WNOHANG` five times over about half a millisecond, which is what a
+normal exit takes, then gives up. `cmdrs` exits a moment later, and init collects the child.
 
-Measured both ways at audit time:
-
-- **As shipped** — a child flooding 200 KB through a 256-byte capture buffer returns in
-  **5 ms**.
-- **With the two lines swapped** in a scratch copy — the test suite **hangs**, killed at
-  45 s.
-
-Pinned by `tests/commandress.tcyr::test_shellout_oversized_child_does_not_hang`, which
-fails if the ordering is reversed. Do not reorder those two lines.
+**Order after the loop: kill, close, reap.** Measured at the 2026-08-26 audit, with `close`
+and the wait swapped, the suite hung and was killed at 45 s. As shipped, a child flooding
+200 KB through a 256-byte buffer returns in 5 ms. Pinned by
+`test_shellout_oversized_child_does_not_hang`,
+`test_shellout_eof_with_live_child_does_not_hang` and `test_shellout_reap_does_not_block`.
 
 ## Cross-arch surface
 

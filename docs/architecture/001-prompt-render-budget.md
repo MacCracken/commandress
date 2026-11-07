@@ -38,4 +38,4 @@ If the *aggregate* prompt render time exceeds the 5 ms total even after per-segm
 
 `cyrius bench tests/commandress.bcyr` (added at M1) captures the full-render time on the bench host and appends a row to a benchmark history CSV (M6 work). Regressions on the bench host are visible in the row-over-row diff.
 
-The cold-start figure on a real shell is end-to-end: `time cmdrs > /dev/null` includes process exec which the bench harness can't measure from inside the binary. The two numbers track each other but the bench's number is always smaller by the exec overhead.
+CI enforces a real cold start through `scripts/smoke.sh` since 1.2.3, because `render_prompt` cannot see startup. The cold-start figure on a real shell is end-to-end: `time cmdrs > /dev/null` includes process exec which the bench harness can't measure from inside the binary. The two numbers track each other but the bench's number is always smaller by the exec overhead.

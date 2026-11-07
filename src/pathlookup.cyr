@@ -34,11 +34,12 @@
 # Splitting the env-read from the walker lets tests drive the walker
 # with fabricated PATH strings (Cyrius stdlib has no setenv today).
 
-# Shared current-working-directory fetch. Linux uses getcwd(2). AGNOS has
-# no getcwd syscall — CWD is userland-owned (the shell tracks it, see the
-# agnos ABI), so there's no kernel cwd to query yet — return 0 (the
-# cwd-dependent segments degrade to empty). A real agnos CWD source (PWD
-# passed by agnsh, or a cwd primitive) can fill this in later.
+# Shared current-working-directory fetch. Linux uses getcwd(2). agnos has no such
+# call, by design: CWD is userland-owned (agnos ABI), and agnsh passes its tracked
+# directory to children as $PWD since agnoshi 2.2.0. This does not read it yet, so
+# the cwd-dependent segments render empty there. Reading it is not a one-liner: it
+# would make repo-controlled files reachable on a target where `read_regular_file`
+# has neither of its guards. See the agnoshi adoption item in roadmap.md.
 fn cmdrs_getcwd(buf, cap): i64 {
     #ifdef CYRIUS_TARGET_AGNOS
     return 0;

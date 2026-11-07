@@ -6,13 +6,13 @@
 #      wins.
 #   2. `rust-toolchain.toml` is TOML: show `[toolchain] channel`.
 #   3. `rust-toolchain` is the legacy one-line format (trimmed contents), or TOML,
-#      which rustup also accepts under that name. A first non-blank byte of `[`
-#      means TOML.
+#      which rustup also accepts under that name. More than one line means TOML,
+#      which is rustup's own rule.
 #   4. A file with no `channel` (a `path` toolchain, say) renders empty.
 #
 # ⚠ REPO-CONTROLLED INPUT. These files come from whatever directory the user is
 # in, so this is the first path where bytes an attacker chose reach the TOML
-# parser; everything else it reads is the user's own `~/.commandress`. Three
+# parser; everything else it reads is the user's own `~/.commandress`. Four
 # things bound that:
 #   - `read_regular_file` refuses a FIFO or device (audit A-01).
 #   - RUSTUP_FILE_CAP bounds the parse. A real file is well under 1 KB, and the
@@ -39,18 +39,55 @@ fn rustup_env_parse_toml(buf, n): i64 {
     if (sections == 0) { return 0; }
     var pairs = _section_pairs(sections, "toolchain");
     if (pairs == 0) { return 0; }
-    var channel = bayan_toml_get_by_cstr(pairs, "channel");
-    if (channel == 0) { return 0; }
+    var pair = bayan_toml_get_pair_by_cstr(pairs, "channel");
+    if (pair == 0) { return 0; }
+    if (bayan_toml_pair_is_string(pair) == false) { return 0; }
+    var channel = bayan_toml_pair_value(pair);
     if (str_len(channel) == 0) { return 0; }
     if (str_len(channel) > RUSTUP_CHANNEL_MAX) { return 0; }
     return str_cstr(channel);
 }
 
+# 1 if `rust-toolchain` content is TOML. This is rustup's own rule: exactly one line is
+# the legacy format, anything else is TOML. Blank lines around that one line do not
+# count here, which is kinder than rustup and harmless. A lone `[...]` line counts as
+# TOML too: it can only be a table header, and it is no channel name.
+fn _rustup_text_is_toml(buf, n): i64 {
+    var start = 0;
+    var end = n;
+    var trim = 1;
+    while (trim == 1) {
+        if (end <= start) { trim = 0; }
+        else {
+            var c = load8(buf + end - 1);
+            if (c == 32 || c == 9 || c == 10 || c == 13) { end = end - 1; }
+            else { trim = 0; }
+        }
+    }
+    trim = 1;
+    while (trim == 1) {
+        if (start >= end) { trim = 0; }
+        else {
+            var c = load8(buf + start);
+            if (c == 32 || c == 9 || c == 10 || c == 13) { start = start + 1; }
+            else { trim = 0; }
+        }
+    }
+    if (start >= end) { return 0; }
+    if (load8(buf + start) == 91) { return 1; }
+    var i = start;
+    while (i < end) {
+        if (load8(buf + i) == 10) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
 # The value of the toolchain file `<root><suffix>`. `is_toml` is 1 for a file that
 # can only be TOML, 0 for `rust-toolchain`, whose format is decided by its content.
 #
-# The buffer is heap, not frame: agnos gives ring-3 about 12 KB of init stack
-# (audit A-08), and the caller already holds a 4 KB cwd buffer.
+# The buffer is heap, not frame: the caller already holds a 4 KB cwd buffer, and a
+# frame this size has caused trouble on agnos before (audit A-08).
 fn _rustup_file_value(root, suffix, is_toml): i64 {
     var root_len = strlen(root);
     var suffix_len = strlen(suffix);
@@ -66,35 +103,18 @@ fn _rustup_file_value(root, suffix, is_toml): i64 {
     if (n <= 0) { return 0; }
     if (is_toml == 1) { return rustup_env_parse_toml(buf, n); }
 
-    var i = 0;
-    var seek = 1;
-    while (seek == 1) {
-        if (i >= n) { seek = 0; }
-        else {
-            var c = load8(buf + i);
-            if (c == 32 || c == 9 || c == 10 || c == 13) { i = i + 1; }
-            else { seek = 0; }
-        }
-    }
-    if (i >= n) { return 0; }
-    if (load8(buf + i) == 91) { return rustup_env_parse_toml(buf, n); }
-    return read_trimmed_file_at(root, suffix);
+    if (_rustup_text_is_toml(buf, n) == 1) { return rustup_env_parse_toml(buf, n); }
+    if (n > PROBE_FILE_CAP) { n = PROBE_FILE_CAP; }
+    return trimmed_copy(buf, n);
 }
 
-# The toolchain in force at `cwd`, or 0. Both roots are ancestors of `cwd`, so the
-# longer path is the nearer directory, and a tie is the same directory.
+# The toolchain in force at `cwd`, or 0.
 fn rustup_env_for(cwd): i64 {
-    var plain = find_ancestor_with(cwd, "/rust-toolchain");
-    var toml = find_ancestor_with(cwd, "/rust-toolchain.toml");
-    if (toml != 0) {
-        var use_toml = 1;
-        if (plain != 0) {
-            if (strlen(plain) >= strlen(toml)) { use_toml = 0; }
-        }
-        if (use_toml == 1) { return _rustup_file_value(toml, "/rust-toolchain.toml", 1); }
-    }
-    if (plain == 0) { return 0; }
-    return _rustup_file_value(plain, "/rust-toolchain", 0);
+    var which[8];
+    var root = find_ancestor_with_either(cwd, "/rust-toolchain", "/rust-toolchain.toml", &which);
+    if (root == 0) { return 0; }
+    if (load64(&which) == 2) { return _rustup_file_value(root, "/rust-toolchain.toml", 1); }
+    return _rustup_file_value(root, "/rust-toolchain", 0);
 }
 
 fn rustup_env_render(): i64 {

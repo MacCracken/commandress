@@ -8,9 +8,9 @@ taken from the surrounding ecosystem's comments.
 ## 1. Line order is not stable across machines
 
 `cyrius deps` writes the lock as one `commit` line (per git dep) followed by
-`<sha256>  lib/<file>` lines — 119 of them here. **The order of the hash lines is
+`<sha256>  lib/<file>` lines — 116 of them as of 1.2.3. **The order of the hash lines is
 not deterministic across machines.** It tracks the directory read order of `lib/`,
-so the same dependency graph produces the same 119 hashes in a different sequence
+so the same dependency graph produces the same hashes in a different sequence
 on a fresh CI checkout than on a developer box.
 
 Consecutive local runs *are* byte-stable, which makes this easy to get wrong: the
@@ -20,7 +20,7 @@ reordered-but-identical entries (`lib/bayan.cyr` carried byte-identical hashes o
 both sides).
 
 **Consequence**: any check on this file must be order-insensitive. `scripts/lock-check.sh`
-compares the `commit` lines and the hash lines as two independently sorted sets.
+sorts both sides before it compares them.
 
 ## 2. A `path` override erases the dep pin entirely
 
@@ -59,7 +59,7 @@ Measured against the real toolchain and dependency (Cyrius 6.5.35, cmdit 1.2.4):
 | Dep `commit` sha altered to a nonexistent rev | fail — `cyrius deps` cannot resolve it |
 | Generated with `path = "../cmdit"` active | **fail — pin branch** (property 2) |
 
-## 3. A tag bump can leave the old pin in the lock, and the guard passes it
+## 3. A tag bump can leave the old pin in the lock
 
 Measured on Cyrius 6.6.20, moving cmdit `1.2.4` to `1.2.6`. `cyrius lib sync` carries
 `commit` lines forward, and `cyrius deps` then adds the new tag's line without pruning the
@@ -70,14 +70,9 @@ commit	e69bcaa361dca638bb73a7a3669378bed851aa40	cmdit	https://github.com/MacCrac
 commit	c74cb7de35d66abd670d362888949f83c385fc95	cmdit	https://github.com/MacCracken/cmdit.git	1.2.6
 ```
 
-Later `cyrius deps` runs keep both lines. `lock-check.sh` then compares two pins against the
-same two pins and reports `OK — 2 dep pin(s)`. The script proves that re-resolving does not
-change the lock. It does not prove that the lock holds exactly the tags in `cyrius.cyml`.
-
-| Committed lock state | `lock-check.sh` |
-|---|---|
-| Old and new `commit` lines for the same dep | **pass — a blind spot** |
-| Regenerated from empty (one `commit` line) | pass |
+Later `cyrius deps` runs keep both lines. The stale line is noise rather than a build hazard,
+because the file hashes still describe what is compiled, but it does make the lock wrong.
+`cyrius deps --locked` prints a `note:` calling this "fail-closed" and then exits 0.
 
 ## 4. From cyrius 6.7.6 a `path` override cannot win
 
@@ -89,17 +84,43 @@ with `path = "../cmdit"` beside the tag:
 | `cyrius deps` | The tag, with a one-line hint naming the unused checkout | Unchanged |
 | `CYRIUS_LOCAL=1 cyrius deps` | The sibling, in `build/local-deps/` | Unchanged |
 
-6.7.6 also added `cyrius deps --locked`, which resolves the tags, writes nothing, and fails naming
-each difference. It and `scripts/lock-check.sh` do not catch the same things:
+## 5. What each guard catches
 
-| Committed state | `deps --locked` | `lock-check.sh` |
-|---|---|---|
-| Clean tag resolution | pass | pass |
-| A vendored `lib/` file altered | **fail, naming the file** | pass |
-| An extra stale `commit` line (section 3) | pass, with a `note:` naming the stale pin | pass |
+Measured at 1.2.2 on cyrius 6.7.18, each bad state committed and then checked from a fresh
+clone with an empty deps cache. 37 bad states were tried. The table counts how many each
+guard missed.
 
-So neither one fails on the section 3 blind spot. The stale line is noise rather than a build hazard,
-because the file hashes still describe what is compiled, but it does make the lock wrong.
+| Guard | Missed |
+|---|---|
+| `cyrius deps --verify` | 23 |
+| CI as it stood (`cyrius deps`, then the old `lock-check.sh`) | 14 |
+| Old `lock-check.sh` alone | 12 |
+| `cyrius deps --locked` alone | 8 |
+| **`scripts/lock-check.sh` since 1.2.3** | **0**, in both step orders |
+
+Three things explain the gap.
+
+**The manifest is in the same commit.** `cyrius deps` restores and checks only the footprint
+it works out from `cyrius.cyml`. Anything else in `lib/` is "outside the declared footprint":
+kept, and silently re-hashed into the lock. So one commit could drop `pwd` from `[deps].stdlib`,
+edit `lib/pwd.cyr` and fix its lock line, and every guard passed. The edited code then shipped
+from a green CI (2026-11-06 audit, SC-01). Nothing requires an `include "lib/x.cyr"` to be
+declared.
+
+**`cyrius deps` repairs what it is about to be checked for.** Run first, as CI did, it hid an
+altered file from the next step and regenerated a deleted lock, which removes the commit pin
+that stops a moved tag (SC-02). Comparing a tree against itself is how the guard failed twice
+(A-03, then this).
+
+**A stale pin only prints a `note:`.** Failing on that text would close 2 of `--locked`'s 8
+misses, and an upstream rewording would turn the check off silently.
+
+So the guard reads no notes and does not parse the manifest. It regenerates `lib/` and the lock
+from the pins in a throwaway worktree of HEAD and compares them with what is committed.
+`lib/` is tracked (116 files, 38 of them compiled), which is why it has to check bytes.
+
+It does not cover tampering in `src/`, a compromised toolchain, or a commit that moves the pins
+and `lib/` together on purpose. Those are review questions.
 
 ## Moving the toolchain and a dep tag together
 

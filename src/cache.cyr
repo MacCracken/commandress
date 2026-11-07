@@ -6,10 +6,15 @@
 # paid once per keystroke; with a 1 s TTL cache, a user typing quickly
 # inside a sit repo pays it once per second.
 #
-# Layout: `/tmp/commandress-<uid>/<segment>-<hash(cwd)>` — one file per
-# (segment, cwd) pair. Directory is 0o700 so other users can't peek;
-# files inherit umask via `file_write_all`. mtime is the TTL clock
-# (sys_stat → struct stat offset 88 on Linux x86_64).
+# Layout: `/tmp/commandress-<uid>/<segment>-<slot>`, where the slot is the low
+# byte of a 64-bit hash of the cwd, as two hex digits. An entry is that hash as 16
+# hex digits, then the value. Directory is 0o700 so other users can't peek; files
+# are 0o600. mtime is the TTL clock (struct stat offset 88 on Linux x86_64).
+#
+# EVICTION IS BY CONSTRUCTION. There are 256 file names per segment, so the directory
+# cannot grow past that, and a sweep has nothing to do. An entry is dead within two
+# seconds of being written, so two directories sharing a slot cost a miss at most. The
+# key inside the entry is what stops one reading the other's value. See ADR 0012.
 #
 # HOST-ONLY. The whole cache is disabled on agnos — see `_cache_stat` and
 # `cache_init` below for the reasoning. Every raw `syscall(...)` in this file
@@ -20,7 +25,7 @@
 #   - heap-alloc'd cstring (possibly empty) → cached value (caller
 #     decides how to interpret an empty cstring; vcs_render maps "" →
 #     "no sit repo here").
-#   - 0 → cache miss (file absent) OR expired (mtime + ttl < now).
+#   - 0 → cache miss: no entry, an expired one, or a slot neighbour's.
 #
 # Public API:
 #   cache_init()                              — idempotent mkdir
@@ -28,11 +33,15 @@
 #   cache_put(seg, cwd, value, value_len)     — write
 #
 # Out of scope (M6 follow-ups if needed):
-#   - LRU eviction (entries are tiny; one per cwd; for now we don't gc)
-#   - Cross-process locking (one prompt at a time per shell session;
-#     torn-write races give an empty/short read that expires anyway)
+#   - Cross-process locking (temp+rename means a reader sees a whole file)
 #   - Sub-second TTLs (mtime resolution is 1 s in stat; finer would
 #     need stat_x's nsec field; not justified today)
+
+enum CacheLayout {
+    CACHE_SLOT_DIGITS = 2;                              # 256 slots per segment
+    CACHE_KEY_DIGITS = 16;
+    CACHE_ENTRY_MAX = 65536;                            # past any real value
+}
 
 # Cached dir path, lazy-built once per invocation.
 var _cache_dir = 0;
@@ -61,7 +70,7 @@ fn cache_dir(): i64 {
     return dir;
 }
 
-# 64-bit FNV-1a of `s` (length `slen`), formatted as 16 hex digits.
+# 64-bit FNV-1a of `s` (length `slen`).
 #
 # This was a 32-bit djb2 until 1.2.2, and djb2's structure makes collisions easy
 # rather than merely possible: 33 * 'a' + 'z' == 33 * 'b' + 'Y', so sibling
@@ -79,64 +88,58 @@ fn _cache_hash(s, slen): i64 {
     return h;
 }
 
-# Build `<cache_dir>/<seg>-<16-hex>`. Caller owns the returned cstring.
+# The low `digits` nibbles of `h`, most significant first, at `out`.
+fn _cache_hex(h, digits, out): i64 {
+    var i = 0;
+    while (i < digits) {
+        var nib = (h >> ((digits - 1 - i) * 4)) & 15;
+        if (nib < 10) { store8(out + i, 48 + nib); }
+        else { store8(out + i, 87 + nib); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The key for `cwd`: 16 hex digits and a NUL, in a fresh buffer. 0 if alloc refuses.
+fn _cache_key_hex(cwd): i64 {
+    var out = alloc(CACHE_KEY_DIGITS + 1);
+    if (out == 0) { return 0; }
+    _cache_hex(_cache_hash(cwd, strlen(cwd)), CACHE_KEY_DIGITS, out);
+    store8(out + CACHE_KEY_DIGITS, 0);
+    return out;
+}
+
+# Build `<cache_dir>/<seg>-<slot>`. Caller owns the returned cstring. 0 if alloc refuses.
 fn _cache_path(seg_name, cwd): i64 {
     var dir = cache_dir();
+    if (dir == 0) { return 0; }
     var dir_len = strlen(dir);
     var seg_len = strlen(seg_name);
     var h = _cache_hash(cwd, strlen(cwd));
 
-    var total = dir_len + 1 + seg_len + 1 + 16 + 1;
+    var total = dir_len + 1 + seg_len + 1 + CACHE_SLOT_DIGITS + 1;
     var out = alloc(total);
+    if (out == 0) { return 0; }
     memcpy(out, dir, dir_len);
     store8(out + dir_len, 47);                                  # '/'
     memcpy(out + dir_len + 1, seg_name, seg_len);
     store8(out + dir_len + 1 + seg_len, 45);                    # '-'
-
-    var pos = dir_len + 1 + seg_len + 1;
-    var i = 15;
-    var done = 0;
-    while (done == 0) {
-        var nib = (h >> (i * 4)) & 15;
-        if (nib < 10) { store8(out + pos, 48 + nib); }
-        else { store8(out + pos, 87 + nib); }
-        pos = pos + 1;
-        if (i == 0) { done = 1; }
-        else { i = i - 1; }
-    }
-    store8(out + pos, 0);
+    _cache_hex(h, CACHE_SLOT_DIGITS, out + dir_len + 1 + seg_len + 1);
+    store8(out + total - 1, 0);
     return out;
 }
 
-# stat(2) for the two cache paths, with an explicit agnos branch.
+# lstat(2) for the cache-directory check (audit A-11), with an explicit agnos branch.
 #
-# The raw `sys_*` wrappers are per-target by design and agnos's are
-# length-carrying — `sys_stat(path, pathlen, statbuf)` against Linux's
-# `sys_stat(path, statbuf)`. Cyrius made that arity mismatch a hard ERROR at
-# v6.5.1 (it was a warning before, so this file built `--agnos` and would have
-# read a garbage pathlen at runtime).
+# The raw `sys_*` wrappers are per-target by design, and agnos's differ. This does
+# NOT route through the stdlib's portable `xstat`: that bridges the CALL but not the
+# STRUCT, and every offset read below (st_mode @24, st_uid @28, st_size @48,
+# st_mtim.tv_sec @88) is Linux x86_64 `struct stat`, while agnos's is a 48-byte all-u64
+# record with a different field order and no `st_uid` (userland ABI §4.1). Failing
+# closed on agnos is honest and costs nothing: `cache_init` disables the cache there.
 #
-# This does NOT route through the stdlib's portable `xstat`, deliberately.
-# `xstat` bridges the CALL but not the STRUCT: every offset read below (st_mode
-# @24, st_uid @28, st_size @48, st_mtim.tv_sec @88) is Linux x86_64 `struct
-# stat`, while agnos's is a 48-byte all-u64 record with a different field order
-# and no `st_uid` (userland ABI §4.1). Compiling clean via `xstat` would just
-# move the bug from the call to the loads. Failing closed on agnos is honest and
-# costs nothing — `cache_init` disables the cache there anyway.
-fn _cache_stat(path, buf): i64 {
-    #ifdef CYRIUS_TARGET_AGNOS
-    return 0 - 1;
-    #endif
-    #ifndef CYRIUS_TARGET_AGNOS
-    return sys_stat(path, buf);
-    #endif
-}
-
-# lstat(2) twin of the above, for the cache-directory check (audit A-11).
-# Needs the same agnos bridge and for a second reason: agnos exposes no
-# `sys_lstat` at all, so naming it unguarded fails the `--agnos` build as an
-# undefined function even though `cache_init` returns before reaching it —
-# the call still compiles.
+# agnos also exposes no `sys_lstat` at all, so naming it unguarded fails the `--agnos`
+# build as an undefined function even though `cache_init` returns before reaching it.
 fn _cache_lstat(path, buf): i64 {
     #ifdef CYRIUS_TARGET_AGNOS
     return 0 - 1;
@@ -148,7 +151,7 @@ fn _cache_lstat(path, buf): i64 {
 
 # Idempotent mkdir of the cache directory. EEXIST is treated as
 # success; any other failure leaves the cache effectively disabled
-# (cache_put will silently fail on the missing dir; cache_get's stat
+# (cache_put will silently fail on the missing dir; cache_get's open
 # will return ENOENT → miss → fall through to the real probe).
 #
 # F-3 audit: after mkdir, stat and verify (a) `st_uid == getuid()` and
@@ -196,20 +199,14 @@ fn cache_init(): i64 {
     return 0;
 }
 
-# Return cached cstring (possibly empty) when the file exists and is
-# within `ttl_secs` of now, else 0. The "possibly empty" case is real
-# — vcs_render caches "" to remember "no sit repo here", short-
-# circuiting the fork+exec on the next redraw.
-#
-# F-4 audit: file_open uses O_NOFOLLOW so a symlink swap on the cache
-# file (e.g. attacker symlinks `vcs-<hash>` → `/etc/shadow`) refuses
-# to traverse — open returns ELOOP → cache miss → segment runs the
-# real probe + cache_put writes a fresh file.
-fn cache_get(seg_name, cwd, ttl_secs): i64 {
-    if (_cache_disabled == 1) { return 0; }
-    var path = _cache_path(seg_name, cwd);
+# The value in the open entry `fd`, or 0 unless it is a fresh regular file holding this
+# cwd's key. Everything is read from the one fd. Taking the size from stat(path) and the
+# bytes from a later open returned a clipped value when a writer renamed between the two,
+# which is the wrong hit P-04 exists to prevent (audit 2026-11-06, R-05).
+fn _cache_read_entry(fd, cwd, ttl_secs): i64 {
     var stbuf[144];                                             # struct stat is 144 B on x86_64
-    if (_cache_stat(path, &stbuf) != 0) { return 0; }
+    if (sys_fstat(fd, &stbuf) != 0) { return 0; }
+    if ((load32(&stbuf + 24) & 0xF000) != 0x8000) { return 0; } # S_IFREG
     var mtime_sec = load64(&stbuf + 88);                        # offset of st_mtim.tv_sec
     var now_sec = clock_epoch_secs();
     # Audit 2026-08-26, A-12: the freshness test was one-sided. A mtime in the
@@ -222,17 +219,52 @@ fn cache_get(seg_name, cwd, ttl_secs): i64 {
     if (now_sec - mtime_sec > ttl_secs) { return 0; }
 
     var file_size = load64(&stbuf + 48);                        # offset of st_size
-    # O_RDONLY | O_NOFOLLOW. 131072 (0x20000) is O_NOFOLLOW on Linux;
-    # stdlib doesn't export a named constant yet — written numerically
-    # with a comment (same pattern as lib/agnosys.cyr's keyfile path).
-    var fd = file_open(path, 131072, 0);
-    if (fd < 0) { return 0; }
+    if (file_size < CACHE_KEY_DIGITS) { return 0; }
+    if (file_size > CACHE_ENTRY_MAX) { return 0; }
     var buf = alloc(file_size + 1);
+    if (buf == 0) { return 0; }
     var n = file_read(fd, buf, file_size);
-    file_close(fd);
-    if (n < 0) { return 0; }
+    if (n < CACHE_KEY_DIGITS) { return 0; }
+    var key = _cache_key_hex(cwd);
+    if (key == 0) { return 0; }
+    if (memeq(buf, key, CACHE_KEY_DIGITS) != 1) { return 0; }   # a slot neighbour's entry
     store8(buf + n, 0);
-    return buf;
+    return buf + CACHE_KEY_DIGITS;
+}
+
+# Return cached cstring (possibly empty) when this cwd has a fresh entry, else 0. The
+# "possibly empty" case is real — vcs_render caches "" to remember "no sit repo here",
+# short-circuiting the fork+exec on the next redraw.
+#
+# F-4 audit: O_NOFOLLOW so a symlink swap on the cache file (e.g. attacker symlinks
+# `vcs-ab` → `/etc/shadow`) refuses to traverse — open returns ELOOP → cache miss →
+# segment runs the real probe + cache_put writes a fresh file. O_NONBLOCK so a FIFO
+# cannot park the open, and the S_IFREG gate above then refuses it (audit A-01).
+fn cache_get(seg_name, cwd, ttl_secs): i64 {
+    if (_cache_disabled == 1) { return 0; }
+    var path = _cache_path(seg_name, cwd);
+    if (path == 0) { return 0; }
+    # O_RDONLY | O_NONBLOCK | O_NOFOLLOW = 0 + 2048 + 131072. stdlib doesn't export
+    # these on every target, so they are written numerically (the file is host-only).
+    var fd = file_open(path, 133120, 0);
+    if (fd < 0) { return 0; }
+    var value = _cache_read_entry(fd, cwd, ttl_secs);
+    file_close(fd);
+    return value;
+}
+
+# `ulimit -f 0` made the write below raise SIGXFSZ, which kills the process: the prompt
+# was cut short, and a temp was left behind on every redraw (audit 2026-11-06, R-04).
+# Ignored, the write fails with EFBIG and takes the short-write path. rt_sigaction is
+# 13 on x86_64, and this file is x86_64 already (see rename below); SIG_IGN is 1.
+fn _cache_ignore_sigxfsz(): i64 {
+    #ifdef CYRIUS_TARGET_LINUX
+    var act[32];
+    memset(&act, 0, 32);
+    store64(&act, 1);
+    syscall(13, 25, &act, 0, 8);
+    #endif
+    return 0;
 }
 
 # F-5 audit: write atomically via `<path>.tmp.<pid>` + rename.
@@ -246,6 +278,13 @@ fn cache_get(seg_name, cwd, ttl_secs): i64 {
 fn cache_put(seg_name, cwd, value, value_len): i64 {
     if (_cache_disabled == 1) { return 0; }
     var path = _cache_path(seg_name, cwd);
+    var key = _cache_key_hex(cwd);
+    var entry = alloc(CACHE_KEY_DIGITS + value_len);
+    if (path == 0) { return 0; }
+    if (key == 0) { return 0; }
+    if (entry == 0) { return 0; }
+    memcpy(entry, key, CACHE_KEY_DIGITS);
+    if (value_len > 0) { memcpy(entry + CACHE_KEY_DIGITS, value, value_len); }
     var path_len = strlen(path);
 
     # Build "<path>.tmp.<pid>".
@@ -254,10 +293,13 @@ fn cache_put(seg_name, cwd, value, value_len): i64 {
     var pid_buf[24];
     var pid_len = fmt_int_buf(syscall(SYS_GETPID), &pid_buf);
     var tmp_path = alloc(path_len + suffix_len + pid_len + 1);
+    if (tmp_path == 0) { return 0; }
     memcpy(tmp_path, path, path_len);
     memcpy(tmp_path + path_len, suffix, suffix_len);
     memcpy(tmp_path + path_len + suffix_len, &pid_buf, pid_len);
     store8(tmp_path + path_len + suffix_len + pid_len, 0);
+
+    _cache_ignore_sigxfsz();
 
     # O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW = 1 | 64 | 128 | 131072.
     # 0x180 = 0o600 (owner read+write, others none).
@@ -277,16 +319,16 @@ fn cache_put(seg_name, cwd, value, value_len): i64 {
     # branch name from cache for the whole TTL. Verify the byte count and
     # abandon the temp if it is short, so a failed write degrades to a
     # cache MISS (correct, just uncached) instead of a wrong hit.
-    var written = file_write(fd, value, value_len);
+    var entry_len = CACHE_KEY_DIGITS + value_len;
+    var written = file_write(fd, entry, entry_len);
     file_close(fd);
-    if (written != value_len) {
+    if (written != entry_len) {
         syscall(SYS_UNLINK, tmp_path);
         return 0;
     }
 
     # SYS_RENAME = 82 on x86_64 Linux. Atomic — concurrent readers see
-    # the old file or the new one, never a torn write. On failure, the
-    # tmp leaks until the next process notices via the retry path above.
-    syscall(82, tmp_path, path);
+    # the old file or the new one, never a torn write.
+    if (syscall(82, tmp_path, path) != 0) { syscall(SYS_UNLINK, tmp_path); }
     return 0;
 }

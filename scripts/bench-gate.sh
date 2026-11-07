@@ -16,6 +16,11 @@
 set -euo pipefail
 
 BUDGET_US="${BUDGET_US:-5000}"
+# awk falls back to a string compare on a non-number, which would pass anything.
+if [[ ! "$BUDGET_US" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "FAIL: BUDGET_US is not a number: '$BUDGET_US'" >&2
+  exit 1
+fi
 
 # Read all of stdin; grep returns 1 on no-match and we want a clean
 # error message in that case rather than `set -e` killing us silently.

@@ -25,7 +25,38 @@
 # the dir form, except "/" itself which keeps its one slash). Caller
 # owns; bump allocator reclaims at end of redraw.
 
-fn find_ancestor_with(start_dir, marker): i64 {
+enum ProbeFile {
+    PROBE_FILE_CAP = 256;
+    # Deepest start directory an ancestor walk will take. Each access(2) re-walks the
+    # whole path, so the cost is quadratic in depth: a 2,043-level cwd took four env
+    # segments 472 ms a redraw. At this depth they take about 3 ms. No project pins a
+    # toolchain 128 levels up, so past it the segments render empty.
+    ANCESTOR_DEPTH_MAX = 128;
+}
+
+# 1 if `<dir><marker>` exists. `path` holds `<dir>` in its first `cl` bytes and has
+# room for the marker and a NUL after them.
+fn _marker_exists(path, cl, marker, marker_len): i64 {
+    memcpy(path + cl, marker, marker_len);
+    store8(path + cl + marker_len, 0);
+    # Existence check. AGNOS has no access(2); it has stat#33
+    # (path, pathlen, statbuf) → 0 if the inode exists, and a real ext2 FS,
+    # so marker detection (.git etc.) works natively. Linux uses access F_OK.
+    #ifdef CYRIUS_TARGET_AGNOS
+    var stbuf[48];
+    if (syscall(SYS_STAT, path, cl + marker_len, &stbuf) == 0) { return 1; }
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    if (syscall(SYS_ACCESS, path, 0) == 0) { return 1; }        # F_OK
+    #endif
+    return 0;
+}
+
+# The nearest ancestor of `start_dir` holding `marker` or `marker2`, with `which` set
+# to 1 or 2 for the one it found. In one directory `marker` wins. `marker2` may be 0.
+# One walk, so a file found near the cwd stops the search for both names.
+fn find_ancestor_with_either(start_dir, marker, marker2, which): i64 {
+    store64(which, 0);
     if (start_dir == 0) { return 0; }
     if (marker == 0) { return 0; }
     var len = strlen(start_dir);
@@ -33,11 +64,27 @@ fn find_ancestor_with(start_dir, marker): i64 {
     var marker_len = strlen(marker);
     if (marker_len == 0) { return 0; }
 
-    # Working copy of the starting dir — truncated in place as we walk.
-    # 4096 matches PATH_MAX, same bound cwd.cyr / cyrius_env.cyr use.
-    var cur = alloc(4097);
+    # Absolute paths only. getcwd can return `(unreachable)/...`, and walking that
+    # would probe paths relative to the real cwd.
+    if (load8(start_dir) != 47) { return 0; }
+    var depth = 0;
+    var di = 0;
+    while (di < len) {
+        if (load8(start_dir + di) == 47) { depth = depth + 1; }
+        di = di + 1;
+    }
+    if (depth > ANCESTOR_DEPTH_MAX) { return 0; }
+
+    var marker2_len = 0;
+    if (marker2 != 0) { marker2_len = strlen(marker2); }
+    var room = marker_len;
+    if (marker2_len > room) { room = marker2_len; }
+
+    # Working copy of the starting dir, shortened as we walk. Each marker is written
+    # after the current end, so one buffer serves every candidate path.
+    var cur = alloc(len + room + 1);
+    if (cur == 0) { return 0; }
     memcpy(cur, start_dir, len);
-    store8(cur + len, 0);
     var cl = len;
 
     # Strip trailing '/'s from the input, but never collapse the lone
@@ -45,7 +92,7 @@ fn find_ancestor_with(start_dir, marker): i64 {
     var strip = 1;
     while (strip == 1) {
         if (cl <= 1) { strip = 0; }
-        else { if (load8(cur + cl - 1) == 47) { cl = cl - 1; store8(cur + cl, 0); }
+        else { if (load8(cur + cl - 1) == 47) { cl = cl - 1; }
             else { strip = 0; }
         }
     }
@@ -53,45 +100,38 @@ fn find_ancestor_with(start_dir, marker): i64 {
     var hit = 0;
     var done = 0;
     while (done == 0) {
-        var candidate = alloc(cl + marker_len + 1);
-        memcpy(candidate, cur, cl);
-        memcpy(candidate + cl, marker, marker_len);
-        store8(candidate + cl + marker_len, 0);
-        # Existence check. AGNOS has no access(2); it has stat#33
-        # (path, pathlen, statbuf) → 0 if the inode exists, and a real ext2 FS,
-        # so marker detection (.git etc.) works natively. Linux uses access F_OK.
-        var found = 0;
-        #ifdef CYRIUS_TARGET_AGNOS
-        var stbuf[48];
-        if (syscall(SYS_STAT, candidate, cl + marker_len, &stbuf) == 0) { found = 1; }
-        #endif
-        #ifndef CYRIUS_TARGET_AGNOS
-        if (syscall(SYS_ACCESS, candidate, 0) == 0) { found = 1; }      # F_OK
-        #endif
-        if (found == 1) {
+        var found = _marker_exists(cur, cl, marker, marker_len);
+        if (found == 0) {
+            if (marker2_len > 0) {
+                if (_marker_exists(cur, cl, marker2, marker2_len) == 1) { found = 2; }
+            }
+        }
+        if (found != 0) {
             var out = alloc(cl + 1);
-            memcpy(out, cur, cl);
-            store8(out + cl, 0);
-            hit = out;
+            if (out != 0) {
+                memcpy(out, cur, cl);
+                store8(out + cl, 0);
+                hit = out;
+                store64(which, found);
+            }
             done = 1;
         } else {
             if (cl <= 1) { done = 1; }                          # walk hit "/"
             else {
-                var last = 0 - 1;
-                var i = 0;
-                while (i < cl) {
-                    if (load8(cur + i) == 47) { last = i; }
-                    i = i + 1;
-                }
-                if (last < 0) { done = 1; }
-                else {
-                    if (last == 0) { cl = 1; store8(cur + 1, 0); }
-                    else { cl = last; store8(cur + cl, 0); }
-                }
+                # Back up to the last '/'. The path is absolute, so there always is one.
+                var last = cl - 1;
+                while (load8(cur + last) != 47) { last = last - 1; }
+                if (last == 0) { cl = 1; }
+                else { cl = last; }
             }
         }
     }
     return hit;
+}
+
+fn find_ancestor_with(start_dir, marker): i64 {
+    var which[8];
+    return find_ancestor_with_either(start_dir, marker, 0, &which);
 }
 
 # Read a file that an ATTACKER may have chosen the type of.
@@ -158,26 +198,15 @@ fn read_regular_file(path, buf, cap): i64 {
     #endif
 }
 
-fn read_trimmed_file_at(root, suffix): i64 {
-    if (root == 0) { return 0; }
-    if (suffix == 0) { return 0; }
-    var root_len = strlen(root);
-    var suffix_len = strlen(suffix);
-    var path = alloc(root_len + suffix_len + 1);
-    memcpy(path, root, root_len);
-    memcpy(path + root_len, suffix, suffix_len);
-    store8(path + root_len + suffix_len, 0);
-
-    var buf[256];
-    var n = read_regular_file(path, &buf, 256);   # audit A-01: FIFO/device-safe
-    if (n <= 0) { return 0; }
-
+# The `n` bytes at `buf`, trimmed at both ends, as a heap-alloc'd cstring, or 0 when
+# nothing is left.
+fn trimmed_copy(buf, n): i64 {
     var start = 0;
     var ltrim = 1;
     while (ltrim == 1) {
         if (start >= n) { ltrim = 0; }
         else {
-            var c = load8(&buf + start);
+            var c = load8(buf + start);
             if (c == 32) { start = start + 1; }
             else { if (c == 9) { start = start + 1; }
                 else { if (c == 10) { start = start + 1; }
@@ -192,7 +221,7 @@ fn read_trimmed_file_at(root, suffix): i64 {
     while (rtrim == 1) {
         if (end <= start) { rtrim = 0; }
         else {
-            var c = load8(&buf + end - 1);
+            var c = load8(buf + end - 1);
             if (c == 32) { end = end - 1; }
             else { if (c == 9) { end = end - 1; }
                 else { if (c == 10) { end = end - 1; }
@@ -205,7 +234,25 @@ fn read_trimmed_file_at(root, suffix): i64 {
     var content_len = end - start;
     if (content_len == 0) { return 0; }
     var out = alloc(content_len + 1);
-    memcpy(out, &buf + start, content_len);
+    if (out == 0) { return 0; }
+    memcpy(out, buf + start, content_len);
     store8(out + content_len, 0);
     return out;
+}
+
+fn read_trimmed_file_at(root, suffix): i64 {
+    if (root == 0) { return 0; }
+    if (suffix == 0) { return 0; }
+    var root_len = strlen(root);
+    var suffix_len = strlen(suffix);
+    var path = alloc(root_len + suffix_len + 1);
+    if (path == 0) { return 0; }
+    memcpy(path, root, root_len);
+    memcpy(path + root_len, suffix, suffix_len);
+    store8(path + root_len + suffix_len, 0);
+
+    var buf[PROBE_FILE_CAP];
+    var n = read_regular_file(path, &buf, PROBE_FILE_CAP);   # audit A-01: FIFO/device-safe
+    if (n <= 0) { return 0; }
+    return trimmed_copy(&buf, n);
 }

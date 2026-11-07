@@ -35,9 +35,10 @@ Open a new shell — or `exec zsh` — and the prompt switches over.
 [`adapters/zsh.sh`](../../adapters/zsh.sh):
 
 1. Resolves `cmdrs` once at source time and caches it in `$_CMDRS`. Per-redraw cost is one shell builtin lookup, not a PATH walk.
-2. **Does not** set `prompt_subst`, deliberately — see the security note below. It is not needed: the command substitution happens in the hook, so `$PROMPT` holds finished bytes by render time.
-3. Defines `_cmdrs_precmd`: captures `$?` into `$AGNOSHI_LAST_EXIT`, renders both sides, and doubles every `%` before assigning `PROMPT` / `RPROMPT`, so segment content is drawn as literal text rather than as zsh prompt escapes.
-4. Appends `_cmdrs_precmd` to `precmd_functions` so it runs before every prompt — without clobbering other hooks you may have.
+2. Defines `_cmdrs_precmd`: captures `$?` into `$AGNOSHI_LAST_EXIT`, renders both sides, and keeps the bytes in `$_cmdrs_left` and `$_cmdrs_right`.
+3. Doubles every `%`, so segment content is text rather than prompt escapes, and wraps each colour sequence in `%{ %}`, so zsh counts it as zero-width. Without that, long input lines overwrite the prompt.
+4. Sets `PROMPT` and `RPROMPT` to a **fixed reference** to those variables, and turns `prompt_subst` on so the reference expands. This is what makes the prompt safe: see the security note below.
+5. Appends `_cmdrs_precmd` to `precmd_functions` so it runs before every prompt — without clobbering other hooks you may have.
 
 ## Customize via `COMMANDRESS_BIN`
 
@@ -97,44 +98,71 @@ For a curated theme drop-in, see [`docs/themes/`](../themes/).
 If you prefer to inline the hook rather than `source` the adapter, the equivalent paste is:
 
 ```zsh
-# NOTE: no `setopt prompt_subst`. Do not add it — see the security note below.
+typeset -g _cmdrs_left='' _cmdrs_right=''
+setopt prompt_subst prompt_percent
+_cmdrs_zsh_render() {
+  emulate -L zsh                  # REQUIRED: keeps your options away from the bytes
+  setopt extendedglob
+  local MATCH MBEGIN MEND open='%{' close='%}' s
+  s="$(cmdrs)"
+  s=${s//\%/%%}                   # REQUIRED: `%` doubled
+  _cmdrs_left=${s//(#m)$'\e'\[[0-9;]#m/$open$MATCH$close}
+  s="$(cmdrs --side=right)"
+  s=${s//\%/%%}
+  _cmdrs_right=${s//(#m)$'\e'\[[0-9;]#m/$open$MATCH$close}
+}
 _cmdrs_precmd() {
   export AGNOSHI_LAST_EXIT=$?
-  local _l _r
-  _l="$(cmdrs)"
-  _r="$(cmdrs --side=right)"
-  PROMPT="${_l//\%/%%}"        # `%` doubled: render segment content literally
-  RPROMPT="${_r//\%/%%}"
+  _cmdrs_zsh_render
+  setopt prompt_subst prompt_percent
+  PROMPT='${_cmdrs_left}'         # REQUIRED: single quotes, a reference, never the bytes
+  RPROMPT='${_cmdrs_right}'       # REQUIRED: the same
 }
-precmd_functions+=(_cmdrs_precmd)
+(( ${precmd_functions[(I)_cmdrs_precmd]} )) || precmd_functions+=(_cmdrs_precmd)
 ```
 
 Same behavior; no path caching.
 
-## Security: never let zsh expand the prompt string
+## Security: the prompt variable holds a reference, never the bytes
 
 **This applies to any hand-rolled setup, including the paste above.**
 
-`cmdrs` renders bytes it does not choose — a `sit` branch name, the contents of
-`.python-version` / `.nvmrc` / `rust-toolchain` / `VERSION`, `$VIRTUAL_ENV`. A repository
-you merely `cd` into picks those bytes. `cmdrs` strips control bytes, but `$`, `(`, `)`
-and `%` are ordinary printable characters and pass through as text — correctly, they are
-legal in a branch name.
+`cmdrs` renders bytes it does not choose — a directory name, a `sit` branch name, the
+contents of `.python-version` / `.nvmrc` / `rust-toolchain` / `VERSION`, `$VIRTUAL_ENV`. A
+repository you merely `cd` into picks those bytes. `cmdrs` strips control bytes, but `$`,
+`(`, `)`, `` ` `` and `%` are ordinary printable characters and pass through as text —
+correctly, they are legal in a branch name.
 
 So the prompt string is **data, not a script**:
 
-- **Never `setopt prompt_subst`.** It tells zsh to run command substitution on the prompt
-  at every redraw, which turns a repo shipping `.python-version` containing `$(...)` into
-  arbitrary command execution on every keystroke. This adapter set it until v1.1.6; the
-  [2026-08-26 audit](../audit/2026-08-26-audit.md) (finding P-01) confirmed the execution
-  and removed it. It was never needed for this design.
-- **Double `%` → `%%`.** zsh expands `%` prompt escapes whether or not `prompt_subst` is
-  set, so this is a separate channel that the same input reaches.
+- **Never put the rendered bytes in `PROMPT` or `RPROMPT`.** With `prompt_subst` on, zsh
+  runs command substitution on those variables at every redraw. Keep the bytes in another
+  variable and set `PROMPT='${_cmdrs_left}'`. zsh expands that once and does not re-parse
+  the value, so whatever it holds cannot run.
+- **Do not rely on `prompt_subst` being off.** Until 1.2.3 this guide said to leave it off.
+  That is not enough: `promptinit` themes set it through `prompt_opts`, so stock zsh with
+  `prompt adam2` ran commands from a directory name
+  ([2026-11-06 audit](../audit/2026-11-06-audit.md), T-01; [ADR 0011](../adr/0011-prompt-holds-a-reference-not-the-bytes.md)).
+  The adapter now turns the option on, and nothing depends on it. If something turns it off
+  afterwards, the prompt shows the text `${_cmdrs_left}`, which is ugly and safe.
+- **Touch the bytes only under `emulate -L zsh`.** With `glob_subst glob_assign` on, even
+  `var=$bytes` is a glob, and a qualifier like `(e:...:)` in a repo's file runs a command.
+- **Double `%` → `%%`.** zsh expands `%` prompt escapes after the substitution, whatever the
+  option says, so this is a separate channel that the same input reaches.
+
+Sourcing the adapter leaves `prompt_subst` on for the session. If your own `PS2` or
+similar contains `$`, it will now expand.
 
 Same class as CVE-2021-3934 (oh-my-zsh, branch name via `print -P`) and CVE-2021-45444
-(zsh `PROMPT_SUBST`). To self-test any prompt setup: put `$(touch /tmp/x)` in a
-`.python-version`, `cd` there, press enter a few times, and confirm `/tmp/x` does not
-appear.
+(zsh `PROMPT_SUBST`). To self-test any prompt setup, use a directory name, because the
+default segments do not read `.python-version`:
+
+```sh
+mkdir -p '/tmp/t/$(touch PWNED)' && cd '/tmp/t/$(touch PWNED)'
+```
+
+Press enter a few times, then run `ls`. Do this with `setopt prompt_subst` in your shell as
+well. No `PWNED` file may appear.
 
 ## Reverting to starship
 

@@ -25,10 +25,8 @@
 
 var SGR_RESET = "\x1b[0m";
 
-# Strip C0 control bytes (0x00–0x1F) and DEL (0x7F) from `s` and
-# return a heap-alloc'd cstring of the survivors. UTF-8 multi-byte
-# sequences (0x80–0xFF) pass through unchanged — those aren't control
-# bytes in a UTF-8 terminal.
+# Return `s` as a heap-alloc'd cstring holding only what cannot drive a
+# terminal. `_sanitize_bytes` below is the filter and states what it keeps.
 #
 # Audit finding F-1 (2026-05-18; docs/audit/2026-05-18-audit.md).
 # Segments that copy attacker-controllable bytes verbatim — vcs
@@ -43,58 +41,121 @@ var SGR_RESET = "\x1b[0m";
 # this helper between dispatcher return and emit so every segment
 # is covered at one chokepoint; SGR wrappers + separator + glyph
 # come from config-derived strings and stay untouched.
+# The length of the well-formed UTF-8 sequence that starts a run of `n` bytes at `s`,
+# or 0 if there is none. Follows Unicode's table of well-formed sequences, so an
+# overlong form, a surrogate or a value past U+10FFFF is not one.
+fn _utf8_seq_len(s, n): i64 {
+    var c = load8(s);
+    if (c < 0xC2) { return 0; }
+    if (c > 0xF4) { return 0; }
+    var need = 1;
+    var lo = 0x80;
+    var hi = 0xBF;
+    if (c >= 0xF0) {
+        need = 3;
+        if (c == 0xF0) { lo = 0x90; }
+        if (c == 0xF4) { hi = 0x8F; }
+    } else {
+        if (c >= 0xE0) {
+            need = 2;
+            if (c == 0xE0) { lo = 0xA0; }
+            if (c == 0xED) { hi = 0x9F; }
+        }
+    }
+    if (need >= n) { return 0; }
+    var b = load8(s + 1);
+    if (b < lo) { return 0; }
+    if (b > hi) { return 0; }
+    var i = 2;
+    while (i <= need) {
+        b = load8(s + i);
+        if (b < 0x80) { return 0; }
+        if (b > 0xBF) { return 0; }
+        i = i + 1;
+    }
+    return need + 1;
+}
+
+# Copy `len` bytes from `src` to `dst`, which must hold that many, keeping only what
+# cannot drive a terminal. Returns the count. This is the one filter: both output
+# paths below use it, so they cannot drift apart.
+#
+# It owes the terminal one property of its OUTPUT, and every branch keeps it:
+#
+#   No C0 byte, no DEL, and a byte in 0x80..0x9F only inside a well-formed UTF-8
+#   sequence for a code point at or above U+00A0.
+#
+# Audit 2026-08-26, A-05 added the C1 half as a check on adjacent INPUT bytes, `C2`
+# then `80..9F`. U+0080..U+009F are controls: a UTF-8 terminal that honours C1 reads
+# U+009B as CSI and U+009D as OSC. But deleting a byte can join its neighbours, so
+# `C2 01 9B` and `C2 C2 9B 9B` both came out as `C2 9B`, and each nesting level hid
+# from one pass (audit 2026-11-06, T-03). A directory name was enough: VTE, which is
+# GNOME Terminal and others, cleared the screen, set the title and answered a DSR
+# query into the pty. Two segments could also form the pair between them, since each
+# is filtered alone (T-07).
+#
+# The rule above closes all of those, because a `9B` never survives on its own: not
+# after a deletion, not at the start of a segment. It also stops an overlong form, whose
+# last byte is in that range, and a bare `9B` on an 8-bit terminal. It cannot do that
+# for real UTF-8 text: `C4 9B` is the letter U+011B, and an 8-bit terminal reads its
+# second byte as CSI. Keeping both is impossible, and UTF-8 is the case that matters.
+#
+# Bytes 0xA0..0xFF outside a valid sequence stay. A UTF-8 terminal draws a replacement
+# character, and on a Latin-1 terminal they are the letters of a real directory name.
+fn _sanitize_bytes(src, len, dst): i64 {
+    var out = 0;
+    var i = 0;
+    while (i < len) {
+        var c = load8(src + i);
+        if (c < 0x80) {
+            if (c >= 0x20) {
+                if (c != 0x7F) {
+                    store8(dst + out, c);
+                    out = out + 1;
+                }
+            }
+            i = i + 1;
+        } else {
+            var seq = _utf8_seq_len(src + i, len - i);
+            if (seq == 0) {
+                if (c >= 0xA0) {
+                    store8(dst + out, c);
+                    out = out + 1;
+                }
+                i = i + 1;
+            } else {
+                var is_c1 = 0;
+                if (c == 0xC2) {
+                    if (load8(src + i + 1) < 0xA0) { is_c1 = 1; }
+                }
+                if (is_c1 == 0) {
+                    memcpy(dst + out, src + i, seq);
+                    out = out + seq;
+                }
+                i = i + seq;
+            }
+        }
+    }
+    return out;
+}
+
 fn sanitize_segment_output(s): i64 {
     if (s == 0) { return 0; }
     var len = strlen(s);
     var out = alloc(len + 1);
     # Audit 2026-08-26, P-06. stdlib `alloc` RETURNS 0 on failure (OOM, or a
-    # size outside (0, ALLOC_MAX]) — it does not abort. Unguarded, the loop
-    # below would `store8` from address 0 for every byte of `s`. This is the
-    # chokepoint EVERY segment's output crosses on its way to the terminal,
-    # and a prompt renderer that segfaults takes the user's shell prompt with
-    # it, so the one comparison is worth its cost here even though the render
-    # path allocates modestly. Returning 0 is already the "nothing to paint"
-    # contract render_prompt handles. Same defence cmdit added in its 1.2.4
-    # security release for cmdit_new.
+    # size outside (0, ALLOC_MAX]) — it does not abort. Returning 0 is the
+    # "nothing to paint" contract render_prompt handles.
     if (out == 0) { return 0; }
-    var out_len = 0;
-    var i = 0;
-    while (i < len) {
-        var c = load8(s + i);
-        # Audit 2026-08-26, A-05. The original filter dropped bytes < 0x20 and
-        # 0x7F and let everything >= 0x80 through, on the reasoning that high
-        # bytes are UTF-8 continuation bytes rather than controls. True of the
-        # BYTES, false of the CODEPOINTS they decode to: U+0080–U+009F are the
-        # C1 control set, and a UTF-8 terminal that honours C1 reads U+009B as
-        # CSI and U+009D as OSC — the very sequences F-1 exists to stop, smuggled
-        # past it in two-byte form. Verified: `\xc2\x9b31mRED\xc2\x9d0;title`
-        # reached stdout byte-for-byte through the old filter.
-        #
-        # U+0080–U+009F encode as 0xC2 followed by 0x80–0x9F, so drop that pair.
-        # 0xC2 followed by 0xA0–0xBF is ordinary Latin-1 punctuation and stays.
-        var skip = 0;
-        if (c == 194) {                                 # 0xC2
-            if (i + 1 < len) {
-                var c2 = load8(s + i + 1);
-                if (c2 >= 128) {
-                    if (c2 <= 159) { skip = 1; }        # 0x80..0x9F -> C1
-                }
-            }
-        }
-        if (skip == 1) {
-            i = i + 2;
-        } else {
-            if (c >= 32) {
-                if (c != 127) {
-                    store8(out + out_len, c);
-                    out_len = out_len + 1;
-                }
-            }
-            i = i + 1;
-        }
-    }
-    store8(out + out_len, 0);
+    store8(out + _sanitize_bytes(s, len, out), 0);
     return out;
+}
+
+# strlen for what `sanitize_segment_output` returned. stdlib strlen faults on 0, so P-06's
+# guard above only moved the crash to the caller's next line (audit 2026-11-06, M-01).
+fn sanitized_len(s): i64 {
+    if (s == 0) { return 0; }
+    return strlen(s);
 }
 
 # Write `len` bytes of `buf` to stderr with the same filter
@@ -114,31 +175,7 @@ fn eprint_sanitized(buf, len): i64 {
     if (len <= 0) { return 0; }
     var out = alloc(len);
     if (out == 0) { return 0; }
-    var out_len = 0;
-    var i = 0;
-    while (i < len) {
-        var c = load8(buf + i);
-        var skip = 0;
-        if (c == 194) {                                 # 0xC2 + 0x80..0x9F -> C1
-            if (i + 1 < len) {
-                var c2 = load8(buf + i + 1);
-                if (c2 >= 128) {
-                    if (c2 <= 159) { skip = 1; }
-                }
-            }
-        }
-        if (skip == 1) {
-            i = i + 2;
-        } else {
-            if (c >= 32) {
-                if (c != 127) {
-                    store8(out + out_len, c);
-                    out_len = out_len + 1;
-                }
-            }
-            i = i + 1;
-        }
-    }
+    var out_len = _sanitize_bytes(buf, len, out);
     if (out_len > 0) { syscall(SYS_WRITE, STDERR, out, out_len); }
     return 0;
 }

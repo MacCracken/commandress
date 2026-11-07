@@ -19,6 +19,25 @@
 # `src/pathlookup.cyr` in v0.5.0 so the M4 language-env probes share
 # one implementation (still pending Cyrius v6.x Item 8 upstream).
 
+# 1 if `sit status` output holds the clean message as a whole line. A substring scan
+# is not enough: real `sit` lists an untracked name as an indented line, so a repo
+# could add a file with this name and hide its own dirty marker (audit 2026-11-06,
+# T-11).
+fn _vcs_has_clean_line(buf, n): i64 {
+    var msg = "nothing to commit, working tree clean";
+    var mlen = strlen(msg);
+    var i = 0;
+    while (i + mlen <= n) {
+        if (memeq(buf + i, msg, mlen) == 1) {
+            if (i + mlen == n) { return 1; }
+            if (load8(buf + i + mlen) == 10) { return 1; }
+        }
+        while (i < n && load8(buf + i) != 10) { i = i + 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
 # Pure parser. Given the raw stdout bytes from `sit status` and a
 # dirty_marker cstring (or 0 for no marker), returns a heap-alloc'd
 # NUL-terminated cstring formatted per the contract above, or 0 on
@@ -39,24 +58,8 @@ fn vcs_parse_render(buf, n, dirty_marker): i64 {
     var branch_len = i - prefix_len;
     if (branch_len == 0) { return 0; }
 
-    var clean_msg = "nothing to commit, working tree clean";
-    var cmlen = strlen(clean_msg);
     var dirty = 1;
-    if (n >= cmlen) {
-        var ci = 0;
-        var scan = 1;
-        while (scan == 1) {
-            if (ci + cmlen > n) { scan = 0; }
-            else {
-                if (memeq(buf + ci, clean_msg, cmlen) == 1) {
-                    dirty = 0;
-                    scan = 0;
-                } else {
-                    ci = ci + 1;
-                }
-            }
-        }
-    }
+    if (_vcs_has_clean_line(buf, n) == 1) { dirty = 0; }
 
     var marker_len = 0;
     if (dirty == 1) {
@@ -94,7 +97,7 @@ fn vcs_render(dirty_marker, budget_ms): i64 {
     #
     # This function's 4 KB cwd buffer + 8 KB capture buffer make a 12,416-byte
     # stack frame — measured, the largest in the agnos binary
-    # (`sub $0x3080,%rsp`). AGNOS hands ring-3 only ~12 KB of init stack, so the
+    # (`sub $0x3080,%rsp`). AGNOS handed ring-3 only ~12 KB of init stack (2 MB since kernel 1.56.46), so the
     # frame alone is at or over the whole budget. `lib/io.cyr::getenv` carries
     # the same guard for the same reason and cites the crash it caused
     # (agnoshi_147 #PF, Cyrius CHANGELOG 6.1.12): a `var[]` in a statically-dead

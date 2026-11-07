@@ -32,6 +32,7 @@ fn time_format(epoch, fmt): i64 {
     if (flen == 0) { return 0; }
 
     var d = epoch_to_date(epoch);
+    if (d == 0) { return 0; }
     var year = load64(d);
     var mon = load64(d + 8);
     var day = load64(d + 16);
@@ -43,6 +44,7 @@ fn time_format(epoch, fmt): i64 {
     # 4-char year spec which doubles its 2-byte input. Generously
     # allocate 4× fmt length + NUL — covers any reasonable spec mix.
     var out = alloc(flen * 4 + 1);
+    if (out == 0) { return 0; }                     # the size scales with the config
     var oi = 0;
     var i = 0;
     while (i < flen) {
