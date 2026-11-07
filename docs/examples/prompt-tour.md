@@ -211,9 +211,9 @@ export AGNOSHI_PROMPT_CMD=cmdrs
 
 Everything this tour once listed as upcoming has shipped: `time` / `hostname` / `user` and
 per-segment timeouts (v0.4.0), the language-env segments (v0.5.0), colour + powerline +
-right-prompt (v0.6.0), and probe caching (v0.7.0). v1.0 froze the schema, and hex and 256-colour
-values arrived at 1.3.0.
+right-prompt (v0.6.0), and probe caching (v0.7.0). v1.0 froze the schema, hex and 256-colour
+values arrived at 1.3.0, and multi-palette at 1.3.1.
 
 What is genuinely still ahead is sequenced in
-[`../development/roadmap.md`](../development/roadmap.md) — multi-palette (1.3.x), `package.json`
-and opt-in version shellouts (1.4.x), a per-segment output cap and local-time support (1.5.x). Every item there is pinned to the line of code that defers it.
+[`../development/roadmap.md`](../development/roadmap.md) — `package.json` and opt-in version
+shellouts (1.4.x), a per-segment output cap and local-time support (1.5.x). Every item there is pinned to the line of code that defers it.

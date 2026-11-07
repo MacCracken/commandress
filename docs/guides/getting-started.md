@@ -85,6 +85,9 @@ fg = "#8be9fd"       # exact, in a truecolor terminal
 Anything else renders with no colour and no warning. `cmdrs` emits the form you wrote, so a
 hex value on a terminal without truecolor shows however that terminal chooses.
 
+To keep several colour schemes in one file, see
+[switching between palettes](../themes/README.md#switching-between-palettes).
+
 Missing config file → baked-in defaults. Unknown field → warning on stderr, render
 continues with defaults for that field. Every knob is listed in
 [`../examples/commandress.cyml.example`](../examples/commandress.cyml.example); drop-in

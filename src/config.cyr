@@ -54,6 +54,10 @@
 #   primary = "cyan"                      # define named slots that segments can reference
 #   accent  = "magenta"
 #
+#   [[palettes.light]]                    # selected by a top-level `palette = "light"`,
+#   primary = "blue"                      # above the first table; overrides [[palette]]
+#                                         # slot by slot
+#
 #   [[segments.cwd]]
 #   fg = "palette:primary"                # `palette:<name>` resolves at config-load time
 #
@@ -469,15 +473,13 @@ fn _load_color_only_section(c, sgr_offset, bg_offset, sections, name, palette): 
     return 0;
 }
 
-# Load the [[palette]] section into a flat alternating-cstring vec.
-# Returns an empty vec when the section is absent so callers can pass
-# it through `_resolve_color_value` without a null check.
+# Append one palette section's slots to `p`, a flat alternating-cstring vec.
 #
 # Palette names are arbitrary (ADR 0007 § 2), so `ui.primary = "cyan"` must stay
 # reachable as `palette:ui.primary` even though TOML parks it in a sub-table.
-fn _load_palette(sections): i64 {
-    var p = vec_new();
-    var pairs = _section_pairs(sections, "palette");
+fn _append_palette(p, sections, name): i64 {
+    var plen = strlen(name);
+    var pairs = _section_pairs(sections, name);
     if (pairs != 0) {
         var pn = vec_len(pairs);
         var pi = 0;
@@ -502,13 +504,13 @@ fn _load_palette(sections): i64 {
     while (si < n) {
         var s = vec_get(sections, si);
         var sname = bayan_toml_section_name(s);
-        if (_is_subtable(sname, "palette", 7) == 1) {
+        if (_is_subtable(sname, name, plen) == 1) {
             var sub = bayan_toml_section_pairs(s);
             var sn = vec_len(sub);
             var sp = 0;
             while (sp < sn) {
                 var entry = vec_get(sub, sp);
-                var dotted = _dotted_key(sname, 7, bayan_toml_pair_key(entry));
+                var dotted = _dotted_key(sname, plen, bayan_toml_pair_key(entry));
                 if (dotted != 0) {
                     vec_push(p, dotted);
                     vec_push(p, str_cstr(bayan_toml_pair_value(entry)));
@@ -517,6 +519,71 @@ fn _load_palette(sections): i64 {
             }
         }
         si = si + 1;
+    }
+    return 0;
+}
+
+# 1 if section `name`, or a sub-table of it, exists. An empty table counts: it is a
+# palette that changes nothing. So does a sub-table, because TOML makes
+# `[[palettes.day.warm]]` define `palettes.day` too, and `_append_palette` loads its slots.
+fn _section_exists(sections, name): i64 {
+    var plen = strlen(name);
+    var n = vec_len(sections);
+    var i = 0;
+    while (i < n) {
+        var sname = bayan_toml_section_name(vec_get(sections, i));
+        if (str_eq_cstr(sname, name) == 1) { return 1; }
+        if (_is_subtable(sname, name, plen) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The value of the top-level `palette` selector as a cstring, or 0 when there is none.
+# A key above the first table header lands in bayan's unnamed root section. Below a
+# header it belongs to that table: under [[prompt]] the allow-list warns about it.
+fn _palette_selector(sections): i64 {
+    var root = _section_pairs(sections, "");
+    if (root == 0) { return 0; }
+    var v = bayan_toml_get_by_cstr(root, "palette");
+    if (v == 0) { return 0; }
+    if (str_len(v) == 0) { return 0; }
+    return str_cstr(v);
+}
+
+# Load the palette into a flat alternating-cstring vec, [k0, v0, k1, v1, ...]. Absent
+# sections give an empty vec, so callers can pass it to `_resolve_color_value` without
+# a null check.
+#
+# [[palette]] goes in first and the selected `[[palettes.<name>]]` after it, so with
+# `_palette_lookup` taking the last match, the selected palette overrides slot by slot.
+# A variant then only names what it changes, and a slot it leaves out keeps its colour.
+# An unknown name warns and leaves [[palette]] in force, so a typo cannot blank a theme.
+fn _load_palette(sections): i64 {
+    var p = vec_new();
+    _append_palette(p, sections, "palette");
+
+    var sel = _palette_selector(sections);
+    if (sel == 0) { return p; }
+
+    var prefix = "palettes.";
+    var plen = strlen(prefix);
+    var slen = strlen(sel);
+    var name = alloc(plen + slen + 1);
+    if (name == 0) { return p; }
+    memcpy(name, prefix, plen);
+    memcpy(name + plen, sel, slen);
+    store8(name + plen + slen, 0);
+
+    if (_section_exists(sections, name) == 1) {
+        _append_palette(p, sections, name);
+    } else {
+        # audit A-06: this echoes a raw config value.
+        var msg = "warning: unknown palette '";
+        syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+        eprint_sanitized(sel, slen);
+        msg = "' (ignored)\n";
+        syscall(SYS_WRITE, STDERR, msg, strlen(msg));
     }
     return p;
 }
@@ -553,10 +620,10 @@ fn config_load(path): i64 {
     var sections = bayan_toml_parse(str_new(hdr, hlen));
     if (sections == 0) { return c; }
 
-    # [[palette]] — optional named-slot table parsed first so every
-    # segment block below can resolve `palette:<name>` references in
-    # its fg/bg fields. Absent → empty vec (resolution falls through
-    # to "no code emitted" on any palette ref it can't bind).
+    # [[palette]], and any `[[palettes.<name>]]` the top-level `palette` key selects,
+    # parsed first so every segment block below can resolve `palette:<slot>` references
+    # in its fg/bg fields. Absent → empty vec (resolution falls through to "no code
+    # emitted" on any palette ref it can't bind).
     var palette = _load_palette(sections);
 
     # [[prompt]] — segment order + separator + trailer.

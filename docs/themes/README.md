@@ -50,6 +50,33 @@ Open a new prompt — the precmd hook re-runs `cmdrs` on the next redraw, no she
 
 Each theme is a `[[palette]]` block (named slots) plus `[[segments.X]]` blocks that reference the slots via `fg = "palette:<name>"`. Copy any existing theme as a starting point and tweak the palette values. See [`../adr/0005-language-env-probe-pattern.md`](../adr/0005-language-env-probe-pattern.md) for the env-segment shape and the [v0.6.0 CHANGELOG](../../CHANGELOG.md) for the full color contract.
 
+## Switching between palettes
+
+Keep several palettes in one file and pick one with a single line. `palette` goes **above the first table**: below one, it belongs to that table.
+
+```cyml
+palette = "light"                # delete this line, or set "", for the plain [[palette]]
+
+[[palette]]
+primary = "cyan"
+accent  = "magenta"
+
+[[palettes.light]]
+primary = "blue"                 # overrides [[palette]]
+
+[[palettes.solar]]
+primary = "#b58900"
+accent  = "#2aa198"
+
+[[segments.cwd]]
+fg = "palette:primary"
+
+[[segments.exit]]
+fg = "palette:accent"            # `light` leaves this out, so it stays magenta
+```
+
+The selected palette overrides `[[palette]]` slot by slot, so a variant only has to name what it changes. A name with no matching table warns on stderr and leaves `[[palette]]` in force.
+
 ## Powerline mode
 
 Set `separator_style = "powerline"` plus a `separator_glyph` (and optionally `right_separator_glyph` for the right-prompt side) and `bg` on every segment you want to render as a colored block:

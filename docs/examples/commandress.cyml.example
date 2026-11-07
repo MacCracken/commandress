@@ -7,6 +7,11 @@
 # the `[[X]]` form began as a workaround for a stdlib parser gap that has
 # since closed. Either works; pick one and be consistent.
 
+# Optional, and must sit above the first table: picks a [[palettes.<name>]] below. It
+# overrides [[palette]] slot by slot, so a palette only names what it changes. An
+# unknown name warns on stderr and leaves [[palette]] in force.
+# palette = "light"
+
 [[prompt]]
 # Segment order — left-to-right. Names must match registered segments
 # (see render.cyr::_seg_fn_for). Unknown names warn to stderr; they

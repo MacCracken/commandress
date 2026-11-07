@@ -144,6 +144,7 @@ The cache layout is implementation-bound but the public-facing `/tmp/commandress
 - **Hex / 256-colour values.** Reserved in §3 — when implemented, they become first-class accepted values without breaking anyone.
   > **Update 2026-11-06** (annotation, not a revision): delivered at 1.3.0. See §3.
 - **Multi-palette via `[[palettes.<name>]]` + top-level `palette = "<name>"` selector.** This is the v1 theme-switching path committed during the M5 colour work; lands in a v1.x release as additive grammar. Single `[[palette]]` (the v0.6.0 form) stays accepted.
+  > **Update 2026-11-06** (annotation, not a revision): delivered at 1.3.1. The selected palette overrides `[[palette]]` slot by slot, so a variant names only what it changes and a slot it leaves out keeps its colour. An unknown name warns and leaves `[[palette]]` in force, and `palette = ""` selects nothing. The selector is a top-level key, so it goes above the first table: below one it belongs to that table, and under `[[prompt]]` the allow-list warns about it.
 - **Per-segment `budget_ms` / cache TTL override.** The M2 follow-up slot for `[[segments.vcs]]`; additive.
   > **Update 2026-11-06** (annotation, not a revision): `[[segments.vcs]] budget_ms` shipped at 1.2.2. It is additive, in whole milliseconds from 1 to 1000, and a refused value warns and keeps the default of 5.
 - **The internal `Config` struct layout.** Field offsets in `src/config.cyr` are implementation; nothing external depends on them.

@@ -775,6 +775,136 @@ fn test_theme_powerline(): i64 {
     return 0;
 }
 
+# ---- multi-palette (ADR 0007, reserved at the freeze) ----
+
+# Load `content` as a config with stderr captured. Returns the Config, and leaves what
+# was written to stderr at `_captured_err`.
+var _captured_err = 0;
+fn _load_capturing_stderr(name, content): i64 {
+    var path = _write_test_config(name, content);
+    var errpath = "/tmp/cmdrs-test-stderr-out";
+    var fd = file_open(errpath, O_WRONLY | O_CREAT | O_TRUNC, 0x180);
+    assert(fd >= 0, "open the stderr capture file");
+    var saved = syscall(SYS_DUP, 2);
+    sys_dup2(fd, 2);
+    file_close(fd);
+    var c = config_load(path);
+    sys_dup2(saved, 2);
+    file_close(saved);
+    var buf = alloc(1024);
+    var n = file_read_all(errpath, buf, 1023);
+    syscall(SYS_UNLINK, errpath);
+    syscall(SYS_UNLINK, path);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    _captured_err = buf;
+    return c;
+}
+
+fn test_palette_selector_picks_a_palette(): i64 {
+    var c = _load_capturing_stderr("pal-pick", "palette = \"day\"\n[[palettes.night]]\naccent = \"blue\"\n[[palettes.day]]\naccent = \"yellow\"\n[[segments.cwd]]\nfg = \"palette:accent\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[33m", "the selected palette supplies the slot");
+    _streq_or_dump(_captured_err, "", "a known palette warns about nothing");
+    return 0;
+}
+
+# The selected palette overrides [[palette]] slot by slot, so a theme variant only has to
+# name what it changes, and a slot it leaves out keeps its colour.
+fn test_palette_selected_overlays_the_base(): i64 {
+    var c = _load_capturing_stderr("pal-overlay", "palette = \"day\"\n[[palette]]\nfirst = \"red\"\nsecond = \"green\"\n[[palettes.day]]\nsecond = \"blue\"\n[[segments.cwd]]\nfg = \"palette:first\"\n[[segments.exit]]\nfg = \"palette:second\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "a slot the palette leaves out falls through");
+    _streq_or_dump(cfg_sgr_exit(c), "\x1b[34m", "a slot the palette names overrides");
+    return 0;
+}
+
+# A typo must not blank the theme: it warns, and [[palette]] still applies.
+fn test_palette_unknown_selector_warns_and_keeps_the_base(): i64 {
+    var c = _load_capturing_stderr("pal-unknown", "palette = \"dya\"\n[[palette]]\na = \"red\"\n[[palettes.day]]\na = \"blue\"\n[[segments.cwd]]\nfg = \"palette:a\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "[[palette]] still applies");
+    _streq_or_dump(_captured_err, "warning: unknown palette 'dya' (ignored)\n", "the typo is named");
+    return 0;
+}
+
+# A name must match whole: `no` is not `nord`, and `nord` is not `nordic`.
+fn test_palette_selector_matches_the_whole_name(): i64 {
+    var c = _load_capturing_stderr("pal-prefix", "palette = \"no\"\n[[palettes.nord]]\na = \"red\"\n[[segments.cwd]]\nfg = \"palette:a\"\n");
+    assert_eq(cfg_sgr_cwd(c), 0, "a prefix of a palette name selects nothing");
+    assert_neq(strlen(_captured_err), 0, "and warns");
+    return 0;
+}
+
+# The warning echoes a config value, so it goes through the filter (audit A-06).
+fn test_palette_warning_is_sanitized(): i64 {
+    _load_capturing_stderr("pal-esc", "palette = \"a\\u001b[31mb\"\n");
+    _streq_or_dump(_captured_err, "warning: unknown palette 'a[31mb' (ignored)\n", "ESC does not reach the terminal");
+    return 0;
+}
+
+# Without a selector the tables mean nothing, which is what they meant before 1.3.1.
+fn test_palette_tables_need_a_selector(): i64 {
+    var c = _load_capturing_stderr("pal-nosel", "[[palettes.day]]\na = \"blue\"\n[[segments.cwd]]\nfg = \"palette:a\"\n");
+    assert_eq(cfg_sgr_cwd(c), 0, "an unselected palette supplies nothing");
+    _streq_or_dump(_captured_err, "", "and that is not worth a warning");
+    return 0;
+}
+
+fn test_palette_empty_selector_selects_nothing(): i64 {
+    var c = _load_capturing_stderr("pal-empty", "palette = \"\"\n[[palette]]\na = \"red\"\n[[segments.cwd]]\nfg = \"palette:a\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "an empty selector leaves [[palette]] alone");
+    _streq_or_dump(_captured_err, "", "and is no typo");
+    return 0;
+}
+
+# An empty table is a palette that changes nothing, not a missing one.
+fn test_palette_empty_table_is_a_palette(): i64 {
+    var c = _load_capturing_stderr("pal-emptyt", "palette = \"plain\"\n[[palette]]\na = \"red\"\n[[palettes.plain]]\n[[segments.cwd]]\nfg = \"palette:a\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "the base still applies");
+    _streq_or_dump(_captured_err, "", "an empty palette exists");
+    return 0;
+}
+
+# TOML parks `ui.primary` in a sub-table, and palette names may hold dots (ADR 0007 § 2).
+fn test_palette_dotted_slots_in_a_selected_palette(): i64 {
+    var c = _load_capturing_stderr("pal-dotted", "palette = \"day\"\n[[palettes.day]]\nui.primary = \"cyan\"\n[[segments.cwd]]\nfg = \"palette:ui.primary\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[36m", "a dotted slot resolves");
+    _streq_or_dump(_captured_err, "", "and warns about nothing");
+    return 0;
+}
+
+# TOML: `[[palettes.day.warm]]` defines `palettes.day` as well, with no header of its own.
+fn test_palette_implicit_table_is_a_palette(): i64 {
+    var c = _load_capturing_stderr("pal-implicit", "palette = \"day\"\n[[palettes.day.warm]]\nx = \"red\"\n[[segments.cwd]]\nfg = \"palette:warm.x\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[31m", "its slots load as dotted names");
+    _streq_or_dump(_captured_err, "", "and it is no typo");
+    return 0;
+}
+
+fn test_palette_dotted_palette_name(): i64 {
+    var c = _load_capturing_stderr("pal-dotname", "palette = \"day.warm\"\n[[palettes.day]]\na = \"red\"\n[[palettes.day.warm]]\na = \"yellow\"\n[[segments.cwd]]\nfg = \"palette:a\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[33m", "a palette name can hold a dot");
+    return 0;
+}
+
+fn test_palette_single_bracket_table(): i64 {
+    var c = _load_capturing_stderr("pal-single", "palette = \"day\"\n[palettes.day]\na = \"blue\"\n[segments.cwd]\nfg = \"palette:a\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[34m", "both section spellings work here too");
+    return 0;
+}
+
+fn test_palette_selected_holds_the_new_color_forms(): i64 {
+    var c = _load_capturing_stderr("pal-hex", "palette = \"day\"\n[[palettes.day]]\na = \"#8be9fd\"\nb = \"244\"\n[[segments.cwd]]\nfg = \"palette:a\"\nbg = \"palette:b\"\n");
+    _streq_or_dump(cfg_sgr_cwd(c), "\x1b[38;2;139;233;253;48;5;244m", "hex and 256 work in a selected palette");
+    return 0;
+}
+
+# Inside a table it is that table's key. Under [[prompt]] the allow-list says so.
+fn test_palette_selector_must_be_top_level(): i64 {
+    var c = _load_capturing_stderr("pal-misplaced", "[[prompt]]\npalette = \"day\"\n[[palettes.day]]\na = \"blue\"\n[[segments.cwd]]\nfg = \"palette:a\"\n");
+    assert_eq(cfg_sgr_cwd(c), 0, "a selector under [[prompt]] selects nothing");
+    _streq_or_dump(_captured_err, "warning: unknown config field 'palette' in [[prompt]] (ignored)\n", "and says why");
+    return 0;
+}
+
 # ---- render_prompt, byte for byte ----
 
 # What render_prompt writes to stdout, as a cstring. The suite never ran this function
@@ -2784,6 +2914,20 @@ fn main(): i64 {
     test_cache_key_is_fnv1a64();
     test_config_vcs_budget_ms();
     test_theme_powerline();
+    test_palette_selector_picks_a_palette();
+    test_palette_selected_overlays_the_base();
+    test_palette_unknown_selector_warns_and_keeps_the_base();
+    test_palette_selector_matches_the_whole_name();
+    test_palette_warning_is_sanitized();
+    test_palette_tables_need_a_selector();
+    test_palette_empty_selector_selects_nothing();
+    test_palette_empty_table_is_a_palette();
+    test_palette_dotted_slots_in_a_selected_palette();
+    test_palette_implicit_table_is_a_palette();
+    test_palette_dotted_palette_name();
+    test_palette_single_bracket_table();
+    test_palette_selected_holds_the_new_color_forms();
+    test_palette_selector_must_be_top_level();
     test_render_powerline_left();
     test_render_powerline_right();
     test_render_powerline_right_no_block_no_glyph();

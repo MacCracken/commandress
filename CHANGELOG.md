@@ -6,6 +6,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-06
+
+Multi-palette, the last of the colour work [ADR 0007](docs/adr/0007-schema-freeze.md) reserved at the v1.0
+freeze. Additive: with no selector in a config, nothing changes. The toolchain and deps are unchanged.
+
+### Added
+
+- **`[[palettes.<name>]]` tables and a top-level `palette = "<name>"` selector**, so one file can hold
+  several colour schemes and switch with a line.
+  - **The selected palette overrides `[[palette]]` slot by slot.** A variant only names what it changes,
+    and a slot it leaves out keeps its colour. The ADR left this open. Overlaying means a palette that
+    forgets a slot cannot lose that colour.
+  - **An unknown name warns on stderr and leaves `[[palette]]` in force**, so a typo cannot blank a theme.
+    The name is filtered before it is echoed.
+  - `palette = ""` selects nothing, and an empty table is a palette that changes nothing.
+  - **The selector must sit above the first table.** Below one, TOML makes it that table's key. Under
+    `[[prompt]]` or a segment the allow-list warns about it. Under a palette table it is silently a slot
+    named `palette`, with no warning, because a slot can have any name.
+  - Hex, 256-colour and dotted slots all work in a selected palette, and palette names can hold dots.
+  - See [switching between palettes](docs/themes/README.md#switching-between-palettes).
+
+### Performance
+
+| | 1.3.0 | 1.3.1 | Delta |
+|---|---|---|---|
+| Cold start, no config | 285 µs | 287 µs | flat |
+| Cold start, largest theme | 504 µs | 506 µs | flat |
+| `config_load`, largest theme | 60.7 µs | 61.5 µs | +1 %: one lookup for the selector |
+| `render_prompt` | 11.37 µs | 11.37 µs | flat |
+| Text, x86_64 | 152,983 B | 154,153 B | +1,170 B |
+| Binary, x86_64 | 158,016 B | 162,168 B | +4,152 B, mostly page rounding as the text crossed a boundary |
+
+### Tests
+
+- 551 assertions across 221 tests, from 513 across 207.
+- 79 mutations, all caught. One survived the first run and showed a test claiming more than it covered.
+- **Differential 1.3.0 → 1.3.1: 6,163 cases, 0 differences.** No corpus config has a selector, so this shows
+  the existing behaviour did not move.
+- The example in `docs/themes/README.md` was extracted and run as a config, including its claim about
+  which slot falls through.
+
 ## [1.3.0] - 2026-11-06
 
 Hex and 256-colour values, the two forms [ADR 0007](docs/adr/0007-schema-freeze.md) reserved at the v1.0
