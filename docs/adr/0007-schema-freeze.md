@@ -75,6 +75,8 @@ The exhaustive set of accepted fields per `[[…]]` section. Unknown fields warn
 
 **`[[segments.hostname]] / [[segments.user]] / [[segments.cyrius_env]] / [[segments.python_env]] / [[segments.node_env]] / [[segments.rustup_env]]`** — colour-only sections, fields `fg` / `bg` / `style` only.
 
+> **Update 2026-11-06** (annotation, not a revision): since 1.4.1 `python_env`, `node_env` and `rustup_env` also take `shellout` (bool, default false) and `budget_ms` (1 to 1000, default 50). Additive. See [ADR 0014](0014-version-probes-never-see-the-repo.md).
+
 ### 3. Colour value space
 
 | Form | Example | Accepted |

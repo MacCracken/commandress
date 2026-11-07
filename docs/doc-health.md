@@ -42,7 +42,7 @@ Three more were stale claims rather than stale advice:
 
 ## At a glance
 
-**53 docs**: 32 markdown under `docs/`, 6 theme `.cyml` + 1 annotated `.example`, the benchmark CSV,
+**54 docs**: 33 markdown under `docs/`, 6 theme `.cyml` + 1 annotated `.example`, the benchmark CSV,
 plus `README.md`, `CHANGELOG.md`, `CLAUDE.md`, `adapters/README.md`, and the three adapters and six
 scripts whose header comments carry rationale.
 
@@ -63,7 +63,7 @@ scripts whose header comments carry rationale.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-11-06 | ✅ Fresh | Status line, layout tree, roadmap pointers. |
-| `CHANGELOG.md` | 2026-11-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.4.0. |
+| `CHANGELOG.md` | 2026-11-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.4.1. |
 | `CLAUDE.md` | 2026-08-26 | 🔵 Evergreen | Process + rules. |
 | `adapters/README.md` | 2026-11-06 | ✅ Fresh | Security section rewritten around the reference rule (ADR 0011). |
 
@@ -71,27 +71,28 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `state.md` | 2026-11-06 | ✅ Fresh | **Rotates every release.** Through 1.4.0. |
-| `roadmap.md` | 2026-11-06 | ✅ Fresh | The 1.2.3, 1.3.x and 1.4.0 items moved to the CHANGELOG. New items at 1.5.0 and 1.x.x, each pinned to the audit. |
+| `state.md` | 2026-11-06 | ✅ Fresh | **Rotates every release.** Through 1.4.1. |
+| `roadmap.md` | 2026-11-06 | ✅ Fresh | The 1.2.3, 1.3.x and 1.4.x slots moved to the CHANGELOG. New items at 1.5.0 and 1.x.x, each pinned to the audit. |
 
-### `docs/adr/` — 13 records
+### `docs/adr/` — 14 records
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-11-06 | ✅ Fresh | Index; 13 entries. |
+| `README.md` | 2026-11-06 | ✅ Fresh | Index; 14 entries. |
 | `0001-separate-repo-from-agnoshi.md` | 2026-05-15 | 🔵 Evergreen | Accepted; stands. |
 | `0002-segment-rendering-model.md` | 2026-05-17 | 🟢 Current | Accepted. Still describes the shipped model. |
 | `0003-config-format.md` | 2026-05-17 | 🟢 Current | Accepted. |
 | `0004-vcs-probe-via-sit.md` | 2026-05-17 | 🟢 Current | Accepted. |
-| `0005-language-env-probe-pattern.md` | 2026-11-06 | ✅ Fresh | Accepted. Annotated at 1.2.2 and 1.4.0. |
+| `0005-language-env-probe-pattern.md` | 2026-11-06 | ✅ Fresh | Accepted. Annotated at 1.2.2, 1.4.0 and 1.4.1. |
 | `0006-config-path-rename.md` | 2026-05-18 | 🟢 Current | Accepted. |
-| `0007-schema-freeze.md` | 2026-11-06 | ✅ Fresh | Accepted, and load-bearing. Annotated at 1.2.2, 1.3.0 and 1.3.1, as what it reserved shipped. |
+| `0007-schema-freeze.md` | 2026-11-06 | ✅ Fresh | Accepted, and load-bearing. Annotated at 1.2.2, 1.3.0, 1.3.1 and 1.4.1, as what it reserved shipped. |
 | `0008-cli-parsing-via-cmdit.md` | 2026-08-26 | 🟢 Current | Accepted. |
 | `0009-config-parsing-via-bayan.md` | 2026-11-06 | ✅ Fresh | Accepted. Its "never reads a repo-local config" is annotated as out of date. |
 | `0010-dead-code-elimination-on-every-build.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.2.2. |
 | `0011-prompt-holds-a-reference-not-the-bytes.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.2.3. Reverses P-01's approach. |
-| `0012-cache-bounded-by-construction.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.2.3. Replaces the planned eviction. |
+| `0012-cache-bounded-by-construction.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.2.3. Replaces the planned eviction. Re-checked at 1.4.1. |
 | `0013-package-json-via-flat-bayan-json.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.4.0, with the measurements for all three candidates. |
+| `0014-version-probes-never-see-the-repo.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.4.1. Why the roadmap's plan could not be built as written. |
 | `template.md` | 2026-05-15 | 🔵 Evergreen | Refresh only if the ADR shape changes. |
 
 ### `docs/architecture/` — 3 notes
@@ -100,7 +101,7 @@ scripts whose header comments carry rationale.
 |---|---|---|---|
 | `README.md` | 2026-08-26 | 🟢 Current | Index; 3 entries. |
 | `001-prompt-render-budget.md` | 2026-11-06 | ✅ Fresh | Now says which CI step sees a real cold start. |
-| `002-shellout-watchdog.md` | 2026-11-06 | ✅ Fresh | "Nothing after the loop may block", with the third way that was got wrong. |
+| `002-shellout-watchdog.md` | 2026-11-06 | ✅ Fresh | "Nothing after the loop may block", with the third way that was got wrong. "Where the child runs" at 1.4.1. |
 | `003-cyrius-lock-shape.md` | 2026-11-06 | ✅ Fresh | New § 5: what each guard catches, with the measured misses. |
 
 ### `docs/audit/`
@@ -115,7 +116,7 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `getting-started.md` | 2026-11-06 | ✅ Fresh | Updated at 1.2.2 and 1.2.3. Colour forms at 1.3.0. |
+| `getting-started.md` | 2026-11-06 | ✅ Fresh | Updated at 1.2.2 and 1.2.3. Colour forms at 1.3.0, version probes at 1.4.1. |
 | `zsh-setup.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** New paste, executed under attack. |
 | `bash-setup.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** New paste, executed under attack. |
 
@@ -124,7 +125,7 @@ scripts whose header comments carry rationale.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `prompt-tour.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** The warning no longer describes the old hook as safe. |
-| `commandress.cyml.example` | 2026-11-06 | ✅ Fresh | Gained `budget_ms` at 1.2.2, the colour forms at 1.3.0, and the selector at 1.3.1. |
+| `commandress.cyml.example` | 2026-11-06 | ✅ Fresh | Gained `budget_ms` at 1.2.2, the colour forms at 1.3.0, the selector at 1.3.1, and `shellout` at 1.4.1. |
 
 ### `docs/benchmarks*` and `docs/themes/`
 

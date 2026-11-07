@@ -1,8 +1,8 @@
 # cache.cyr — per-cwd probe cache with mtime-based TTL.
 #
-# M6 piece that makes shellout-backed segments (vcs today; future
-# `python --version` / `rustup show` if those ever land) cheap enough
-# to keep on every redraw. Without it, vcs's ~1.8 ms fork+exec is
+# M6 piece that makes shellout-backed segments (vcs, and the version
+# probes in `src/probe.cyr`, which key by tool rather than by cwd) cheap
+# enough to keep on every redraw. Without it, vcs's ~1.8 ms fork+exec is
 # paid once per keystroke; with a 1 s TTL cache, a user typing quickly
 # inside a sit repo pays it once per second.
 #
@@ -12,9 +12,10 @@
 # are 0o600. mtime is the TTL clock (struct stat offset 88 on Linux x86_64).
 #
 # EVICTION IS BY CONSTRUCTION. There are 256 file names per segment, so the directory
-# cannot grow past that, and a sweep has nothing to do. An entry is dead within two
-# seconds of being written, so two directories sharing a slot cost a miss at most. The
-# key inside the entry is what stops one reading the other's value. See ADR 0012.
+# cannot grow past that, and a sweep has nothing to do. A vcs entry is dead within two
+# seconds of being written, so two directories sharing a slot cost a miss at most, and a
+# probe has about one key per segment. The key inside the entry is what stops one reading
+# the other's value. See ADR 0012.
 #
 # HOST-ONLY. The whole cache is disabled on agnos — see `_cache_stat` and
 # `cache_init` below for the reasoning. Every raw `syscall(...)` in this file
@@ -30,7 +31,7 @@
 # Public API:
 #   cache_init()                              — idempotent mkdir
 #   cache_get(seg, cwd, ttl_secs): i64        — cstring or 0
-#   cache_put(seg, cwd, value, value_len)     — write
+#   cache_put(seg, cwd, value, value_len)     — write; 1 if the entry landed, else 0
 #
 # Out of scope (M6 follow-ups if needed):
 #   - Cross-process locking (temp+rename means a reader sees a whole file)
@@ -329,6 +330,9 @@ fn cache_put(seg_name, cwd, value, value_len): i64 {
 
     # SYS_RENAME = 82 on x86_64 Linux. Atomic — concurrent readers see
     # the old file or the new one, never a torn write.
-    if (syscall(82, tmp_path, path) != 0) { syscall(SYS_UNLINK, tmp_path); }
-    return 0;
+    if (syscall(82, tmp_path, path) != 0) {
+        syscall(SYS_UNLINK, tmp_path);
+        return 0;
+    }
+    return 1;
 }

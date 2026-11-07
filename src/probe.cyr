@@ -1,0 +1,162 @@
+# probe.cyr — opt-in version probes for the language-env segments.
+#
+# `python --version`, `node --version` and `rustup show active-toolchain`, each behind
+# `shellout = true` in that segment's config, default off. A probe only runs inside a
+# project with no pin file. A pin file that names nothing stops it too: the machine's
+# default may be wrong there, and for a `path` toolchain it certainly is. See ADR 0014.
+#
+# ⚠ THE COMMAND MUST NOT SEE THE REPO. Every probe runs in `/`, with a fixed
+# environment. The obvious version, running it where the user stands, is unsafe:
+#   - `rustup show active-toolchain` in a directory whose `rust-toolchain.toml` names an
+#     uninstalled channel starts downloading that channel. Measured on rustup 1.29.2.
+#     A repo would choose what the prompt fetches, on every redraw.
+#   - A version-manager shim reads repo files before it runs anything, and has executed
+#     what they name: pyenv's CVE-2022-35861 went through `.python-version`.
+#   - `rustc --version` RAN A BINARY FROM THE REPO through a `path` toolchain. Never
+#     probe rustc, even though it looks like the same question as rustup.
+# From `/`, each tool answers for the machine and has nothing to act on. That is also
+# all a probe is for, because the pin files already answer for the project.
+#
+# ⚠ THE CACHE IS WHAT MAKES THIS AFFORDABLE. `node --version` takes 15 ms and the whole
+# prompt has 5. Prompts usually arrive more than a second apart, so vcs's 1 s TTL would
+# miss on nearly every redraw. These answers do not depend on the cwd, so an entry is per
+# tool, keyed by its resolved path, and lives PROBE_TTL_SECS: one slow prompt a minute.
+# A failure is cached too, so a stalling tool costs one budget a minute, not one a
+# redraw. The entry is claimed before the tool runs, so a cache that cannot be written
+# stops the probe: a full /tmp reads as a miss on every redraw, and a probe that only
+# wrote afterwards would run the tool, and stall, every time. No cache, no probe.
+
+enum Probe {
+    PROBE_TTL_SECS = 60;
+    PROBE_OUTPUT_MAX = 256;
+    PROBE_VERSION_MAX = 64;
+}
+
+# The run of version characters at `buf + i` up to whitespace or the end, as a
+# heap-alloc'd cstring, or 0 if it is empty, too long, or holds anything else. A tool can
+# print whatever it likes, so only something shaped like a version gets through.
+fn _probe_token(buf, i, n): i64 {
+    var start = i;
+    var going = 1;
+    while (going == 1) {
+        if (i >= n) { going = 0; }
+        else {
+            var c = load8(buf + i);
+            if (c == 32 || c == 9 || c == 10 || c == 13) { going = 0; }
+            else {
+                var ok = 0;
+                if (c >= 48) { if (c <= 57) { ok = 1; } }
+                if (c >= 65) { if (c <= 90) { ok = 1; } }
+                if (c >= 97) { if (c <= 122) { ok = 1; } }
+                if (c == 46 || c == 43 || c == 45 || c == 95) { ok = 1; }
+                if (ok == 0) { return 0; }
+                i = i + 1;
+            }
+        }
+    }
+    var len = i - start;
+    if (len == 0) { return 0; }
+    if (len > PROBE_VERSION_MAX) { return 0; }
+    var out = alloc(len + 1);
+    if (out == 0) { return 0; }
+    memcpy(out, buf + start, len);
+    store8(out + len, 0);
+    return out;
+}
+
+# A version starts with a digit. Words are made of version characters too, so without
+# this `Python not found` renders `not`, and `version` renders `ersion`.
+fn _probe_digit_at(buf, i, n): i64 {
+    if (i >= n) { return 0; }
+    var c = load8(buf + i);
+    if (c < 48) { return 0; }
+    if (c > 57) { return 0; }
+    return 1;
+}
+
+# `Python 3.14.9` → `3.14.9`.
+fn probe_parse_python(buf, n): i64 {
+    if (n < 7) { return 0; }
+    if (memeq(buf, "Python ", 7) == 0) { return 0; }
+    if (_probe_digit_at(buf, 7, n) == 0) { return 0; }
+    return _probe_token(buf, 7, n);
+}
+
+# `v26.13.0` → `26.13.0`.
+fn probe_parse_node(buf, n): i64 {
+    if (n < 1) { return 0; }
+    if (load8(buf) != 118) { return 0; }
+    if (_probe_digit_at(buf, 1, n) == 0) { return 0; }
+    return _probe_token(buf, 1, n);
+}
+
+# `stable-x86_64-unknown-linux-gnu (default)` → `stable`, the name a `rust-toolchain`
+# file would use. A linked toolchain has no host triple to cut, and may be named anything,
+# so what marks this as rustup talking is the reason it always gives in brackets.
+fn probe_parse_rustup(buf, n): i64 {
+    var t = _probe_token(buf, 0, n);
+    if (t == 0) { return 0; }
+    var len = strlen(t);
+    if (len + 1 >= n) { return 0; }
+    if (load8(buf + len) != 32) { return 0; }
+    if (load8(buf + len + 1) != 40) { return 0; }
+    var u = strstr(t, "-unknown-");
+    if (u <= 0) { return t; }
+    var i = u - 1;
+    while (i > 0 && load8(t + i) != 45) { i = i - 1; }
+    if (i > 0) { store8(t + i, 0); }
+    return t;
+}
+
+# `RUSTUP_HOME=<path>` from our environment, or 0. With no `HOME` to go on, rustup looks in
+# the passwd home and creates a rustup home there if there is none, so a user who moved it
+# would get an empty segment and a stray directory. Only an absolute path means anything
+# from `/`.
+fn _probe_rustup_home(): i64 {
+    var home = getenv("RUSTUP_HOME");
+    if (home == 0) { return 0; }
+    if (load8(home) != 47) { return 0; }
+    var name = "RUSTUP_HOME=";
+    var nlen = strlen(name);
+    var hlen = strlen(home);
+    var out = alloc(nlen + hlen + 1);
+    if (out == 0) { return 0; }
+    memcpy(out, name, nlen);
+    memcpy(out + nlen, home, hlen);
+    store8(out + nlen + hlen, 0);
+    return out;
+}
+
+# The version `tool` reports, parsed by `parse`, or 0. `tool` is an absolute path, and
+# `arg2` may be 0. Cached under `seg` by tool path: see the header.
+fn probe_run(seg, tool, arg1, arg2, budget_ms, parse): i64 {
+    var cached = cache_get(seg, tool, PROBE_TTL_SECS);
+    if (cached != 0) {
+        if (strlen(cached) == 0) { return 0; }
+        return cached;
+    }
+
+    var argv = alloc(32);
+    var envp = alloc(24);
+    if (argv == 0) { return 0; }
+    if (envp == 0) { return 0; }
+    store64(argv, tool);
+    store64(argv + 8, arg1);
+    store64(argv + 16, arg2);
+    store64(argv + 24, 0);
+    # Belt and braces: `/` holds no toolchain file, but a missing default toolchain would
+    # otherwise be installed too.
+    store64(envp, "RUSTUP_AUTO_INSTALL=0");
+    store64(envp + 8, _probe_rustup_home());
+    store64(envp + 16, 0);
+
+    # Claim the entry as a failure first. See the header.
+    if (cache_put(seg, tool, "", 0) == 0) { return 0; }
+
+    var out = 0;
+    var buf[PROBE_OUTPUT_MAX];
+    var n = shellout_capture_in("/", tool, argv, envp, budget_ms, &buf, PROBE_OUTPUT_MAX);
+    if (n > 0) { out = fncall2(parse, &buf, n); }
+    if (out != 0) { cache_put(seg, tool, out, strlen(out)); }
+    return out;
+}

@@ -1777,7 +1777,7 @@ fn test_python_env_read_pin_missing(): i64 {
 # against crashes / unexpected non-empty output.
 fn test_python_env_render_smoke(): i64 {
     var venv = getenv("VIRTUAL_ENV");
-    var out = python_env_render();
+    var out = python_env_render(0);
     if (venv != 0) {
         if (strlen(venv) > 0) {
             assert_neq(out, 0, "render: VIRTUAL_ENV set → non-empty");
@@ -1788,6 +1788,391 @@ fn test_python_env_render_smoke(): i64 {
     # of the test cwd has a .python-version. Don't assert — just call
     # to verify it doesn't crash.
     assert(1, "render: no-VIRTUAL_ENV path executed (no crash)");
+    return 0;
+}
+
+# ---- version probes (ADR 0014) ----
+
+# A stand-in tool: logs each run with its cwd, the arguments, the exact environment it was
+# exec'd with and what its stdin is, then prints `line`.
+fn _probe_tool(path, line): i64 {
+    var head = "#!/bin/sh\npwd >> /tmp/cmdrs_probe_tst/log\n/usr/bin/cat /proc/$$/environ > /tmp/cmdrs_probe_tst/rawenv\n/usr/bin/readlink /proc/$$/fd/0 > /tmp/cmdrs_probe_tst/stdin\necho $* >> /tmp/cmdrs_probe_tst/args\necho '";
+    var tail = "'\n";
+    var buf = alloc(1024);
+    var n = strlen(head);
+    memcpy(buf, head, n);
+    memcpy(buf + n, line, strlen(line));
+    n = n + strlen(line);
+    memcpy(buf + n, tail, strlen(tail));
+    n = n + strlen(tail);
+    var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1C0);
+    assert(fd >= 0, "open the stand-in tool");
+    file_write(fd, buf, n);
+    file_close(fd);
+    return 0;
+}
+
+fn _probe_tree_clean(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/log");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/rawenv");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/stdin");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/args");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/tool");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/tool2");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/pyproject.toml");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/requirements.txt");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/Cargo.toml");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/package.json");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/.nvmrc");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/rust-toolchain");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/rust-toolchain.toml");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_probe_tst");
+    syscall(SYS_UNLINK, _cache_path("tst_probe", "/tmp/cmdrs_probe_tst/tool"));
+    syscall(SYS_UNLINK, _cache_path("tst_probe", "/tmp/cmdrs_probe_tst/tool2"));
+    syscall(SYS_UNLINK, _cache_path("python_env", "/tmp/cmdrs_probe_tst/tool"));
+    syscall(SYS_UNLINK, _cache_path("node_env", "/tmp/cmdrs_probe_tst/tool"));
+    syscall(SYS_UNLINK, _cache_path("rustup_env", "/tmp/cmdrs_probe_tst/tool"));
+    return 0;
+}
+
+# A stand-in tool with this exact script.
+fn _probe_tool_body(path, body): i64 {
+    var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1C0);
+    assert(fd >= 0, "open the stand-in tool");
+    file_write(fd, body, strlen(body));
+    file_close(fd);
+    return 0;
+}
+
+fn _probe_tree_new(): i64 {
+    _probe_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_probe_tst", 0x1FF), 0, "mkdir probe root");
+    cache_init();
+    return 0;
+}
+
+fn _probe_runs(): i64 {
+    var buf = alloc(4096);
+    var n = file_read_all("/tmp/cmdrs_probe_tst/log", buf, 4095);
+    if (n <= 0) { return 0; }
+    var runs = 0;
+    var i = 0;
+    while (i < n) {
+        if (load8(buf + i) == 10) { runs = runs + 1; }
+        i = i + 1;
+    }
+    return runs;
+}
+
+fn _probe_file(path): i64 {
+    var buf = alloc(4096);
+    var n = file_read_all(path, buf, 4095);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return buf;
+}
+
+fn test_shellout_in_a_directory(): i64 {
+    var envp = alloc(8);
+    store64(envp, 0);
+    var buf[64];
+    var n = shellout_capture_in("/", "/bin/sh", _sh_argv("pwd"), envp, 2000, &buf, 63);
+    assert_eq(n, 2, "the child reports one short line");
+    assert_eq(load8(&buf), 47, "and runs in /");
+    return 0;
+}
+
+# Failing to leave the repo must mean not running, never running where we stand.
+fn test_shellout_in_refuses_a_bad_directory(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_ran");
+    var envp = alloc(8);
+    store64(envp, 0);
+    var buf[64];
+    var n = shellout_capture_in("/nonexistent/x", "/bin/sh", _sh_argv("touch /tmp/cmdrs_probe_ran; echo ran"), envp, 2000, &buf, 63);
+    assert(n <= 0, "no output");
+    assert_neq(syscall(SYS_ACCESS, "/tmp/cmdrs_probe_ran", 0), 0, "the command never ran");
+    return 0;
+}
+
+fn test_probe_parsers(): i64 {
+    _streq_or_dump(probe_parse_python("Python 3.14.9\n", 14), "3.14.9", "python");
+    _streq_or_dump(probe_parse_python("Python 3.13.0rc2\n", 17), "3.13.0rc2", "a python pre-release");
+    assert_eq(probe_parse_python("python 3.1\n", 11), 0, "the wrong prefix");
+    assert_eq(probe_parse_python("Python \n", 8), 0, "no version");
+    _streq_or_dump(probe_parse_node("v26.13.0\n", 9), "26.13.0", "node");
+    assert_eq(probe_parse_node("26.13.0\n", 8), 0, "node prints a v");
+    _streq_or_dump(probe_parse_rustup("stable-x86_64-unknown-linux-gnu (default)\n", 42), "stable", "a channel, without the host triple");
+    _streq_or_dump(probe_parse_rustup("nightly-2026-01-01-x86_64-unknown-linux-gnu (default)\n", 54), "nightly-2026-01-01", "a dated channel");
+    _streq_or_dump(probe_parse_rustup("1.89-x86_64-unknown-linux-gnu (default)\n", 40), "1.89", "a numbered channel");
+    _streq_or_dump(probe_parse_rustup("mytoolchain (default)\n", 22), "mytoolchain", "a linked toolchain has no triple");
+    assert_eq(probe_parse_rustup("error: no default\n", 18), 0, "an error is not a version");
+    return 0;
+}
+
+# A tool can print anything. Only something shaped like a version gets through.
+fn test_probe_output_must_look_like_a_version(): i64 {
+    assert_eq(probe_parse_python("Python 3.1;rm\n", 14), 0, "a semicolon");
+    assert_eq(probe_parse_python("Python $(id)\n", 13), 0, "a substitution");
+    assert_eq(probe_parse_node("v1\x1b[31m\n", 9), 0, "an escape");
+    var w = "Python not found\n";
+    assert_eq(probe_parse_python(w, strlen(w)), 0, "words are made of version characters too");
+    w = "version\n";
+    assert_eq(probe_parse_node(w, strlen(w)), 0, "so is a word that starts with v");
+    w = "y\ny\ny\n";
+    assert_eq(probe_parse_rustup(w, strlen(w)), 0, "rustup always says why, so a bare word is not it");
+    w = "stable-x86_64-unknown-linux-gnu\n";
+    assert_eq(probe_parse_rustup(w, strlen(w)), 0, "a toolchain with no reason");
+    w = "stable-x86_64-unknown-linux-gnu (overridden by '/x')\n";
+    _streq_or_dump(probe_parse_rustup(w, strlen(w)), "stable", "any reason will do");
+    w = "Python -1\n";
+    assert_eq(probe_parse_python(w, strlen(w)), 0, "a version starts with a digit, not a sign");
+    w = "v.5\n";
+    assert_eq(probe_parse_node(w, strlen(w)), 0, "or a dot");
+    w = "stable more\n";
+    assert_eq(probe_parse_rustup(w, strlen(w)), 0, "the next word is not a reason");
+    w = "stable\n(default)\n";
+    assert_eq(probe_parse_rustup(w, strlen(w)), 0, "a reason is on the same line");
+    assert_eq(probe_parse_rustup("stable (default)", 6), 0, "nothing past n is read");
+    assert_eq(probe_parse_rustup("stable (default)", 7), 0, "nor the bracket after the space");
+    var long = alloc(200);
+    memcpy(long, "Python ", 7);
+    memset(long + 7, 49, PROBE_VERSION_MAX);
+    store8(long + 7 + PROBE_VERSION_MAX, 10);
+    assert_neq(probe_parse_python(long, 8 + PROBE_VERSION_MAX), 0, "at the cap");
+    memset(long + 7, 49, PROBE_VERSION_MAX + 1);
+    store8(long + 8 + PROBE_VERSION_MAX, 10);
+    assert_eq(probe_parse_python(long, 9 + PROBE_VERSION_MAX), 0, "past the cap");
+    return 0;
+}
+
+fn test_probe_runs_from_root_with_a_fixed_environment(): i64 {
+    _probe_tree_new();
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "Python 3.12.1");
+    var out = probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    _streq_or_dump(out, "3.12.1", "the version comes back");
+    _streq_or_dump(_probe_file("/tmp/cmdrs_probe_tst/log"), "/\n", "it ran in /, not in the repo");
+    # The exact bytes execve was given, not what a shell chose to show.
+    var raw = alloc(4096);
+    var n = file_read_all("/tmp/cmdrs_probe_tst/rawenv", raw, 4095);
+    var want = "RUSTUP_AUTO_INSTALL=0";
+    var wlen = strlen(want) + 1;
+    assert_eq(memeq(raw, want, wlen), 1, "a tool may not install anything");
+    if (getenv("RUSTUP_HOME") == 0) { assert_eq(n, wlen, "and it gets nothing else: no HOME, no PATH"); }
+    _streq_or_dump(_probe_file("/tmp/cmdrs_probe_tst/stdin"), "/dev/null\n", "it cannot read what the user is typing");
+    _probe_tree_clean();
+    return 0;
+}
+
+fn test_probe_commands(): i64 {
+    _probe_tree_new();
+    var cwd = "/tmp/cmdrs_probe_tst";
+    file_write_all("/tmp/cmdrs_probe_tst/requirements.txt", "x\n", 2);
+    file_write_all("/tmp/cmdrs_probe_tst/package.json", "{}", 2);
+    file_write_all("/tmp/cmdrs_probe_tst/Cargo.toml", "x\n", 2);
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "anything");
+    python_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000);
+    node_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000);
+    rustup_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000);
+    _streq_or_dump(_probe_file("/tmp/cmdrs_probe_tst/args"), "--version\n--version\nshow active-toolchain\n", "what each one asks");
+    _probe_tree_clean();
+    return 0;
+}
+
+# 60 seconds, not one: prompts arrive further apart than a second, so a 1 s cache would
+# run `node` on nearly every redraw.
+fn test_probe_cached_per_tool(): i64 {
+    _probe_tree_new();
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "Python 3.12.1");
+    _probe_tool("/tmp/cmdrs_probe_tst/tool2", "Python 3.9.0");
+    probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    var again = probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    _streq_or_dump(again, "3.12.1", "a repeat reads the cache");
+    assert_eq(_probe_runs(), 1, "and does not run the tool");
+    _streq_or_dump(probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool2", "--version", 0, 2000, &probe_parse_python), "3.9.0", "another binary is another entry");
+    assert_eq(_probe_runs(), 2, "so it does run");
+    _probe_tree_clean();
+    return 0;
+}
+
+fn _age_entry(seg, tool, secs): i64 {
+    var times[32];
+    store64(&times, 0);
+    store64(&times + 8, 0);
+    store64(&times + 16, clock_epoch_secs() - secs);
+    store64(&times + 24, 0);
+    return syscall(SYS_UTIMENSAT, 0 - 100, _cache_path(seg, tool), &times, 0);
+}
+
+fn test_probe_runs_again_after_the_ttl(): i64 {
+    _probe_tree_new();
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "Python 3.12.1");
+    probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    assert_eq(_age_entry("tst_probe", "/tmp/cmdrs_probe_tst/tool", 45), 0, "age the entry");
+    probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    assert_eq(_probe_runs(), 1, "under a minute old is still an answer");
+    assert_eq(_age_entry("tst_probe", "/tmp/cmdrs_probe_tst/tool", 65), 0, "age it past a minute");
+    probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    assert_eq(_probe_runs(), 2, "an old entry runs the tool again");
+    _probe_tree_clean();
+    return 0;
+}
+
+# A tool that fails or stalls must cost one budget a minute, not one per redraw.
+fn test_probe_failure_is_cached(): i64 {
+    _probe_tree_new();
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "not a version");
+    assert_eq(probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python), 0, "bad output renders nothing");
+    assert_eq(probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python), 0, "and again");
+    assert_eq(_probe_runs(), 1, "without running the tool again");
+    _probe_tree_clean();
+    return 0;
+}
+
+fn test_probe_silence_is_cached(): i64 {
+    _probe_tree_new();
+    _probe_tool_body("/tmp/cmdrs_probe_tst/tool", "#!/bin/sh\necho x >> /tmp/cmdrs_probe_tst/log\n");
+    assert_eq(probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python), 0, "no output");
+    assert_eq(probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python), 0, "still none");
+    assert_eq(_probe_runs(), 1, "a silent tool runs once");
+    _probe_tree_clean();
+    return 0;
+}
+
+fn test_probe_stall_is_bounded_and_cached(): i64 {
+    _probe_tree_new();
+    _probe_tool_body("/tmp/cmdrs_probe_tst/tool", "#!/bin/sh\necho x >> /tmp/cmdrs_probe_tst/log\nexec /usr/bin/sleep 30\n");
+    var t0 = clock_now_ms();
+    assert_eq(probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 200, &probe_parse_python), 0, "a stall");
+    assert_eq(probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 200, &probe_parse_python), 0, "from the cache");
+    assert(clock_now_ms() - t0 < 2000, "budget_ms is what bounds it");
+    assert_eq(_probe_runs(), 1, "a stalling tool runs once");
+    _probe_tree_clean();
+    return 0;
+}
+
+# A full /tmp reads as a miss every time, so a probe that only wrote afterwards would run
+# the tool on every redraw and a stalling tool would stall every prompt. The entry is
+# claimed before the tool runs, and a claim that fails stops the probe.
+fn test_probe_needs_a_cache_it_can_write(): i64 {
+    _probe_tree_new();
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "Python 3.12.1");
+    var was = _cache_dir;
+    _cache_dir = "/nonexistent/cmdrs_probe";
+    assert_eq(cache_put("tst_probe", "/x", "v", 1), 0, "cache_put says when it could not write");
+    var out = probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    _cache_dir = was;
+    assert_eq(out, 0, "no answer");
+    assert_eq(_probe_runs(), 0, "and the tool did not run");
+    assert_eq(cache_put("tst_probe", "/tmp/cmdrs_probe_tst/tool", "v", 1), 1, "and when it could");
+    _probe_tree_clean();
+    return 0;
+}
+
+# With no cache every redraw would pay for the tool, so a probe does not run at all.
+fn test_probe_needs_the_cache(): i64 {
+    _probe_tree_new();
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "Python 3.12.1");
+    var was = _cache_disabled;
+    _cache_disabled = 1;
+    var out = probe_run("tst_probe", "/tmp/cmdrs_probe_tst/tool", "--version", 0, 2000, &probe_parse_python);
+    _cache_disabled = was;
+    assert_eq(out, 0, "no cache, no probe");
+    assert_eq(_probe_runs(), 0, "the tool never ran");
+    _probe_tree_clean();
+    return 0;
+}
+
+fn test_config_probes_default_off(): i64 {
+    var c = config_default();
+    assert_eq(cfg_probe_ms_python(c), 0, "python off by default");
+    assert_eq(cfg_probe_ms_node(c), 0, "node off by default");
+    assert_eq(cfg_probe_ms_rustup(c), 0, "rustup off by default");
+    return 0;
+}
+
+fn test_config_probe_flag_and_budget(): i64 {
+    var c = _load_capturing_stderr("probe-on", "[[segments.python_env]]\nshellout = true\n[[segments.node_env]]\nshellout = true\nbudget_ms = 200\n[[segments.rustup_env]]\nshellout = false\nbudget_ms = 200\n");
+    assert_eq(cfg_probe_ms_python(c), PROBE_BUDGET_DEFAULT_MS, "on, with the default budget");
+    assert_eq(cfg_probe_ms_node(c), 200, "on, with a chosen budget");
+    assert_eq(cfg_probe_ms_rustup(c), 0, "a budget alone does not turn it on");
+    _streq_or_dump(_captured_err, "", "both are known fields");
+    return 0;
+}
+
+fn test_config_probe_bad_budget_keeps_the_default(): i64 {
+    var c = _load_capturing_stderr("probe-bad", "[[segments.node_env]]\nshellout = true\nbudget_ms = 5000\n");
+    assert_eq(cfg_probe_ms_node(c), PROBE_BUDGET_DEFAULT_MS, "the default stands");
+    _streq_or_dump(_captured_err, "warning: budget_ms in [[segments.node_env]] must be 1..1000 (using the default)\n", "and it says so");
+    return 0;
+}
+
+# The flag belongs to the three segments that have a tool to ask.
+fn test_config_probe_flag_is_not_everywhere(): i64 {
+    _load_capturing_stderr("probe-where", "[[segments.hostname]]\nshellout = true\n");
+    _streq_or_dump(_captured_err, "warning: unknown config field 'shellout' in [[segments.hostname]] (ignored)\n", "hostname has no tool");
+    return 0;
+}
+
+# A file pin answers first. A probe only runs in a project, and only if it is on.
+fn test_probe_gates(): i64 {
+    _probe_tree_new();
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "Python 3.12.1");
+    var cwd = "/tmp/cmdrs_probe_tst";
+    assert_eq(python_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), 0, "on, but no project here");
+    file_write_all("/tmp/cmdrs_probe_tst/requirements.txt", "x\n", 2);
+    assert_eq(python_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 0), 0, "a project, but off");
+    assert_eq(_probe_runs(), 0, "neither ran the tool");
+    _streq_or_dump(python_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), "3.12.1", "requirements.txt is a project");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/requirements.txt");
+    syscall(SYS_UNLINK, _cache_path("python_env", "/tmp/cmdrs_probe_tst/tool"));
+    file_write_all("/tmp/cmdrs_probe_tst/pyproject.toml", "x\n", 2);
+    _streq_or_dump(python_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), "3.12.1", "so is pyproject.toml");
+    syscall(SYS_UNLINK, _cache_path("python_env", "/tmp/cmdrs_probe_tst/tool"));
+    _probe_tree_clean();
+    return 0;
+}
+
+fn test_probe_gate_node_and_rustup(): i64 {
+    _probe_tree_new();
+    var cwd = "/tmp/cmdrs_probe_tst";
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "v26.1.0");
+    assert_eq(node_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), 0, "node: no project");
+    file_write_all("/tmp/cmdrs_probe_tst/package.json", "{}", 2);
+    assert_eq(node_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 0), 0, "node: a project, but off");
+    assert_eq(_probe_runs(), 0, "node: neither ran the tool");
+    _streq_or_dump(node_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), "26.1.0", "node: package.json is a project");
+    syscall(SYS_UNLINK, _cache_path("node_env", "/tmp/cmdrs_probe_tst/tool"));
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "stable-x86_64-unknown-linux-gnu (default)");
+    assert_eq(rustup_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), 0, "rustup: no project");
+    file_write_all("/tmp/cmdrs_probe_tst/Cargo.toml", "x\n", 2);
+    var before = _probe_runs();
+    assert_eq(rustup_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 0), 0, "rustup: a project, but off");
+    assert_eq(_probe_runs(), before, "rustup: neither ran the tool");
+    _streq_or_dump(rustup_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), "stable", "rustup: Cargo.toml is a project");
+    syscall(SYS_UNLINK, _cache_path("rustup_env", "/tmp/cmdrs_probe_tst/tool"));
+    _probe_tree_clean();
+    return 0;
+}
+
+# A project with a pin file has said what it uses, and the machine's default may be wrong:
+# for a `path` toolchain it certainly is. Empty is better than wrong.
+fn test_probe_stops_at_a_pin_file_that_names_nothing(): i64 {
+    _probe_tree_new();
+    var cwd = "/tmp/cmdrs_probe_tst";
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "v26.1.0");
+    file_write_all("/tmp/cmdrs_probe_tst/package.json", "{}", 2);
+    file_write_all("/tmp/cmdrs_probe_tst/.nvmrc", "\n", 1);
+    assert_eq(node_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), 0, "an empty .nvmrc");
+    _probe_tool("/tmp/cmdrs_probe_tst/tool", "stable-x86_64-unknown-linux-gnu (default)");
+    file_write_all("/tmp/cmdrs_probe_tst/Cargo.toml", "x\n", 2);
+    file_write_all("/tmp/cmdrs_probe_tst/rust-toolchain", "", 0);
+    assert_eq(rustup_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), 0, "an empty rust-toolchain");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_probe_tst/rust-toolchain");
+    var toml = "[toolchain]\npath = \"/x\"\n";
+    file_write_all("/tmp/cmdrs_probe_tst/rust-toolchain.toml", toml, strlen(toml));
+    assert_eq(rustup_env_probe(cwd, "/tmp/cmdrs_probe_tst/tool", 2000), 0, "a path toolchain");
+    assert_eq(_probe_runs(), 0, "none of them ran the tool");
+    _probe_tree_clean();
     return 0;
 }
 
@@ -1976,7 +2361,7 @@ fn test_node_env_package_read_cap(): i64 {
 # this catches regressions like a stale find_ancestor_with hit on a
 # different marker.
 fn test_node_env_render_empty_outside_project(): i64 {
-    var out = node_env_render();
+    var out = node_env_render(0);
     assert_eq(out, 0, "node_env_render outside any .nvmrc tree → empty");
     return 0;
 }
@@ -2297,7 +2682,7 @@ fn test_sanitize_keeps_text(): i64 {
 
 # Same shape as node_env's empty-outside-project guard.
 fn test_rustup_env_render_empty_outside_project(): i64 {
-    var out = rustup_env_render();
+    var out = rustup_env_render(0);
     assert_eq(out, 0, "rustup_env_render outside any rust-toolchain tree → empty");
     return 0;
 }
@@ -3110,6 +3495,26 @@ fn main(): i64 {
     test_palette_single_bracket_table();
     test_palette_selected_holds_the_new_color_forms();
     test_palette_selector_must_be_top_level();
+    test_shellout_in_a_directory();
+    test_shellout_in_refuses_a_bad_directory();
+    test_probe_parsers();
+    test_probe_output_must_look_like_a_version();
+    test_probe_runs_from_root_with_a_fixed_environment();
+    test_probe_commands();
+    test_probe_cached_per_tool();
+    test_probe_runs_again_after_the_ttl();
+    test_probe_failure_is_cached();
+    test_probe_silence_is_cached();
+    test_probe_stall_is_bounded_and_cached();
+    test_probe_needs_a_cache_it_can_write();
+    test_probe_needs_the_cache();
+    test_config_probes_default_off();
+    test_config_probe_flag_and_budget();
+    test_config_probe_bad_budget_keeps_the_default();
+    test_config_probe_flag_is_not_everywhere();
+    test_probe_gates();
+    test_probe_gate_node_and_rustup();
+    test_probe_stops_at_a_pin_file_that_names_nothing();
     test_node_env_package_reads_engines_node();
     test_node_env_package_misses();
     test_node_env_package_escapes_render_nothing();

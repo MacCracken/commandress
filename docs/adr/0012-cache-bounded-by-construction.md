@@ -24,6 +24,7 @@ There is nothing to sweep, because the directory cannot exceed 256 entries per s
 - **Negative** — Each entry grows by 16 bytes, and a hit compares 16 bytes.
 - **Neutral** — Files from older versions are orphans and are never touched. They go at the next reboot on tmpfs, or through `systemd-tmpfiles`. A killed writer can still leave a `.tmp.<pid>`, which is rare now that `SIGXFSZ` is handled, and is cleaned the same way.
 - **Neutral** — A future cached segment with a much longer TTL should re-check this. 1.4.1's shellouts would be the first.
+  > **Update 2026-11-06** (annotation, not a revision): re-checked at 1.4.1. Version probes live 60 s, and this holds, because an entry is keyed by the tool's path rather than the cwd, so there are only a handful. See [ADR 0014](0014-version-probes-never-see-the-repo.md).
 
 ## Alternatives considered
 

@@ -88,6 +88,29 @@ hex value on a terminal without truecolor shows however that terminal chooses.
 To keep several colour schemes in one file, see
 [switching between palettes](../themes/README.md#switching-between-palettes).
 
+### Language versions
+
+`python_env`, `node_env`, `rustup_env` and `cyrius_env` read pin files such as `.python-version`,
+`.nvmrc`, `package.json` and `rust-toolchain`. In a project with no pin they render nothing, unless
+you ask them to fall back on the tool itself:
+
+```cyml
+[[segments.node_env]]
+shellout  = true       # off by default
+budget_ms = 100        # optional, 1 to 1000, defaults to 50
+```
+
+`shellout` works on `python_env`, `node_env` and `rustup_env`. A pin file stops it, even an empty one,
+and the tool only runs under a `pyproject.toml` or `requirements.txt`, a `package.json`, or a
+`Cargo.toml`.
+
+**It shows your machine's version, not the project's.** The tool runs from `/` with an almost empty
+environment, so a repository cannot steer it ([ADR 0014](../adr/0014-version-probes-never-see-the-repo.md)).
+So a project pinned some other way, such as `.tool-versions`, shows your global version. A
+version-manager shim may need an environment it does not get, and then the segment stays empty.
+The answer is cached for 60 s, so a version change can take that long to appear, and one prompt a
+minute takes as long as the tool does: about 15 ms for `node`.
+
 Missing config file → baked-in defaults. Unknown field → warning on stderr, render
 continues with defaults for that field. Every knob is listed in
 [`../examples/commandress.cyml.example`](../examples/commandress.cyml.example); drop-in

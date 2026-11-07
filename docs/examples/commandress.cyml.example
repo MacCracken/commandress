@@ -57,6 +57,13 @@ dirty_marker = "*"
 # this much on every redraw outside the 1-second cache.
 budget_ms = 5
 
+[[segments.node_env]]
+# python_env, node_env and rustup_env can ask the tool when there is no pin file, inside a
+# project. Off by default. It runs from / so a repo cannot steer it, which means it shows
+# your machine's version, cached for 60 s. See docs/adr/0014.
+# shellout  = true
+# budget_ms = 100
+
 ---
 
 # Notes zone

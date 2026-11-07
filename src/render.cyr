@@ -11,6 +11,7 @@
 
 include "src/context.cyr"
 include "src/config.cyr"
+include "src/probe.cyr"
 include "src/segments/cwd.cyr"
 include "src/segments/exit.cyr"
 include "src/segments/vcs.cyr"
@@ -82,22 +83,22 @@ fn _dispatch_cyrius_env(cfg, ctx): i64 {
     return cyrius_env_render();
 }
 
-# Dispatcher for the `python_env` segment. Pure passthrough —
+# Dispatcher for the `python_env` segment. Forwards the probe budget (0 = off);
 # $VIRTUAL_ENV basename vs .python-version walk is internal.
 fn _dispatch_python_env(cfg, ctx): i64 {
-    return python_env_render();
+    return python_env_render(cfg_probe_ms_python(cfg));
 }
 
-# Dispatcher for the `node_env` segment. Pure passthrough — .nvmrc
-# ancestor walk is internal.
+# Dispatcher for the `node_env` segment. Forwards the probe budget (0 = off);
+# the .nvmrc and package.json walks are internal.
 fn _dispatch_node_env(cfg, ctx): i64 {
-    return node_env_render();
+    return node_env_render(cfg_probe_ms_node(cfg));
 }
 
-# Dispatcher for the `rustup_env` segment. Pure passthrough —
-# rust-toolchain ancestor walk is internal.
+# Dispatcher for the `rustup_env` segment. Forwards the probe budget (0 = off);
+# the rust-toolchain ancestor walk is internal.
 fn _dispatch_rustup_env(cfg, ctx): i64 {
-    return rustup_env_render();
+    return rustup_env_render(cfg_probe_ms_rustup(cfg));
 }
 
 # Registry — name → dispatcher fn pointer. Returns 0 for unknown names

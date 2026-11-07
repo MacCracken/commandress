@@ -1,16 +1,17 @@
 # python_env.cyr — Python project / virtualenv segment.
 #
-# Resolution order (file-first; no shellout in v0.5.0):
+# Resolution order (file-first):
 #   1. $VIRTUAL_ENV set         → basename of the path
 #   2. <ancestor>/.python-version → trimmed contents
-#   3. empty
+#   3. With `shellout = true`, in a project with `pyproject.toml` or `requirements.txt`
+#      above it → `python3 --version`, run from `/`. See src/probe.cyr.
+#   4. empty
 #
 # The basename of $VIRTUAL_ENV is the canonical "which venv am I in"
 # signal — every shell-prompt tool surfaces it. `.python-version`
 # (pyenv) acts as the project-pin file: present in the project root,
 # tells us the python version this tree expects. Both are file-or-env
-# reads; no shellout to `python --version` until M6 caching makes
-# version probes cheap enough to default on.
+# reads.
 
 # Extract the basename of `path`. Returns a heap-alloc'd cstring or 0
 # when `path` is null, empty, or only slashes. Trailing slashes are
@@ -54,7 +55,17 @@ fn python_env_read_pin(root): i64 {
     return read_trimmed_file_at(root, "/.python-version");
 }
 
-fn python_env_render(): i64 {
+# The machine's Python, for a project at or above `cwd`. The caller has already stopped at
+# any `.python-version`, even an empty one. `budget_ms` 0 is off.
+fn python_env_probe(cwd, tool, budget_ms): i64 {
+    if (budget_ms == 0) { return 0; }
+    if (tool == 0) { return 0; }
+    var which[8];
+    if (find_ancestor_with_either(cwd, "/pyproject.toml", "/requirements.txt", &which) == 0) { return 0; }
+    return probe_run("python_env", tool, "--version", 0, budget_ms, &probe_parse_python);
+}
+
+fn python_env_render(probe_ms): i64 {
     var venv = getenv("VIRTUAL_ENV");
     if (venv != 0) {
         if (strlen(venv) > 0) {
@@ -69,10 +80,14 @@ fn python_env_render(): i64 {
     n = n - 1;
 
     var cwd = alloc(n + 1);
+    if (cwd == 0) { return 0; }
     memcpy(cwd, &buf, n);
     store8(cwd + n, 0);
 
     var root = find_ancestor_with(cwd, "/.python-version");
-    if (root == 0) { return 0; }
-    return python_env_read_pin(root);
+    if (root != 0) { return python_env_read_pin(root); }
+    if (probe_ms == 0) { return 0; }
+    var tool = find_in_path("python3");
+    if (tool == 0) { tool = find_in_path("python"); }
+    return python_env_probe(cwd, tool, probe_ms);
 }

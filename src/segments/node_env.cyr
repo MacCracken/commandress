@@ -1,17 +1,18 @@
 # node_env.cyr — Node.js project segment.
 #
-# Resolution (file-first; no shellout):
+# Resolution (file-first):
 #   1. `.nvmrc` in the cwd or any directory above it → trimmed contents.
 #   2. The nearest `package.json` → its `engines.node`, as written.
-#   3. empty
+#   3. With `shellout = true`, under a `package.json` → `node --version`, run from `/`.
+#      See src/probe.cyr.
+#   4. empty
 #
 # `.nvmrc` is the canonical version-pin file across nvm / fnm / Volta, so it wins from
 # anywhere above, however near a `package.json` is. Its contents are usually a
 # semver-ish string (`18.17.0`, `v20`, `lts/iron`), emitted as trimmed bytes.
 #
 # `engines.node` is a RANGE, such as `>=18`: what the project asks for, not what is
-# installed. That is what renders. Parsing the range to compare it with anything
-# would need the running version, which means a shellout (roadmap 1.4.1).
+# installed. That is what renders, and the shellout above does not compare the two.
 #
 # Only the NEAREST `package.json` is read. One with no `engines` stops the search, so a
 # workspace package does not show its monorepo root's range. Climbing further would
@@ -99,7 +100,17 @@ fn node_env_for(cwd): i64 {
     return _node_package_range(root);
 }
 
-fn node_env_render(): i64 {
+# The machine's Node, for a project at or above `cwd` with no `.nvmrc`, even an empty one.
+# `budget_ms` 0 is off.
+fn node_env_probe(cwd, tool, budget_ms): i64 {
+    if (budget_ms == 0) { return 0; }
+    if (tool == 0) { return 0; }
+    if (find_ancestor_with(cwd, "/.nvmrc") != 0) { return 0; }
+    if (find_ancestor_with(cwd, "/package.json") == 0) { return 0; }
+    return probe_run("node_env", tool, "--version", 0, budget_ms, &probe_parse_node);
+}
+
+fn node_env_render(probe_ms): i64 {
     var buf[4096];
     var n = cmdrs_getcwd(&buf, 4096);
     if (n <= 0) { return 0; }
@@ -109,5 +120,9 @@ fn node_env_render(): i64 {
     if (cwd == 0) { return 0; }
     memcpy(cwd, &buf, n);
     store8(cwd + n, 0);
-    return node_env_for(cwd);
+
+    var pinned = node_env_for(cwd);
+    if (pinned != 0) { return pinned; }
+    if (probe_ms == 0) { return 0; }
+    return node_env_probe(cwd, find_in_path("node"), probe_ms);
 }

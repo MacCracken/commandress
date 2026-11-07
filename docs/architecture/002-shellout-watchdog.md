@@ -45,6 +45,12 @@ The 0/-1/-2 split lets callers distinguish "the command succeeded with no output
 - **No partial-output behavior.** If the budget fires mid-read, the captured prefix is *discarded* (return `-2`, ignore `total`). Partial-output rendering would force every segment parser to handle truncation; the empty-render-on-timeout shape keeps the parser side simple.
 - **No CPU-bound segment enforcement.** Pure-CPU segments (cwd, exit, time, hostname, user) clear 500 µs trivially and don't go through this watchdog. If a pure-CPU segment ever spins, it's a bug and stays a bug — not a watchdog miss. (`setitimer`-based CPU watchdog would change this; it's out of scope.)
 
+## Where the child runs
+
+`shellout_capture` runs the child in our cwd, which is the repo the user is standing in. `sit status` needs that. A version probe must not have it: `shellout_capture_in(dir, ...)` changes to `dir` first, and exits without running the command if it cannot. Running in the repo after a failed `chdir` is the outcome this exists to prevent. [ADR 0014](../adr/0014-version-probes-never-see-the-repo.md) has what a tool does otherwise.
+
+The watchdog's budget is per call, and a shellout that exceeds the whole-prompt budget is only acceptable behind a cache. A probe's budget defaults to 50 ms and is paid at most once a minute.
+
 ## Nothing after the loop may block
 
 The budget is enforced by `epoll_wait`, so it stops applying the moment the loop exits.

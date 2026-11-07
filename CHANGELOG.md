@@ -6,6 +6,89 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-06
+
+`python_env`, `node_env` and `rustup_env` can ask the tool for its version when no pin file answers. Off by
+default, and nothing changes with it off. The toolchain and dependencies are unchanged. Decision and
+measurements: [ADR 0014](docs/adr/0014-version-probes-never-see-the-repo.md).
+
+**The roadmap's plan was not built.** It asked for the tool to run in the cwd behind the 1 s cache. In a
+hostile directory `rustup show active-toolchain` tried to download a toolchain the repo named, and
+`rustc --version` ran a binary from the repo. `python` and `node` are often shims that read the repo too.
+And at 5 to 15 ms against a 5 ms budget, a cache that expires between prompts would not have helped.
+
+**A probe reports the machine's version, not the project's.** A project pinned some way this repo does not
+read, such as `.tool-versions`, `.node-version` or a Volta pin, shows the machine's version.
+
+### Added
+
+- **`shellout = true` on `[[segments.python_env]]`, `[[segments.node_env]]` and `[[segments.rustup_env]]`**,
+  with `budget_ms` (1 to 1000, default 50). They run `python3 --version` (then `python`), `node --version`
+  and `rustup show active-toolchain`.
+  - **Runs from `/`, with a fixed environment.** No `HOME`, no `PATH`, and `RUSTUP_AUTO_INSTALL=0`, plus
+    `RUSTUP_HOME` when it is an absolute path, so a moved rustup home is still found. The tool has nothing
+    of the repo's to act on, and a shim has nothing to read.
+  - **Cached per tool for 60 s**, failures included, so one prompt a minute pays and a stalling tool costs
+    one budget a minute. The entry is claimed before the tool runs, so a cache that cannot be written
+    stops the probe rather than running the tool on every redraw.
+  - **Only with no pin file and a project marker**: `pyproject.toml` or `requirements.txt`, `package.json`,
+    `Cargo.toml`. A pin file stops the probe even if it names nothing, such as an empty `.nvmrc` or a
+    `path` toolchain, because the machine's default may be wrong there.
+  - **Output must look like a version**: at most 64 characters of `[0-9A-Za-z.+_-]`, starting with a digit
+    for Python and Node, and followed by rustup's bracketed reason for rustup. Anything else renders empty,
+    before it reaches the sanitizer.
+  - `rustc --version` is never used.
+- **`src/probe.cyr`**, and `shellout_capture_in`, which runs a child in a given directory and refuses to run
+  it if it cannot get there.
+- **Benchmark:** `probe_run (cached)`.
+
+### Changed
+
+- **`cyrius_env` keeps running `cyrius --version` in the cwd.** That tool refuses a pin that is not a plain
+  version, and showing the pinned toolchain is what the segment is for.
+- **A shellout child's stdin is now `/dev/null`**, for `sit` and `cyrius` too, so a tool cannot read what the
+  user is typing ahead.
+- **`cache_put` reports whether the entry landed.**
+
+### Performance
+
+| | 1.4.0 | 1.4.1 | Delta |
+|---|---|---|---|
+| Cold start, no config | 280 µs | 280 µs | flat |
+| Cold start, largest theme | 477 µs | 482 µs | flat |
+| Cold start, three language segments, probes off | 372 µs | 372 µs | flat |
+| Cold start, three probes on, all cached | — | 448 µs | +109 µs against the same render with them off |
+| First prompt of a minute, one probe | — | 2 ms `python3`, 9 ms `node`, 5 ms `rustup` | new, opt-in |
+| Stalling tool, default budget | — | 51 ms once a minute, then 1 ms | new, opt-in |
+| Cache unwritable, stalling tool | — | 1 ms, and the tool does not run | new |
+| `probe_run`, cached | — | 5.13 µs | new |
+| `render_prompt` | 11.59 µs | 11.38 µs | flat |
+| `config_load`, largest theme | 63.7 µs | 63.3 µs | flat |
+| Binary, x86_64 | 182,120 B | 186,424 B | +4,304 B (+2.4 %) |
+| Binary, `--agnos` | 174,248 B | 186,752 B | +12,504 B (+7.2 %) |
+
+Medians of 2,500 interleaved pairs, and lowest mins of 5 alternating bench runs at equal path depth, because
+other work was running on the host. Absolute figures are not comparable with earlier entries.
+
+### Tests
+
+- 719 assertions across 254 tests, from 601 across 234.
+- 145 mutations, all caught. That includes running `rustc`, adding `PATH` to the environment, a probe beating a
+  pin file, and each segment taking another's budget.
+- An independent review found what the first pass of those tests missed: a cache that could not be written
+  repeated the stall on every prompt, words such as `not` rendered as versions, and a moved `RUSTUP_HOME` was
+  lost. Each got a failing test first, and all of it is fixed above.
+- 20,000 hostile tool outputs, each rendered twice. Every word on stdout was a well-formed version and the
+  cached render matched. 2,143 of them rendered something, so the check was exercised.
+- 40,000 mutated configs seeded with probe sections: no crash, no abort.
+- Replayed through the shipped binary: a `path` toolchain, an uninstalled channel, a planted `python3` with `.`
+  on `PATH`, a hanging tool, a flood, escape sequences and a background child. All failed, and `~/.rustup` was
+  unchanged. Real `python3`, `node` and `rustup` still answer.
+- `scripts/smoke.sh` now checks what each probe runs, where, with what, that a pin file stops it, and that each
+  segment gets its own budget.
+- Differential 1.4.0 → 1.4.1: 6,163 cases, and only `--version` differs. No fixture turns a probe on, so this
+  shows nothing changes with them off.
+
 ## [1.4.0] - 2026-11-06
 
 `node_env` reads `package.json`. With no `.nvmrc` anywhere above, it shows the nearest `package.json`'s

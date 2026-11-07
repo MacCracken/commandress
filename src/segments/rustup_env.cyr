@@ -8,7 +8,9 @@
 #   3. `rust-toolchain` is the legacy one-line format (trimmed contents), or TOML,
 #      which rustup also accepts under that name. More than one line means TOML,
 #      which is rustup's own rule.
-#   4. A file with no `channel` (a `path` toolchain, say) renders empty.
+#   4. With `shellout = true`, under a `Cargo.toml` and with no channel from a file →
+#      `rustup show active-toolchain`, run from `/`. See src/probe.cyr.
+#   5. Otherwise empty.
 #
 # ⚠ REPO-CONTROLLED INPUT. These files come from whatever directory the user is
 # in, so this is the first path where bytes an attacker chose reach the TOML
@@ -23,8 +25,8 @@
 #   - The channel goes through `sanitize_segment_output` like all segment output,
 #     so an escape-spelled control byte is stripped before it reaches the terminal.
 #
-# `rustup show active-toolchain` shellout stays parked per the file-first policy.
-# See roadmap.md for its slot.
+# Never probe `rustc --version` instead: through a `path` toolchain it runs a binary the
+# repo chose. `rustup show` only prints the name.
 
 enum RustupEnv {
     RUSTUP_FILE_CAP = 4096;
@@ -112,14 +114,31 @@ fn rustup_env_for(cwd): i64 {
     return _rustup_file_value(root, "/rust-toolchain", 0);
 }
 
-fn rustup_env_render(): i64 {
+# The machine's default toolchain, for a project at or above `cwd` with no toolchain file,
+# even one that names no channel: a `path` toolchain is not the default. `budget_ms` 0 is
+# off.
+fn rustup_env_probe(cwd, tool, budget_ms): i64 {
+    if (budget_ms == 0) { return 0; }
+    if (tool == 0) { return 0; }
+    var which[8];
+    if (find_ancestor_with_either(cwd, "/rust-toolchain", "/rust-toolchain.toml", &which) != 0) { return 0; }
+    if (find_ancestor_with(cwd, "/Cargo.toml") == 0) { return 0; }
+    return probe_run("rustup_env", tool, "show", "active-toolchain", budget_ms, &probe_parse_rustup);
+}
+
+fn rustup_env_render(probe_ms): i64 {
     var buf[4096];
     var n = cmdrs_getcwd(&buf, 4096);
     if (n <= 0) { return 0; }
     n = n - 1;
 
     var cwd = alloc(n + 1);
+    if (cwd == 0) { return 0; }
     memcpy(cwd, &buf, n);
     store8(cwd + n, 0);
-    return rustup_env_for(cwd);
+
+    var pinned = rustup_env_for(cwd);
+    if (pinned != 0) { return pinned; }
+    if (probe_ms == 0) { return 0; }
+    return rustup_env_probe(cwd, find_in_path("rustup"), probe_ms);
 }

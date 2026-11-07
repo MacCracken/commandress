@@ -48,7 +48,9 @@
 #   fg = "yellow"
 #
 #   [[segments.<env_segment>]]            # cyrius_env / python_env / node_env / rustup_env
-#   fg = "..."                            # color-only knobs for the env segments
+#   fg = "..."                            # color knobs for the env segments
+#   shellout  = true                      # python_env, node_env, rustup_env: ask the tool
+#   budget_ms = 50                        # when no pin file answers. Off by default.
 #
 #   [[palette]]
 #   primary = "cyan"                      # define named slots that segments can reference
@@ -106,7 +108,10 @@ var CFG_SEPARATOR_STYLE = 240;
 var CFG_SEPARATOR_GLYPH = 248;
 var CFG_RIGHT_SEPARATOR_GLYPH = 256;
 var CFG_VCS_BUDGET_MS = 264;
-var CFG_SIZE = 272;
+var CFG_PROBE_MS_PYTHON = 272;
+var CFG_PROBE_MS_NODE = 280;
+var CFG_PROBE_MS_RUSTUP = 288;
+var CFG_SIZE = 296;
 
 # Largest ~/.commandress we will parse, in bytes.
 enum ConfigFile { CONFIG_CAP = 65536; }
@@ -119,6 +124,7 @@ enum ConfigFile { CONFIG_CAP = 65536; }
 enum VcsBudget {
     VCS_BUDGET_MS = 5;
     VCS_BUDGET_MAX_MS = 1000;
+    PROBE_BUDGET_DEFAULT_MS = 50;                       # src/probe.cyr has the reasons
 }
 
 fn cfg_segments(c): i64           { return load64(c + CFG_SEGMENTS); }
@@ -155,6 +161,10 @@ fn cfg_separator_style(c): i64         { return load64(c + CFG_SEPARATOR_STYLE);
 fn cfg_separator_glyph(c): i64         { return load64(c + CFG_SEPARATOR_GLYPH); }
 fn cfg_right_separator_glyph(c): i64   { return load64(c + CFG_RIGHT_SEPARATOR_GLYPH); }
 fn cfg_vcs_budget_ms(c): i64           { return load64(c + CFG_VCS_BUDGET_MS); }
+# 0 is off. Anything else is that probe's budget in ms. src/probe.cyr has the reasons.
+fn cfg_probe_ms_python(c): i64         { return load64(c + CFG_PROBE_MS_PYTHON); }
+fn cfg_probe_ms_node(c): i64           { return load64(c + CFG_PROBE_MS_NODE); }
+fn cfg_probe_ms_rustup(c): i64         { return load64(c + CFG_PROBE_MS_RUSTUP); }
 
 # Build the default Config. Used when no file is present, and as the
 # base for partial overrides — a config that sets only `separator`
@@ -176,6 +186,9 @@ fn config_default(): i64 {
     store64(c + CFG_VCS_SHOW_DIRTY, 1);
     store64(c + CFG_VCS_DIRTY_MARKER, "*");
     store64(c + CFG_VCS_BUDGET_MS, VCS_BUDGET_MS);
+    store64(c + CFG_PROBE_MS_PYTHON, 0);
+    store64(c + CFG_PROBE_MS_NODE, 0);
+    store64(c + CFG_PROBE_MS_RUSTUP, 0);
     store64(c + CFG_TIME_FORMAT, "%H:%M");
 
     # Opinionated default theme. Per-segment color choices follow the
@@ -473,6 +486,40 @@ fn _load_color_only_section(c, sgr_offset, bg_offset, sections, name, palette): 
     return 0;
 }
 
+# A budget for `section`: `budget_ms` when valid, else `dflt`. A bad value warns.
+fn _section_budget(pairs, section, dflt): i64 {
+    var v = bayan_toml_get_by_cstr(pairs, "budget_ms");
+    if (v == 0) { return dflt; }
+    var ms = _budget_ms_value(v);
+    if (ms != 0) { return ms; }
+    var msg = "warning: budget_ms in [[";
+    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+    syscall(SYS_WRITE, STDERR, section, strlen(section));
+    msg = "]] must be 1..1000 (using the default)\n";
+    syscall(SYS_WRITE, STDERR, msg, strlen(msg));
+    return dflt;
+}
+
+# A language-env section with a tool to ask: `fg`/`bg`/`style`, plus `shellout` and
+# `budget_ms` for its version probe. The result lands in the slot at `probe_offset`.
+fn _load_probe_section(c, sgr_offset, bg_offset, probe_offset, sections, name, palette): i64 {
+    var pairs = _section_pairs(sections, name);
+    if (pairs == 0) { return 0; }
+    var allowed = vec_new();
+    vec_push(allowed, "shellout");
+    vec_push(allowed, "budget_ms");
+    vec_push(allowed, "fg");
+    vec_push(allowed, "bg");
+    vec_push(allowed, "style");
+    _warn_unknown_pairs(pairs, allowed, name);
+    var budget = _section_budget(pairs, name, PROBE_BUDGET_DEFAULT_MS);
+    if (_parse_bool(bayan_toml_get_by_cstr(pairs, "shellout"), 0) == 1) {
+        store64(c + probe_offset, budget);
+    }
+    _apply_seg_style(c, sgr_offset, bg_offset, pairs, palette);
+    return 0;
+}
+
 # Append one palette section's slots to `p`, a flat alternating-cstring vec.
 #
 # Palette names are arbitrary (ADR 0007 § 2), so `ui.primary = "cyan"` must stay
@@ -723,15 +770,7 @@ fn config_load(path): i64 {
         var dm_v = bayan_toml_get_by_cstr(vcs_pairs, "dirty_marker");
         if (dm_v != 0) { store64(c + CFG_VCS_DIRTY_MARKER, str_cstr(dm_v)); }
 
-        var bm_v = bayan_toml_get_by_cstr(vcs_pairs, "budget_ms");
-        if (bm_v != 0) {
-            var bm = _budget_ms_value(bm_v);
-            if (bm != 0) { store64(c + CFG_VCS_BUDGET_MS, bm); }
-            else {
-                var bm_msg = "warning: budget_ms in [[segments.vcs]] must be 1..1000 (using the default)\n";
-                syscall(SYS_WRITE, STDERR, bm_msg, strlen(bm_msg));
-            }
-        }
+        store64(c + CFG_VCS_BUDGET_MS, _section_budget(vcs_pairs, "segments.vcs", cfg_vcs_budget_ms(c)));
         _apply_seg_style(c, CFG_SGR_VCS, CFG_BG_VCS, vcs_pairs, palette);
     }
 
@@ -756,9 +795,12 @@ fn config_load(path): i64 {
     _load_color_only_section(c, CFG_SGR_HOSTNAME,   CFG_BG_HOSTNAME,   sections, "segments.hostname",   palette);
     _load_color_only_section(c, CFG_SGR_USER,       CFG_BG_USER,       sections, "segments.user",       palette);
     _load_color_only_section(c, CFG_SGR_CYRIUS_ENV, CFG_BG_CYRIUS_ENV, sections, "segments.cyrius_env", palette);
-    _load_color_only_section(c, CFG_SGR_PYTHON_ENV, CFG_BG_PYTHON_ENV, sections, "segments.python_env", palette);
-    _load_color_only_section(c, CFG_SGR_NODE_ENV,   CFG_BG_NODE_ENV,   sections, "segments.node_env",   palette);
-    _load_color_only_section(c, CFG_SGR_RUSTUP_ENV, CFG_BG_RUSTUP_ENV, sections, "segments.rustup_env", palette);
+    _load_probe_section(c, CFG_SGR_PYTHON_ENV, CFG_BG_PYTHON_ENV, CFG_PROBE_MS_PYTHON,
+                        sections, "segments.python_env", palette);
+    _load_probe_section(c, CFG_SGR_NODE_ENV, CFG_BG_NODE_ENV, CFG_PROBE_MS_NODE,
+                        sections, "segments.node_env", palette);
+    _load_probe_section(c, CFG_SGR_RUSTUP_ENV, CFG_BG_RUSTUP_ENV, CFG_PROBE_MS_RUSTUP,
+                        sections, "segments.rustup_env", palette);
 
     # Dotted keys never reach the allow-lists above, so check them here.
     _warn_nested_keys(sections, "prompt");

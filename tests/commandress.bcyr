@@ -279,7 +279,7 @@ fn bench_python_env_segment(): i64 {
         bench_batch_start(b);
         var bi = 0;
         while (bi < batch) {
-            python_env_render();
+            python_env_render(0);
             bi = bi + 1;
         }
         bench_batch_stop(b, batch);
@@ -301,7 +301,7 @@ fn bench_node_env_segment(): i64 {
         bench_batch_start(b);
         var bi = 0;
         while (bi < batch) {
-            node_env_render();
+            node_env_render(0);
             bi = bi + 1;
         }
         bench_batch_stop(b, batch);
@@ -336,6 +336,29 @@ fn bench_node_env_parse_package(): i64 {
     return 0;
 }
 
+# What a redraw pays with a probe on: the cache hit, 59 prompts in 60. The miss is the
+# tool itself, which is measured in ADR 0014, not here.
+fn bench_probe_cached(): i64 {
+    cache_init();
+    cache_put("tst_bench", "/bench/tool", "3.14.9", 6);
+    var b = bench_new("probe_run (cached)");
+    var rounds = 50;
+    var batch = 200;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            probe_run("tst_bench", "/bench/tool", "--version", 0, 50, &probe_parse_python);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 fn bench_rustup_env_segment(): i64 {
     var b = bench_new("rustup_env_render (empty walk)");
     var rounds = 50;
@@ -345,7 +368,7 @@ fn bench_rustup_env_segment(): i64 {
         bench_batch_start(b);
         var bi = 0;
         while (bi < batch) {
-            rustup_env_render();
+            rustup_env_render(0);
             bi = bi + 1;
         }
         bench_batch_stop(b, batch);
@@ -453,6 +476,7 @@ fn main(): i64 {
     bench_python_env_segment();
     bench_node_env_segment();
     bench_node_env_parse_package();
+    bench_probe_cached();
     bench_rustup_env_segment();
     bench_rustup_env_parse_toml();
     bench_prompt();
