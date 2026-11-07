@@ -18,8 +18,12 @@ include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fnptr.cyr"
+include "lib/atomic.cyr"
+include "lib/math.cyr"
+include "lib/slice.cyr"
 include "lib/bayan-cyml.cyr"
 include "lib/bayan-toml.cyr"
+include "lib/bayan-json.cyr"
 include "lib/tagged.cyr"
 include "lib/process.cyr"
 include "lib/chrono.cyr"
@@ -309,6 +313,29 @@ fn bench_node_env_segment(): i64 {
 
 # Full-segment bench. Same shape as bench_node_env_segment — empty
 # walk to "/" since the bench cwd has no rust-toolchain ancestor.
+# `package.json` is the second repo-controlled parser input, and this is a typical one:
+# about the size of the median real file, with `engines` two-thirds of the way down.
+fn bench_node_env_parse_package(): i64 {
+    var json = "{\n  \"name\": \"example\",\n  \"version\": \"1.4.2\",\n  \"description\": \"a representative package manifest for this bench\",\n  \"main\": \"dist/index.js\",\n  \"types\": \"dist/index.d.ts\",\n  \"files\": [\"dist\", \"README.md\"],\n  \"scripts\": {\n    \"build\": \"tsc -p .\",\n    \"test\": \"vitest run\",\n    \"lint\": \"eslint src\"\n  },\n  \"keywords\": [\"alpha\", \"beta\", \"gamma\"],\n  \"author\": \"someone\",\n  \"license\": \"MIT\",\n  \"repository\": {\"type\": \"git\", \"url\": \"https://example.invalid/x.git\"},\n  \"engines\": {\"node\": \">=18.0.0\", \"npm\": \">=9\"},\n  \"dependencies\": {\"a\": \"^1.0.0\", \"b\": \"^2.3.1\", \"c\": \"~3.4.0\"},\n  \"devDependencies\": {\"typescript\": \"^5.4.0\", \"vitest\": \"^1.6.0\"}\n}\n";
+    var n = strlen(json);
+    var b = bench_new("node_env_parse_package");
+    var rounds = 50;
+    var batch = 200;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            node_env_parse_package(json, n);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 fn bench_rustup_env_segment(): i64 {
     var b = bench_new("rustup_env_render (empty walk)");
     var rounds = 50;
@@ -425,6 +452,7 @@ fn main(): i64 {
     bench_python_env_basename();
     bench_python_env_segment();
     bench_node_env_segment();
+    bench_node_env_parse_package();
     bench_rustup_env_segment();
     bench_rustup_env_parse_toml();
     bench_prompt();

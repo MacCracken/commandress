@@ -14,8 +14,12 @@ include "lib/io.cyr"
 include "lib/vec.cyr"
 include "lib/str.cyr"
 include "lib/fnptr.cyr"
+include "lib/atomic.cyr"
+include "lib/math.cyr"
+include "lib/slice.cyr"
 include "lib/bayan-cyml.cyr"
 include "lib/bayan-toml.cyr"
+include "lib/bayan-json.cyr"
 include "lib/tagged.cyr"
 include "lib/chrono.cyr"
 include "lib/pwd.cyr"
@@ -1787,6 +1791,184 @@ fn test_python_env_render_smoke(): i64 {
     return 0;
 }
 
+# ---- node_env: package.json (ADR 0013) ----
+
+fn _pkg(json): i64 { return node_env_parse_package(json, strlen(json)); }
+
+fn test_node_env_package_reads_engines_node(): i64 {
+    _streq_or_dump(_pkg("{\"name\":\"x\",\"engines\":{\"node\":\">=18\"}}"), ">=18", "the usual shape");
+    _streq_or_dump(_pkg("{\"engines\":{\"npm\":\">=9\",\"node\":\"^20 || ^22\"},\"version\":\"1\"}"), "^20 || ^22", "beside other keys, and first");
+    _streq_or_dump(_pkg("{\n  \"engines\" : {\n    \"node\" : \"20.x\"\n  }\n}\n"), "20.x", "pretty-printed");
+    return 0;
+}
+
+# Everything here renders nothing, and none of it is an error.
+fn test_node_env_package_misses(): i64 {
+    assert_eq(_pkg("{\"name\":\"x\"}"), 0, "no engines");
+    assert_eq(_pkg("{\"engines\":\"node\"}"), 0, "engines is a string");
+    assert_eq(_pkg("{\"engines\":[\"node\"]}"), 0, "engines is an array");
+    assert_eq(_pkg("{\"engines\":{\"npm\":\"9\"}}"), 0, "no node key");
+    assert_eq(_pkg("{\"engines\":{\"node\":18}}"), 0, "a number is not a range");
+    assert_eq(_pkg("{\"engines\":{\"node\":true}}"), 0, "nor a bool");
+    assert_eq(_pkg("{\"engines\":{\"node\":null}}"), 0, "nor null");
+    assert_eq(_pkg("{\"engines\":{\"node\":[\"18\"]}}"), 0, "nor an array");
+    assert_eq(_pkg("{\"engines\":{\"node\":{\"a\":\"b\"}}}"), 0, "nor an object");
+    assert_eq(_pkg("{\"engines\":{\"node\":\"\"}}"), 0, "nor empty");
+    assert_eq(_pkg("{\"node\":\"18\"}"), 0, "node must be under engines");
+    assert_eq(_pkg("{\"x\":{\"engines\":{\"node\":\"18\"}}}"), 0, "engines must be top-level");
+    assert_eq(_pkg(""), 0, "an empty file");
+    assert_eq(_pkg("not json"), 0, "not JSON");
+    assert_eq(_pkg("[]"), 0, "not an object");
+    return 0;
+}
+
+# Values and keys come back as written. A backslash means an escape nobody would write
+# in a version range, and rendering it undecoded would show `\\u001b` as text.
+fn test_node_env_package_escapes_render_nothing(): i64 {
+    assert_eq(_pkg("{\"engines\":{\"node\":\"a\\u001bb\"}}"), 0, "an escaped value");
+    assert_eq(_pkg("{\"\\u0065ngines\":{\"node\":\"18\"}}"), 0, "an escaped key");
+    return 0;
+}
+
+fn test_node_env_package_value_cap(): i64 {
+    var body = alloc(600);
+    var head = "{\"engines\":{\"node\":\"";
+    var hl = strlen(head);
+    memcpy(body, head, hl);
+    memset(body + hl, 97, NODE_RANGE_MAX);
+    memcpy(body + hl + NODE_RANGE_MAX, "\"}}", 4);
+    var out = _pkg(body);
+    assert_neq(out, 0, "a value at the cap renders");
+    assert_eq(sanitized_len(out), NODE_RANGE_MAX, "whole");
+    memset(body + hl, 97, NODE_RANGE_MAX + 1);
+    memcpy(body + hl + NODE_RANGE_MAX + 1, "\"}}", 4);
+    assert_eq(_pkg(body), 0, "past the cap renders nothing");
+    return 0;
+}
+
+# bayan refuses a document with a repeated key, so nothing has to pick a winner.
+fn test_node_env_package_duplicate_key(): i64 {
+    assert_eq(_pkg("{\"engines\":{\"node\":\"a\"},\"engines\":{\"node\":\"b\"}}"), 0, "at the top");
+    assert_eq(_pkg("{\"engines\":{\"node\":\"a\",\"node\":\"b\"}}"), 0, "under engines");
+    return 0;
+}
+
+# The read cap can cut a file anywhere. What came before the cut still counts.
+fn test_node_env_package_cut_document(): i64 {
+    _streq_or_dump(_pkg("{\"engines\":{\"node\":\">=18\"},\"a\":\"unterminated"), ">=18", "a cut after the key");
+    assert_eq(_pkg("{\"a\":\"unterminated"), 0, "a cut before it");
+    assert_eq(_pkg("{\"engines\":{\"node\":\">=1"), 0, "a cut inside it");
+    return 0;
+}
+
+# 300 brackets in a value. The depth cap must refuse it without recursing or crashing.
+fn test_node_env_package_deep_nesting(): i64 {
+    var d = 300;
+    var head = "{\"a\":";
+    var tail = ",\"engines\":{\"node\":\"18\"}}";
+    var buf = alloc(strlen(head) + d * 2 + strlen(tail) + 1);
+    var n = strlen(head);
+    memcpy(buf, head, n);
+    memset(buf + n, 91, d);
+    memset(buf + n + d, 93, d);
+    memcpy(buf + n + d * 2, tail, strlen(tail) + 1);
+    assert_eq(_pkg(buf), 0, "a value past the depth cap ends the parse");
+    return 0;
+}
+
+fn test_node_env_package_tolerates_a_bom(): i64 {
+    _streq_or_dump(_pkg("\xef\xbb\xbf{\"engines\":{\"node\":\">=18\"}}"), ">=18", "a BOM is skipped");
+    return 0;
+}
+
+fn _node_tree_clean(): i64 {
+    syscall(SYS_UNLINK, "/tmp/cmdrs_node_pkg/.nvmrc");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_node_pkg/package.json");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_pkg/package.json");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_node_pkg/sub/.nvmrc");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_pkg/sub/package.json");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_node_pkg/sub/package.json");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_pkg/sub");
+    syscall(SYS_RMDIR, "/tmp/cmdrs_node_pkg");
+    return 0;
+}
+
+fn _node_tree_new(): i64 {
+    _node_tree_clean();
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_node_pkg", 0x1FF), 0, "mkdir root");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_node_pkg/sub", 0x1FF), 0, "mkdir sub");
+    return 0;
+}
+
+fn _node_write(path, content): i64 {
+    file_write_all(path, content, strlen(content));
+    return 0;
+}
+
+fn test_node_env_package_found_by_the_walk(): i64 {
+    _node_tree_new();
+    _node_write("/tmp/cmdrs_node_pkg/package.json", "{\"engines\":{\"node\":\">=18\"}}");
+    _streq_or_dump(node_env_for("/tmp/cmdrs_node_pkg"), ">=18", "in the cwd");
+    _streq_or_dump(node_env_for("/tmp/cmdrs_node_pkg/sub"), ">=18", "above the cwd");
+    _node_tree_clean();
+    return 0;
+}
+
+# .nvmrc is the pin and package.json is a fallback, so .nvmrc wins from anywhere above.
+fn test_node_env_nvmrc_beats_package_json(): i64 {
+    _node_tree_new();
+    _node_write("/tmp/cmdrs_node_pkg/.nvmrc", "20.11.1\n");
+    _node_write("/tmp/cmdrs_node_pkg/sub/package.json", "{\"engines\":{\"node\":\">=18\"}}");
+    _streq_or_dump(node_env_for("/tmp/cmdrs_node_pkg/sub"), "20.11.1", "a farther .nvmrc beats a nearer package.json");
+    _node_tree_clean();
+    return 0;
+}
+
+# Only the nearest package.json is read. Climbing past one would let a hostile tree of
+# them cost a parse per level on every redraw.
+fn test_node_env_only_the_nearest_package_json(): i64 {
+    _node_tree_new();
+    _node_write("/tmp/cmdrs_node_pkg/package.json", "{\"engines\":{\"node\":\">=18\"}}");
+    _node_write("/tmp/cmdrs_node_pkg/sub/package.json", "{\"name\":\"workspace\"}");
+    assert_eq(node_env_for("/tmp/cmdrs_node_pkg/sub"), 0, "a nearer package.json with no engines stops the search");
+    _node_tree_clean();
+    return 0;
+}
+
+# A FIFO must not hang the prompt (audit A-01). The test would stall here if it did.
+fn test_node_env_package_hostile_file_types(): i64 {
+    _node_tree_new();
+    assert_eq(syscall(SYS_MKNODAT, 0 - 100, "/tmp/cmdrs_node_pkg/package.json", 0x1180, 0), 0, "mkfifo fixture");
+    assert_eq(node_env_for("/tmp/cmdrs_node_pkg"), 0, "a FIFO renders nothing");
+    syscall(SYS_UNLINK, "/tmp/cmdrs_node_pkg/package.json");
+    assert_eq(syscall(SYS_MKDIR, "/tmp/cmdrs_node_pkg/package.json", 0x1FF), 0, "directory fixture");
+    assert_eq(node_env_for("/tmp/cmdrs_node_pkg"), 0, "a directory renders nothing");
+    _node_tree_clean();
+    return 0;
+}
+
+# The read stops at the cap: a key before it renders, and a key after it is not seen.
+fn test_node_env_package_read_cap(): i64 {
+    _node_tree_new();
+    var size = PKG_FILE_CAP + 200;
+    var buf = alloc(size + 1);
+    var early = "{\"engines\":{\"node\":\">=18\"},\"pad\":\"";
+    memset(buf, 120, size);
+    memcpy(buf, early, strlen(early));
+    memcpy(buf + size - 2, "\"}", 2);
+    file_write_all("/tmp/cmdrs_node_pkg/package.json", buf, size);
+    _streq_or_dump(node_env_for("/tmp/cmdrs_node_pkg"), ">=18", "a key before the cap renders");
+
+    var late = "\",\"engines\":{\"node\":\">=18\"}}";
+    memset(buf, 120, size);
+    memcpy(buf, "{\"pad\":\"", 8);
+    memcpy(buf + PKG_FILE_CAP, late, strlen(late));
+    file_write_all("/tmp/cmdrs_node_pkg/package.json", buf, PKG_FILE_CAP + strlen(late));
+    assert_eq(node_env_for("/tmp/cmdrs_node_pkg"), 0, "a key past the cap is not seen");
+    _node_tree_clean();
+    return 0;
+}
+
 # ---- node_env ----
 
 # Smoke test: the test process runs from this project's tree (no
@@ -2928,6 +3110,19 @@ fn main(): i64 {
     test_palette_single_bracket_table();
     test_palette_selected_holds_the_new_color_forms();
     test_palette_selector_must_be_top_level();
+    test_node_env_package_reads_engines_node();
+    test_node_env_package_misses();
+    test_node_env_package_escapes_render_nothing();
+    test_node_env_package_value_cap();
+    test_node_env_package_duplicate_key();
+    test_node_env_package_cut_document();
+    test_node_env_package_deep_nesting();
+    test_node_env_package_tolerates_a_bom();
+    test_node_env_package_found_by_the_walk();
+    test_node_env_nvmrc_beats_package_json();
+    test_node_env_only_the_nearest_package_json();
+    test_node_env_package_hostile_file_types();
+    test_node_env_package_read_cap();
     test_render_powerline_left();
     test_render_powerline_right();
     test_render_powerline_right_no_block_no_glyph();

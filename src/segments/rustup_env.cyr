@@ -89,13 +89,8 @@ fn _rustup_text_is_toml(buf, n): i64 {
 # The buffer is heap, not frame: the caller already holds a 4 KB cwd buffer, and a
 # frame this size has caused trouble on agnos before (audit A-08).
 fn _rustup_file_value(root, suffix, is_toml): i64 {
-    var root_len = strlen(root);
-    var suffix_len = strlen(suffix);
-    var path = alloc(root_len + suffix_len + 1);
+    var path = join_path(root, suffix);
     if (path == 0) { return 0; }
-    memcpy(path, root, root_len);
-    memcpy(path + root_len, suffix, suffix_len);
-    store8(path + root_len + suffix_len, 0);
 
     var buf = alloc(RUSTUP_FILE_CAP);
     if (buf == 0) { return 0; }

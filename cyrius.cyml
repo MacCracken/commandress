@@ -35,22 +35,29 @@ dce = true
 #
 # 1.2.1: `hashseed` is added for the same reason. bayan 1.11.1 keys the TOML parser's
 # table index with it, so dist/bayan-toml.deps now names it.
+#
+# 1.4.0: `atomic`, `math` and `slice` are added because dist/bayan-json.deps names them.
+# The flat parser this repo calls reads through `slice`; the other two are compiled in
+# and dropped by DCE, but the sublib's `# Requires` lines include them, so they must
+# resolve.
 stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "assert", "args", "bench",
-          "chrono", "fnptr", "process", "pwd", "tagged", "result", "hashseed"]
+          "chrono", "fnptr", "process", "pwd", "tagged", "result", "hashseed",
+          "atomic", "math", "slice"]
 
 # ── AGNOS first-party deps ───────────────────────────────────────
 # bayan — the data-format library that absorbed `lib/toml.cyr` and `lib/cyml.cyr`.
 # Those two files were frozen copies that no toolchain snapshot had shipped since
 # cyrius 6.1.25, so nothing could update them, and they parsed `~/.commandress`.
-# Only the two sublibs are pulled, not the 732 KB bundle in the snapshot: a config
-# file needs TOML and CYML and nothing else. See ADR 0009.
+# Only the sublibs are pulled, not the 732 KB bundle in the snapshot: TOML and CYML for
+# the config (ADR 0009), and JSON for `package.json` (ADR 0013). This repo calls only
+# bayan's flat JSON parser, not its tree parser: ADR 0013 has the measurements.
 #
 # The tag is the newest bayan, and the one the cyrius 6.7.18 snapshot bundles. Its
 # own pin is 6.7.16. Read a tag's `cyrius` pin before moving this.
 [deps.bayan]
 git = "https://github.com/MacCracken/bayan.git"
 tag = "1.11.1"
-modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr"]
+modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr", "dist/bayan-json.cyr"]
 
 # cmdit — sovereign CLI / argument-parsing library (getopt-long), the stdlib
 # `flags` parser productized + extended. commandress's CLI surface is one flag

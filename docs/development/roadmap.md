@@ -15,7 +15,7 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.3.1**. The 1.1.x line was toolchain refreshes, the cmdit
+this file. Current release is **1.4.0**. The 1.1.x line was toolchain refreshes, the cmdit
 CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line was toolchain and
 dependency refreshes, the quick roadmap items, and the
 [2026-11-06 audit](../audit/2026-11-06-audit.md). The 1.3.x line completed the colour model reserved
@@ -35,17 +35,13 @@ breaks a v1 config.
 ## 1.4.x — Language-env depth
 
 The language-env segments are file-first by explicit user direction (2026-05-18): read a pin file,
-never pay a subprocess. That policy stands. This slot finishes the *file* half and puts the
-subprocess half behind opt-in config.
+never pay a subprocess. That policy stands. The *file* half finished at 1.4.0 with `package.json`
+([ADR 0013](../adr/0013-package-json-via-flat-bayan-json.md)). What remains puts the subprocess half
+behind opt-in config.
 
 | Release | Item | Source of the deferral |
 |---|---|---|
-| **1.4.0** | **`package.json` → `engines.node`** — a second `node_env` source when `.nvmrc` is absent. | `src/segments/node_env.cyr:14` |
 | **1.4.1** | **Opt-in version shellouts** — `python --version`, `node --version`, `rustup show active-toolchain`, each behind a per-segment config flag, default off. The 1 s TTL cache (`src/cache.cyr`) is what makes them affordable, and vcs `budget_ms` is the pattern for bounding them. | `src/segments/node_env.cyr`, `src/segments/rustup_env.cyr`; `state.md` "deferred by policy" |
-
-**Gate for 1.4.0**: `package.json` needs a JSON parser and is repo-controlled, so it is the
-`rust-toolchain.toml` question again with a larger file. Measure `bayan-json`'s size and cold-start
-cost first, and apply what the 1.2.3 audit learned about hostile parser input. It earns an ADR.
 
 ---
 

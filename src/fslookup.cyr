@@ -240,9 +240,8 @@ fn trimmed_copy(buf, n): i64 {
     return out;
 }
 
-fn read_trimmed_file_at(root, suffix): i64 {
-    if (root == 0) { return 0; }
-    if (suffix == 0) { return 0; }
+# `<root><suffix>` as a heap-alloc'd cstring, or 0 if alloc refuses.
+fn join_path(root, suffix): i64 {
     var root_len = strlen(root);
     var suffix_len = strlen(suffix);
     var path = alloc(root_len + suffix_len + 1);
@@ -250,6 +249,14 @@ fn read_trimmed_file_at(root, suffix): i64 {
     memcpy(path, root, root_len);
     memcpy(path + root_len, suffix, suffix_len);
     store8(path + root_len + suffix_len, 0);
+    return path;
+}
+
+fn read_trimmed_file_at(root, suffix): i64 {
+    if (root == 0) { return 0; }
+    if (suffix == 0) { return 0; }
+    var path = join_path(root, suffix);
+    if (path == 0) { return 0; }
 
     var buf[PROBE_FILE_CAP];
     var n = read_regular_file(path, &buf, PROBE_FILE_CAP);   # audit A-01: FIFO/device-safe

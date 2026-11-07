@@ -6,6 +6,70 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-06
+
+`node_env` reads `package.json`. With no `.nvmrc` anywhere above, it shows the nearest `package.json`'s
+`engines.node`. The toolchain is unchanged, and bayan stays at 1.11.1 with one more sublib. Decision and
+measurements: [ADR 0013](docs/adr/0013-package-json-via-flat-bayan-json.md).
+
+**You may see a new segment.** `node_env` used to be empty without an `.nvmrc`, and it now appears for any
+Node project with `engines.node`. It shows a **range** such as `>=18`: what the project asks for, not
+what is installed.
+
+### Added
+
+- **`package.json` → `engines.node`.**
+  - `.nvmrc` wins from any level above the cwd, however near a `package.json` is.
+  - **Only the nearest `package.json` is read.** One with no `engines` stops the search, so a workspace
+    package does not show its monorepo root's range. Climbing further would let a hostile tree cost a
+    parse per level on every redraw.
+  - **This is the second repo-controlled input to reach a parser**, so it is bounded the same way: a 16 KB
+    read, FIFO and device files refused, values over 255 bytes rendered empty, and control bytes stripped
+    at the existing chokepoint. The worst hostile file measured costs about 1 ms, and only in its own repo.
+  - A value containing a backslash renders empty, because values come back as written. None of the 3,955
+    real files surveyed has one.
+- **Benchmark:** `node_env_parse_package`.
+
+### Changed
+
+- **`bayan-json` joins `[deps.bayan]`**, with the `atomic`, `math` and `slice` stdlib leaves its sidecar
+  names. This repo calls only the flat parser, `bayan_json_parse`, which has no number parsing and no
+  recursion. The tree parser was measured and rejected at twice the size and nearly twice the worst
+  case, and it would have been the first recursion in the binary.
+
+### Performance
+
+| | 1.3.1 | 1.4.0 | Delta |
+|---|---|---|---|
+| Cold start, default config, no `node_env` | 308 µs | 311 µs | flat |
+| Cold start, `node_env`, no Node files | 330 µs | 353 µs | +23 µs, the second walk |
+| Cold start, typical `package.json`, 1.2 KB | 328 µs | 359 µs | +31 µs |
+| Cold start, large `package.json`, 6.3 KB | 330 µs | 403 µs | +73 µs |
+| Cold start, worst hostile file, 16 KB | 355 µs | 1,359 µs | +1.0 ms, in that repo only |
+| Cold start, largest theme, no Node files | 507 µs | 528 µs | +20 µs |
+| `node_env_render`, no file found | 13.6 µs | 26.7 µs | doubled, the second walk |
+| `node_env_parse_package` | — | 7.7 µs | new |
+| `render_prompt` | 11.33 µs | 11.22 µs | flat |
+| `config_load`, largest theme | 61.8 µs | 60.4 µs | flat |
+| Binary, x86_64 | 162,168 B | 182,120 B | +19,952 B (+12.3 %) |
+| Binary, `--agnos` | 154,288 B | 174,248 B | +19,960 B (+12.9 %) |
+
+Medians of 2,500 interleaved pairs, and lowest mins of 5 alternating bench runs, because other work was
+running on the host. Absolute figures are not comparable with earlier entries.
+
+### Tests
+
+- 601 assertions across 234 tests, from 551 across 221.
+- 90 mutations, all caught, including ones that climb past a `package.json` or let it beat `.nvmrc`.
+- Every one of 3,955 real `package.json` files reads the same as Python's `json`.
+- 100,000 mutated `package.json` files: no crash, no abort, nothing on stderr.
+- 60,000 hostile values, with stdout checked by Python's decoder: no control byte reached it. 55 % of those
+  values render, and with the sanitizer removed the same fuzz reported over 1,300 violations in 1,500 runs,
+  so the zero means something.
+- `scripts/smoke.sh` now puts a hostile `package.json` through the shipped binary.
+- Differential 1.3.1 → 1.4.0: 6,163 cases, 0 differences. No corpus fixture has a `package.json`, so this
+  shows nothing else moved.
+
 ## [1.3.1] - 2026-11-06
 
 Multi-palette, the last of the colour work [ADR 0007](docs/adr/0007-schema-freeze.md) reserved at the v1.0

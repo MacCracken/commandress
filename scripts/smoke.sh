@@ -24,12 +24,15 @@ cd "$work"
 # A hostile project file, through the real render path. The last line is the C1 pair
 # that a dropped byte used to reassemble (audit 2026-11-06, T-03).
 printf '3.11\033[31mX\033]0;t\007\302\001\233Y\n' > .python-version
-printf '[[prompt]]\nsegments = ["python_env"]\nright_segments = ["python_env"]\ntrailer = "> "\n' > .commandress
+# package.json is the other repo-controlled parser input, so it gets the same treatment.
+printf '{"engines":{"node":">=18\033]0;t\007\302\001\233"}}' > package.json
+printf '[[prompt]]\nsegments = ["python_env", "node_env"]\nright_segments = ["python_env"]\ntrailer = "> "\n' > .commandress
 export HOME="$work"
 unset VIRTUAL_ENV
 
 out="$("$bin")" || fail "non-zero exit"
 [[ "$out" == *'> ' ]] || fail "the left prompt lost its trailer"
+[[ "$out" == *'>=18'* ]] || fail "node_env did not read package.json"
 [[ "$out" != *$'\033]'* ]] || fail "OSC from a project file reached stdout"
 [[ "$out" != *$'\a'* ]] || fail "BEL from a project file reached stdout"
 [[ "$out" != *$'\033[31m'* ]] || fail "SGR from a project file reached stdout"

@@ -1,18 +1,103 @@
 # node_env.cyr — Node.js project segment.
 #
-# Resolution (file-first; no shellout in v0.5.0):
-#   1. <ancestor>/.nvmrc → trimmed contents
-#   2. empty
+# Resolution (file-first; no shellout):
+#   1. `.nvmrc` in the cwd or any directory above it → trimmed contents.
+#   2. The nearest `package.json` → its `engines.node`, as written.
+#   3. empty
 #
-# `.nvmrc` is the canonical version-pin file across nvm / fnm / Volta —
-# every Node-version manager respects it. The contents are usually a
-# semver-ish string (`18.17.0`, `v20`, `lts/iron`); we just emit the
-# trimmed bytes verbatim.
+# `.nvmrc` is the canonical version-pin file across nvm / fnm / Volta, so it wins from
+# anywhere above, however near a `package.json` is. Its contents are usually a
+# semver-ish string (`18.17.0`, `v20`, `lts/iron`), emitted as trimmed bytes.
 #
-# Not parsed in v0.5.0: `package.json` `engines.node` (semver-range
-# parsing isn't worth the JSON-walk cost without M6 caching) and
-# `node --version` shellout (deferred pre-v1 per the file-first
-# policy). Both are roadmapped as later additions if user demand shows.
+# `engines.node` is a RANGE, such as `>=18`: what the project asks for, not what is
+# installed. That is what renders. Parsing the range to compare it with anything
+# would need the running version, which means a shellout (roadmap 1.4.1).
+#
+# Only the NEAREST `package.json` is read. One with no `engines` stops the search, so a
+# workspace package does not show its monorepo root's range. Climbing further would
+# let a tree of these files cost a parse per level on every redraw.
+#
+# ⚠ REPO-CONTROLLED INPUT, and the second path after `rust-toolchain.toml` where bytes
+# an attacker chose reach a parser. ADR 0013 has the reasoning and the measurements:
+#   - `read_regular_file` refuses a FIFO or device (audit A-01).
+#   - PKG_FILE_CAP bounds the parse. Past it the file is simply not seen, which loses
+#     nothing before the cut: bayan's flat parser returns the members it read.
+#   - NODE_RANGE_MAX bounds the output, as RUSTUP_CHANNEL_MAX does.
+#   - The value goes through `sanitize_segment_output` like all segment output.
+#
+# This calls bayan's FLAT parser, not `bayan_json_v_parse`. The flat one keeps values as
+# raw source spans, so it has no number parsing, no recursion and half the size. Parsing
+# `engines` is a second flat parse of that span. The cost is that keys and values are
+# compared as written: `"\u0065ngines"` is not found, and a value with a backslash
+# renders empty. Neither hides anything, since this only chooses what to display.
+
+enum NodeEnv {
+    PKG_FILE_CAP = 16384;
+    NODE_RANGE_MAX = 255;
+}
+
+# The raw value of `key` in flat `pairs`, or 0 unless it is there as a `kind`.
+fn _package_value(pairs, key, kind): i64 {
+    var n = vec_len(pairs);
+    var i = 0;
+    while (i < n) {
+        var p = vec_get(pairs, i);
+        if (str_eq_cstr(bayan_json_key(p), key) == 1) {
+            if (bayan_json_pair_kind(p) == kind) { return bayan_json_value(p); }
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Pure parser: `engines.node` from the `n` bytes at `buf`. Returns a heap-alloc'd cstring,
+# or 0 when it is absent, is not a string, or cannot be shown as written.
+fn node_env_parse_package(buf, n): i64 {
+    if (n <= 0) { return 0; }
+    var src = str_new(buf, n);
+    if (src == 0) { return 0; }
+    var top = bayan_json_parse(src);
+    if (top == 0) { return 0; }
+    var engines = _package_value(top, "engines", JSON_K_OBJECT);
+    if (engines == 0) { return 0; }
+    var inner = bayan_json_parse(engines);
+    if (inner == 0) { return 0; }
+    var range = _package_value(inner, "node", JSON_K_STRING);
+    if (range == 0) { return 0; }
+
+    var len = str_len(range);
+    if (len == 0) { return 0; }
+    if (len > NODE_RANGE_MAX) { return 0; }
+    var d = str_data(range);
+    var i = 0;
+    while (i < len) {
+        if (load8(d + i) == 92) { return 0; }           # '\\': an escape, as written
+        i = i + 1;
+    }
+    return str_cstr(range);
+}
+
+# `engines.node` from `<root>/package.json`, or 0. The buffer is heap, not frame: the
+# caller already holds a 4 KB cwd buffer.
+fn _node_package_range(root): i64 {
+    var path = join_path(root, "/package.json");
+    if (path == 0) { return 0; }
+    var buf = alloc(PKG_FILE_CAP);
+    if (buf == 0) { return 0; }
+    var n = read_regular_file(path, buf, PKG_FILE_CAP);
+    if (n <= 0) { return 0; }
+    return node_env_parse_package(buf, n);
+}
+
+# The version or range in force at `cwd`, or 0.
+fn node_env_for(cwd): i64 {
+    var root = find_ancestor_with(cwd, "/.nvmrc");
+    if (root != 0) { return read_trimmed_file_at(root, "/.nvmrc"); }
+    root = find_ancestor_with(cwd, "/package.json");
+    if (root == 0) { return 0; }
+    return _node_package_range(root);
+}
 
 fn node_env_render(): i64 {
     var buf[4096];
@@ -21,10 +106,8 @@ fn node_env_render(): i64 {
     n = n - 1;
 
     var cwd = alloc(n + 1);
+    if (cwd == 0) { return 0; }
     memcpy(cwd, &buf, n);
     store8(cwd + n, 0);
-
-    var root = find_ancestor_with(cwd, "/.nvmrc");
-    if (root == 0) { return 0; }
-    return read_trimmed_file_at(root, "/.nvmrc");
+    return node_env_for(cwd);
 }

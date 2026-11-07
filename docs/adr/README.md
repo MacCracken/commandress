@@ -33,3 +33,4 @@ Decisions about commandress — what we chose, the context, and the consequences
 | [0010](0010-dead-code-elimination-on-every-build.md) | Dead-code elimination on every build | Accepted |
 | [0011](0011-prompt-holds-a-reference-not-the-bytes.md) | The shell's prompt variable holds a reference, never the rendered bytes | Accepted |
 | [0012](0012-cache-bounded-by-construction.md) | The probe cache is bounded by construction, not by eviction | Accepted |
+| [0013](0013-package-json-via-flat-bayan-json.md) | `package.json` is read with bayan's flat JSON parser | Accepted |
