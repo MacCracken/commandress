@@ -64,6 +64,9 @@ dirty_marker = "*"
 budget_ms = 5
 
 [[segments.node_env]]
+# The time segment shows local time, as `date` does: TZ, else /etc/localtime,
+# else UTC. utc = true shows UTC whatever the zone.
+#
 # A pin is the first word of its first line that is not blank or a # comment,
 # at most 64 ASCII characters. A pin that is a symlink must end at a file of
 # the same name. See docs/adr/0015.

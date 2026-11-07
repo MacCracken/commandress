@@ -1,0 +1,768 @@
+# darshini — local time for `--local-time` (v1.6.0).
+#
+# mtimes render in UTC by default (the v1.0 locale-free contract);
+# `--local-time` opts into the user's zone, chosen as glibc chooses it:
+#   * TZ unset: /etc/localtime.
+#   * TZ empty: UTC.
+#   * otherwise (one leading ':' dropped): a TZif file — the path itself
+#     when absolute, else under $TZDIR or /usr/share/zoneinfo — and, when
+#     no such file loads, TZ parsed as a POSIX TZ string
+#     ("EST5EDT,M3.2.0,M11.1.0", "<+0530>-5:30"); failing both, UTC.
+# A TZif file (RFC 8536) is read whole — the 64-bit v2+ section when
+# present — into its transition table; a time after the last transition
+# uses the file's footer TZ string, a time before the first uses the
+# first non-DST type (glibc's choice). Leap-second ("right/") zones are
+# read as their plain counterparts. Verified against `date(1)` across
+# zones and centuries (tests/tz-parity.sh).
+#
+# Known differences from glibc, all in strings no zone uses. A rule with no
+# end date, a trailing comma or a trailing space (`EST5EDT,M3.2.0`, `EST5,`,
+# `EST5EDT `) is not a rule here, so it reads as UTC where glibc applies a
+# zone. `right/` zones are 27 seconds off, as above.
+#
+# THIS FILE IS PINNED FROM OUTSIDE (v1.8.2). commandress pulls it alone as
+# a tag-pinned source dep, `modules = ["src/tz.cyr"]`, so two things here
+# are a contract, not an internal detail:
+#   * tz_init() and tz_offset(t) keep their names and meaning. tz_init()
+#     loads the zone and may be called any number of times, each call
+#     starting over; tz_offset(t) is seconds east of UTC at instant t, and
+#     0 when no zone loaded. A change to either is a breaking change for
+#     the consumer, whatever it does to darshini's own output.
+#   * The file compiles against the stdlib alone, with no other darshini
+#     file and no darshana. It calls string, alloc, io, vec and syscalls;
+#     it may use fmt, str and chrono too, and nothing else (no fs, no
+#     hashmap). tests/tz-standalone.sh builds it that way for x86_64,
+#     aarch64 and agnos, with and without DCE. Everything private is
+#     `_tz_` / `_TZ_`, so nothing collides with the files around it.
+# days_from_civil, civil_from_days and _tz_fdiv are public to darshini
+# (render.cyr, the tests), not part of the contract.
+
+var _tz_on = 0;          # 1 once a zone (file or rule) is loaded
+var _tz_times = 0;       # vec<i64> transition instants, ascending
+var _tz_types = 0;       # vec<i64> type index per transition
+var _tz_offs = 0;        # vec<i64> utoff (seconds east of UTC) per type
+var _tz_dst = 0;         # vec<i64> isdst per type
+var _tz_rule = 0;        # parsed POSIX rule (see _tz_parse_rule), or 0
+var _tz_norule = 0;      # 1 when the last parsed rule named DST but no dates
+
+# ---------------------------------------------------------------- civil
+# Howard Hinnant's days_from_civil / civil_from_days: exact over the
+# whole proleptic Gregorian calendar, negative days included, constant
+# time. (chrono's epoch_to_date looped once per year and garbled
+# negative times, which is why pre-1970 mtimes rendered "????" through
+# v1.5.0.)
+
+# Floor division and its non-negative remainder.
+fn _tz_fdiv(a, b): i64 {
+    var q = a / b;
+    if (q * b > a) { q = q - 1; }
+    return q;
+}
+
+fn days_from_civil(y, m, d): i64 {
+    if (m <= 2) { y = y - 1; }
+    var era = _tz_fdiv(y, 400);
+    var yoe = y - era * 400;
+    var mp = m + 9;
+    if (m > 2) { mp = m - 3; }
+    var doy = (153 * mp + 2) / 5 + d - 1;
+    var doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+# Civil date of day number z (days since 1970-01-01): stores y, m, d at
+# out + 0, 8, 16.
+fn civil_from_days(z, out): i64 {
+    z = z + 719468;
+    var era = _tz_fdiv(z, 146097);
+    var doe = z - era * 146097;
+    var yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    var y = yoe + era * 400;
+    var doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    var mp = (5 * doy + 2) / 153;
+    var d = doy - (153 * mp + 2) / 5 + 1;
+    var m = mp + 3;
+    if (mp >= 10) { m = mp - 9; }
+    if (m <= 2) { y = y + 1; }
+    store64(out, y);
+    store64(out + 8, m);
+    store64(out + 16, d);
+    return 0;
+}
+
+fn _tz_leap(y): i64 {
+    if ((y % 4) != 0) { return 0; }
+    if ((y % 100) != 0) { return 1; }
+    if ((y % 400) != 0) { return 0; }
+    return 1;
+}
+
+fn _tz_mdays(y, m): i64 {
+    if (m == 2) { return 28 + _tz_leap(y); }
+    if (m == 4) { return 30; }
+    if (m == 6) { return 30; }
+    if (m == 9) { return 30; }
+    if (m == 11) { return 30; }
+    return 31;
+}
+
+# ---------------------------------------------------------------- files
+#
+# TZ can name anything: a FIFO, a device, a directory, a file the size of
+# the disk. commandress reads it on every prompt redraw, where a hang
+# leaves the user with no prompt, so this is the guarded read of git.cyr's
+# _git_slurp, and walk.cyr's stat / open wrappers, kept here so the file
+# needs neither (see the header):
+#   * stat first. A FIFO or a device has size 0 and is never opened; size
+#     also bounds the read, and sizes the buffer, so an ordinary zone costs
+#     its own few KB and not _TZ_READ_CAP.
+#   * Linux: a non-blocking open, then fstat must say regular, because one
+#     can be swapped in after the stat and open(2) on a FIFO with no writer
+#     blocks forever.
+#   * agnos: the plain calls. It has none of those flags and a stub fstat
+#     (`sys_fstat` is `return 0 - 1`), so the checks cannot apply, and stat
+#     and open take the path's length. No zone database there means no
+#     file loads, which is UTC.
+# STAT_SIZE and STAT_MODE are the stdlib's per-target offsets: st_mode is
+# 24 bytes in on x86_64 Linux and 16 on aarch64.
+
+enum TzFile {
+    # A ceiling, not a truncation point. The largest real zone is under 4 KB, and at
+    # 1 MB a hostile file cost a prompt 8 to 19 ms against a 5 ms budget.
+    _TZ_READ_CAP = 65536;
+    _TZ_S_IFMT = 0xF000;
+    _TZ_S_IFREG = 0x8000;
+}
+
+fn _tz_stat(path, st): i64 {
+    #ifdef CYRIUS_TARGET_AGNOS
+    return sys_stat(path, strlen(path), st);
+    #else
+    return sys_stat(path, st);
+    #endif
+}
+
+fn _tz_open(path): i64 {
+    #ifdef CYRIUS_TARGET_AGNOS
+    return sys_open(path, strlen(path), O_RDONLY);
+    #else
+    return sys_open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC, 0);
+    #endif
+}
+
+# 1 when `fd` is a regular file; on agnos, always (see above).
+fn _tz_fd_regular(fd): i64 {
+    #ifdef CYRIUS_TARGET_AGNOS
+    return 1;
+    #else
+    var st[144];
+    if (sys_fstat(fd, &st) < 0) { return 0; }
+    if ((load32(&st + STAT_MODE) & _TZ_S_IFMT) != _TZ_S_IFREG) { return 0; }
+    return 1;
+    #endif
+}
+
+# The file at `path` in a fresh buffer, its length stored at `out_len`; 0
+# when it is absent, empty, unreadable, not a regular file, larger than
+# _TZ_READ_CAP, or shorter than its stat said. Nothing is cut: a read that
+# cannot be whole is refused.
+fn _tz_slurp(path, out_len): i64 {
+    if (path == 0) { return 0; }
+    var st[144];
+    if (_tz_stat(path, &st) < 0) { return 0; }
+    var size = load64(&st + STAT_SIZE);
+    if (size <= 0) { return 0; }
+    if (size > _TZ_READ_CAP) { return 0; }
+    var fd = _tz_open(path);
+    if (fd < 0) { return 0; }
+    if (_tz_fd_regular(fd) == 0) { sys_close(fd); return 0; }
+    var buf = alloc(size + 1);
+    if (buf == 0) { sys_close(fd); return 0; }
+    var got = 0;
+    var reading = 1;
+    while (reading == 1) {
+        var n = sys_read(fd, buf + got, size - got);
+        if (n <= 0) { reading = 0; }
+        else {
+            got = got + n;
+            if (got >= size) { reading = 0; }
+        }
+    }
+    sys_close(fd);
+    if (got < size) { return 0; }
+    store64(out_len, got);
+    return buf;
+}
+
+# `<root>/<rel>` as a fresh cstr.
+fn _tz_path(root, rel): i64 {
+    var rlen = strlen(root);
+    var nlen = strlen(rel);
+    var out = alloc(rlen + 1 + nlen + 1);
+    if (out == 0) { return 0; }
+    memcpy(out, root, rlen);
+    store8(out + rlen, 47);
+    memcpy(out + rlen + 1, rel, nlen);
+    store8(out + rlen + 1 + nlen, 0);
+    return out;
+}
+
+# ---------------------------------------------------------------- TZif
+
+# 32 bits big-endian from b+off, as a non-negative i64.
+fn _tz_be_u32(b, off): i64 {
+    return (load8(b + off) << 24) | (load8(b + off + 1) << 16) | (load8(b + off + 2) << 8) | load8(b + off + 3);
+}
+
+fn _tz_be32s(b, off): i64 {
+    var v = _tz_be_u32(b, off);
+    if (v >= 2147483648) { v = v - 4294967296; }
+    return v;
+}
+
+fn _tz_be64s(b, off): i64 {
+    return (_tz_be_u32(b, off) << 32) | _tz_be_u32(b, off + 4);
+}
+
+# Parse a TZif image into a 56-byte record {times @0, types @8, offs
+# @16, dst @24, isstd @32, rule @40, isut @48} (vecs, and a footer rule
+# or 0), or 0 when the bytes are not a usable TZif file.
+fn _tz_tzif(b, n): i64 {
+    if (n < 44) { return 0; }
+    if (memeq(b, "TZif", 4) == 0) { return 0; }
+    var ver = load8(b + 4);
+    var hdr = 0;
+    var tsz = 4;
+    if (ver >= 50) {
+        # Skip the v1 block to the 64-bit header.
+        var v1 = 44 + _tz_be_u32(b, 32) * 5 + _tz_be_u32(b, 36) * 6 + _tz_be_u32(b, 40)
+          + _tz_be_u32(b, 28) * 8 + _tz_be_u32(b, 24) + _tz_be_u32(b, 20);
+        if (v1 + 44 > n) { return 0; }
+        if (memeq(b + v1, "TZif", 4) == 0) { return 0; }
+        hdr = v1;
+        tsz = 8;
+    }
+    var isut = _tz_be_u32(b, hdr + 20);
+    var isstd = _tz_be_u32(b, hdr + 24);
+    var leapcnt = _tz_be_u32(b, hdr + 28);
+    var timecnt = _tz_be_u32(b, hdr + 32);
+    var typecnt = _tz_be_u32(b, hdr + 36);
+    var charcnt = _tz_be_u32(b, hdr + 40);
+    if (typecnt == 0) { return 0; }
+    var p = hdr + 44;
+    var data_end = p + timecnt * tsz + timecnt + typecnt * 6 + charcnt + leapcnt * (tsz + 4) + isstd + isut;
+    if (data_end > n) { return 0; }
+    var times = vec_new();
+    var types = vec_new();
+    var offs = vec_new();
+    var dst = vec_new();
+    var i = 0;
+    while (i < timecnt) {
+        if (tsz == 8) { vec_push(times, _tz_be64s(b, p + i * 8)); }
+        else { vec_push(times, _tz_be32s(b, p + i * 4)); }
+        i = i + 1;
+    }
+    var ip = p + timecnt * tsz;
+    i = 0;
+    while (i < timecnt) {
+        var ti = load8(b + ip + i);
+        if (ti >= typecnt) { return 0; }
+        vec_push(types, ti);
+        i = i + 1;
+    }
+    var tp = ip + timecnt;
+    i = 0;
+    while (i < typecnt) {
+        # glibc refuses anything but 0 or 1, and so must this: _tz_posixrules uses
+        # the value as a type index.
+        var isdst_b = load8(b + tp + i * 6 + 4);
+        if (isdst_b > 1) { return 0; }
+        vec_push(offs, _tz_be32s(b, tp + i * 6));
+        vec_push(dst, isdst_b);
+        i = i + 1;
+    }
+    # Standard/wall indicators, one per type (zero when absent): consulted
+    # only for a POSIX TZ string with no rule (see _tz_posixrules).
+    var isstd_v = vec_new();
+    var isut_v = vec_new();
+    var sp = tp + typecnt * 6 + charcnt + leapcnt * (tsz + 4);
+    i = 0;
+    while (i < typecnt) {
+        if (i < isstd) { vec_push(isstd_v, load8(b + sp + i)); }
+        else { vec_push(isstd_v, 0); }
+        if (i < isut) { vec_push(isut_v, load8(b + sp + isstd + i)); }
+        else { vec_push(isut_v, 0); }
+        i = i + 1;
+    }
+    var rule = 0;
+    if (tsz == 8) {
+        # Footer: "\n<TZ string>\n".
+        if (data_end < n) { if (load8(b + data_end) == 10) {
+                var fs = data_end + 1;
+                var fe = fs;
+                var scanning = 1;
+                while (scanning == 1) {
+                    if (fe >= n) { scanning = 0; }
+                    else { if (load8(b + fe) == 10) { scanning = 0; } else { fe = fe + 1; } }
+                }
+                if (fe > fs) { rule = _tz_parse_rule(b + fs, fe - fs); }
+            } }
+    }
+    var rec = alloc(56);
+    if (rec == 0) { return 0; }
+    store64(rec, times);
+    store64(rec + 8, types);
+    store64(rec + 16, offs);
+    store64(rec + 24, dst);
+    store64(rec + 32, isstd_v);
+    store64(rec + 40, rule);
+    store64(rec + 48, isut_v);
+    return rec;
+}
+
+fn _tz_install(rec): i64 {
+    _tz_times = load64(rec);
+    _tz_types = load64(rec + 8);
+    _tz_offs = load64(rec + 16);
+    _tz_dst = load64(rec + 24);
+    _tz_rule = load64(rec + 40);
+    _tz_on = 1;
+    return 1;
+}
+
+fn _tz_read_tzif(path): i64 {
+    var n[8];
+    var b = _tz_slurp(path, &n);
+    if (b == 0) { return 0; }
+    return _tz_tzif(b, load64(&n));
+}
+
+fn _tz_load_file(path): i64 {
+    var rec = _tz_read_tzif(path);
+    if (rec == 0) { return 0; }
+    return _tz_install(rec);
+}
+
+fn _tz_dir(): i64 {
+    var dir = getenv("TZDIR");
+    if (dir == 0) { return "/usr/share/zoneinfo"; }
+    if (strlen(dir) == 0) { return "/usr/share/zoneinfo"; }
+    return dir;
+}
+
+# A POSIX TZ string with DST but no rule ("XST8XDT"): glibc's
+# __tzfile_default, reproduced exactly because its only purpose is to
+# agree with `date` and `ls -l`. glibc borrows the transition history of
+# $TZDIR/posixrules (normally New York's: 1918-19, the war years, the
+# 1967-2006 rules) and shifts each transition onto the string's offsets:
+#   * a transition the file marks UT: unshifted;
+#   * a wall-clock transition made while DST is in force: + dstoff -
+#     rule_dstoff, where glibc's rule_dstoff is never set from a file
+#     that has transitions and so is 0;
+#   * any other: + stdoff - rule_stdoff, rule_stdoff being the offset of
+#     the last standard-time type, scanning back from the last transition.
+# (Read from glibc's time/tzfile.c; the second rule is why the 1960-62
+# DST ends land 7 hours before New York's rather than 3.) Past the
+# file's last transition glibc keeps evaluating the file's footer with
+# the FILE'S offsets — New York's, for a zone the user named XST — a
+# glibc defect darshini does not copy: it uses the footer's dates with
+# the string's offsets. 1 when installed; 0 (no posixrules, or fewer
+# than two types) leaves the caller's US default rule in place.
+fn _tz_posixrules(r): i64 {
+    var rec = _tz_read_tzif(_tz_path(_tz_dir(), "posixrules"));
+    if (rec == 0) { return 0; }
+    var times = load64(rec);
+    var types = load64(rec + 8);
+    var offs = load64(rec + 16);
+    var dst = load64(rec + 24);
+    var isstd = load64(rec + 32);
+    var isut = load64(rec + 48);
+    if (vec_len(offs) < 2) { return 0; }
+    var n = vec_len(times);
+    var rule_std = 0;
+    var k = n - 1;
+    var hunting = 1;
+    while (hunting == 1) {
+        if (k < 0) { hunting = 0; }
+        else {
+            var kt = vec_get(types, k);
+            if (vec_get(dst, kt) == 0) { rule_std = vec_get(offs, kt); hunting = 0; }
+            else { k = k - 1; }
+        }
+    }
+    var rule_dst = 0;
+    var stdoff = load64(r);
+    var dstoff = load64(r + 16);
+    var nt = vec_new();
+    var nty = vec_new();
+    var isdst = 0;
+    var i = 0;
+    while (i < n) {
+        var tt = vec_get(types, i);
+        var delta = stdoff - rule_std;
+        if (vec_get(isut, tt) != 0) { delta = 0; }
+        else { if (isdst == 1) { if (vec_get(isstd, tt) == 0) { delta = dstoff - rule_dst; } } }
+        vec_push(nt, vec_get(times, i) + delta);
+        vec_push(nty, vec_get(dst, tt));
+        isdst = vec_get(dst, tt);
+        i = i + 1;
+    }
+    var noffs = vec_new();
+    vec_push(noffs, stdoff);
+    vec_push(noffs, dstoff);
+    var ndst = vec_new();
+    vec_push(ndst, 0);
+    vec_push(ndst, 1);
+    var frule = load64(rec + 40);
+    var nrule = 0;
+    if (frule != 0) {
+        if (load64(frule + 8) == 1) {
+            nrule = alloc(72);
+            if (nrule == 0) { return 0; }
+            memcpy(nrule, frule, 72);
+            store64(nrule, stdoff);
+            store64(nrule + 16, dstoff);
+        }
+    }
+    var out = alloc(56);
+    if (out == 0) { return 0; }
+    store64(out, nt);
+    store64(out + 8, nty);
+    store64(out + 16, noffs);
+    store64(out + 24, ndst);
+    store64(out + 32, vec_new());
+    store64(out + 40, nrule);
+    store64(out + 48, vec_new());
+    return _tz_install(out);
+}
+
+# ---------------------------------------------------------------- POSIX
+#
+# Rule record, 72 bytes:
+#   +0 std_off  +8 has_dst  +16 dst_off      (seconds EAST of UTC)
+#   +24 start kind  +32 start a  +40 start b  +48 start c  +56 start time
+#   +64 → end record (same 5 fields at +0..+32 of a 40-byte block)
+# kind: 1 = Jn (a = n), 2 = n (a = n), 3 = Mm.w.d (a = m, b = w, c = d).
+
+# Parse a zone name ("EST" or "<+0530>") at s[pos..n); returns the
+# position after it, or -1.
+fn _tz_name(s, n, pos): i64 {
+    if (pos >= n) { return 0 - 1; }
+    if (load8(s + pos) == 60) {                      # '<'
+        var q = pos + 1;
+        while (q < n) {
+            if (load8(s + q) == 62) {                  # '>'
+                if (q - pos - 1 < 3) { return 0 - 1; }
+                return q + 1;
+            }
+            q = q + 1;
+        }
+        return 0 - 1;
+    }
+    var e = pos;
+    var scanning = 1;
+    while (scanning == 1) {
+        if (e >= n) { scanning = 0; }
+        else {
+            var c = load8(s + e);
+            var alpha = 0;
+            if (c >= 65) { if (c <= 90) { alpha = 1; } }
+            if (c >= 97) { if (c <= 122) { alpha = 1; } }
+            if (alpha == 1) { e = e + 1; } else { scanning = 0; }
+        }
+    }
+    if (e - pos < 3) { return 0 - 1; }
+    return e;
+}
+
+# Parse [+-]hh[:mm[:ss]] at s[pos..n) into seconds stored at `out`;
+# returns the position after it, or -1. (Hours up to 167, the TZif v3
+# extension for rule times.) With `offset`, this is a UTC offset and not a
+# rule time, so glibc's compute_offset applies: hours stop at 24, minutes
+# and seconds at 59.
+fn _tz_hms(s, n, pos, out, offset): i64 {
+    var sign = 1;
+    if (pos < n) {
+        var c0 = load8(s + pos);
+        if (c0 == 45) { sign = 0 - 1; pos = pos + 1; }
+        else { if (c0 == 43) { pos = pos + 1; } }
+    }
+    var parts[24];
+    var k = 0;
+    var any = 0;
+    var going = 1;
+    while (going == 1) {
+        var v = 0;
+        var digits = 0;
+        var dscan = 1;
+        while (dscan == 1) {
+            if (pos >= n) { dscan = 0; }
+            else {
+                var c = load8(s + pos);
+                if (c >= 48) { if (c <= 57) {
+                        v = v * 10 + (c - 48);
+                        digits = digits + 1;
+                        pos = pos + 1;
+                    } else { dscan = 0; } } else { dscan = 0; }
+            }
+            if (digits > 3) { dscan = 0; }
+        }
+        if (digits == 0) { going = 0; }
+        else {
+            store64(&parts + k * 8, v);
+            k = k + 1;
+            any = 1;
+            if (k == 3) { going = 0; }
+            else {
+                if (pos < n) { if (load8(s + pos) == 58) { pos = pos + 1; } else { going = 0; } }
+                else { going = 0; }
+            }
+        }
+    }
+    if (any == 0) { return 0 - 1; }
+    var hh = load64(&parts);
+    var mm = 0;
+    var ss = 0;
+    if (k > 1) { mm = load64(&parts + 8); }
+    if (k > 2) { ss = load64(&parts + 16); }
+    if (offset == 1) {
+        if (hh > 24) { hh = 24; }
+        if (mm > 59) { mm = 59; }
+        if (ss > 59) { ss = 59; }
+    }
+    store64(out, sign * (hh * 3600 + mm * 60 + ss));
+    return pos;
+}
+
+fn _tz_uint(s, n, pos, out): i64 {
+    var v = 0;
+    var digits = 0;
+    var going = 1;
+    while (going == 1) {
+        if (pos >= n) { going = 0; }
+        else {
+            var c = load8(s + pos);
+            if (c >= 48) { if (c <= 57) {
+                    v = v * 10 + (c - 48);
+                    digits = digits + 1;
+                    pos = pos + 1;
+                } else { going = 0; } } else { going = 0; }
+        }
+    }
+    if (digits == 0) { return 0 - 1; }
+    store64(out, v);
+    return pos;
+}
+
+# Parse one rule date ("Jn" | "n" | "Mm.w.d") with an optional "/time"
+# into the 40-byte block `blk`; returns the position after it, or -1.
+fn _tz_date(s, n, pos, blk): i64 {
+    var v[8];
+    store64(blk + 32, 7200);                         # default 02:00:00
+    if (pos >= n) { return 0 - 1; }
+    var c = load8(s + pos);
+    if (c == 74) {                                   # 'J'
+        pos = _tz_uint(s, n, pos + 1, &v);
+        if (pos < 0) { return 0 - 1; }
+        store64(blk, 1);
+        store64(blk + 8, load64(&v));
+    } else { if (c == 77) {                          # 'M'
+        pos = _tz_uint(s, n, pos + 1, &v);
+        if (pos < 0) { return 0 - 1; }
+        store64(blk + 8, load64(&v));
+        if (pos >= n) { return 0 - 1; }
+        if (load8(s + pos) != 46) { return 0 - 1; }
+        pos = _tz_uint(s, n, pos + 1, &v);
+        if (pos < 0) { return 0 - 1; }
+        store64(blk + 16, load64(&v));
+        if (pos >= n) { return 0 - 1; }
+        if (load8(s + pos) != 46) { return 0 - 1; }
+        pos = _tz_uint(s, n, pos + 1, &v);
+        if (pos < 0) { return 0 - 1; }
+        store64(blk + 24, load64(&v));
+        store64(blk, 3);
+        var mm = load64(blk + 8);
+        if (mm < 1) { return 0 - 1; }
+        if (mm > 12) { return 0 - 1; }
+        if (load64(blk + 16) < 1) { return 0 - 1; }
+        if (load64(blk + 16) > 5) { return 0 - 1; }
+        if (load64(blk + 24) > 6) { return 0 - 1; }
+    } else {
+        pos = _tz_uint(s, n, pos, &v);
+        if (pos < 0) { return 0 - 1; }
+        store64(blk, 2);
+        store64(blk + 8, load64(&v));
+    } }
+    if (pos < n) { if (load8(s + pos) == 47) {       # '/'
+            pos = _tz_hms(s, n, pos + 1, &v, 0);
+            if (pos < 0) { return 0 - 1; }
+            store64(blk + 32, load64(&v));
+        } }
+    return pos;
+}
+
+# Parse a POSIX TZ string s[0..n) into a rule record, or 0.
+fn _tz_parse_rule(s, n): i64 {
+    var off[8];
+    var pos = _tz_name(s, n, 0);
+    if (pos < 0) { return 0; }
+    pos = _tz_hms(s, n, pos, &off, 1);
+    if (pos < 0) { return 0; }
+    var r = alloc(72);
+    if (r == 0) { return 0; }
+    memset(r, 0, 72);
+    store64(r, 0 - load64(&off));                    # POSIX offsets are WEST
+    var end_rule = alloc(40);
+    if (end_rule == 0) { return 0; }
+    store64(r + 64, end_rule);
+    if (pos >= n) { return r; }                      # no DST
+    pos = _tz_name(s, n, pos);
+    if (pos < 0) { return 0; }
+    store64(r + 8, 1);
+    store64(r + 16, load64(r) + 3600);               # default: std + 1h
+    if (pos < n) {
+        var c = load8(s + pos);
+        if (c != 44) {
+            pos = _tz_hms(s, n, pos, &off, 1);
+            if (pos < 0) { return 0; }
+            store64(r + 16, 0 - load64(&off));
+        }
+    }
+    if (pos >= n) {
+        # DST named but no rule: tz_init tries $TZDIR/posixrules
+        # (_tz_posixrules, glibc's way); these US rules are the fallback.
+        _tz_date("M3.2.0", 6, 0, r + 24);
+        _tz_date("M11.1.0", 7, 0, load64(r + 64));
+        _tz_norule = 1;
+        return r;
+    }
+    if (load8(s + pos) != 44) { return 0; }
+    pos = _tz_date(s, n, pos + 1, r + 24);
+    if (pos < 0) { return 0; }
+    if (pos >= n) { return 0; }
+    if (load8(s + pos) != 44) { return 0; }
+    pos = _tz_date(s, n, pos + 1, load64(r + 64));
+    if (pos < 0) { return 0; }
+    if (pos != n) { return 0; }
+    return r;
+}
+
+# The instant a rule date takes effect in year y, as glibc's
+# compute_change computes it: midnight UTC of January 1 of y — or, for
+# any y <= 1970, of 1970 itself — plus the date's day offset within y
+# (leap days and weekdays of y), plus its time, minus `off` (the offset
+# in force before the change: standard time for the DST start, DST for
+# its end). The 1970 floor is glibc's: a bare POSIX TZ string never
+# applies DST before 1970 under a northern rule, and always does under a
+# southern one, and darshini follows it so `--local-time` agrees with
+# `date` and `ls -l` (tests/tz-parity.sh). A TZif file's own transition
+# table covers those years for named zones; the rule only extends it.
+fn _tz_change(blk, y, off): i64 {
+    var kind = load64(blk);
+    var a = load64(blk + 8);
+    var base = 0;
+    if (y > 1970) { base = days_from_civil(y, 1, 1); }
+    var doff = 0;
+    if (kind == 1) {
+        doff = a - 1;
+        if (_tz_leap(y) == 1) { if (a >= 60) { doff = doff + 1; } }
+    }
+    if (kind == 2) { doff = a; }
+    if (kind == 3) {
+        var w = load64(blk + 16);
+        var d = load64(blk + 24);
+        var first = days_from_civil(y, a, 1);
+        var wd = (first + 4) - _tz_fdiv(first + 4, 7) * 7;   # 1970-01-01 was a Thursday
+        var dom = 1 + ((d - wd + 7) % 7) + (w - 1) * 7;
+        var md = _tz_mdays(y, a);
+        while (dom > md) { dom = dom - 7; }
+        doff = first - days_from_civil(y, 1, 1) + dom - 1;
+    }
+    return (base + doff) * 86400 + load64(blk + 32) - off;
+}
+
+fn _tz_rule_offset(r, t): i64 {
+    var std = load64(r);
+    if (load64(r + 8) == 0) { return std; }
+    var dsto = load64(r + 16);
+    # glibc takes the year from the UTC time, not the local one.
+    var ymd[24];
+    civil_from_days(_tz_fdiv(t, 86400), &ymd);
+    var y = load64(&ymd);
+    var start = _tz_change(r + 24, y, std);
+    var end_ = _tz_change(load64(r + 64), y, dsto);
+    var in_dst = 0;
+    if (start > end_) {
+        # Southern hemisphere: DST runs across the new year.
+        if (t < end_) { in_dst = 1; }
+        if (t >= start) { in_dst = 1; }
+    } else {
+        if (t >= start) { if (t < end_) { in_dst = 1; } }
+    }
+    if (in_dst == 1) { return dsto; }
+    return std;
+}
+
+# ---------------------------------------------------------------- API
+
+# Load the zone: see the header for the order. Each call starts over, so
+# a caller may repeat it, as commandress does per redraw. (A contract.)
+fn tz_init(): i64 {
+    _tz_on = 0;
+    var tz = getenv("TZ");
+    if (tz == 0) {
+        _tz_load_file("/etc/localtime");
+        return 0;
+    }
+    var n = strlen(tz);
+    if (n == 0) { return 0; }
+    var spec = tz;
+    if (load8(tz) == 58) { spec = tz + 1; }          # ':'
+    if (strlen(spec) > 0) {
+        var path = spec;
+        if (load8(spec) != 47) { path = _tz_path(_tz_dir(), spec); }
+        if (_tz_load_file(path) == 1) { return 0; }
+        _tz_norule = 0;
+        var r = _tz_parse_rule(spec, strlen(spec));
+        if (r != 0) {
+            if (_tz_norule == 1) { if (_tz_posixrules(r) == 1) { return 0; } }
+            _tz_times = vec_new();
+            _tz_rule = r;
+            _tz_on = 1;
+        }
+    }
+    return 0;
+}
+
+# Seconds east of UTC in the loaded zone at instant t (0 for UTC). (A
+# contract.)
+fn tz_offset(t): i64 {
+    if (_tz_on == 0) { return 0; }
+    var n = vec_len(_tz_times);
+    if (n > 0) {
+        if (t >= vec_get(_tz_times, n - 1)) {
+            if (_tz_rule != 0) { return _tz_rule_offset(_tz_rule, t); }
+        }
+        if (t >= vec_get(_tz_times, 0)) {
+            var lo = 0;
+            var hi = n - 1;
+            while (lo < hi) {
+                var mid = (lo + hi + 1) / 2;
+                if (vec_get(_tz_times, mid) <= t) { lo = mid; } else { hi = mid - 1; }
+            }
+            return vec_get(_tz_offs, vec_get(_tz_types, lo));
+        }
+    } else {
+        if (_tz_rule != 0) { return _tz_rule_offset(_tz_rule, t); }
+    }
+    # Before the first transition (or none and no rule): the first non-DST
+    # type, else type 0 — glibc's choice.
+    var k = 0;
+    var nt = vec_len(_tz_offs);
+    while (k < nt) {
+        if (vec_get(_tz_dst, k) == 0) { return vec_get(_tz_offs, k); }
+        k = k + 1;
+    }
+    if (nt > 0) { return vec_get(_tz_offs, 0); }
+    return 0;
+}

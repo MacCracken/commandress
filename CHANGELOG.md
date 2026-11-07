@@ -6,6 +6,71 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-06
+
+`time` shows local time, chosen as `date` chooses it: `TZ`, else `/etc/localtime`, else UTC. `utc = true` keeps
+the old clock. The zone code is darshini's, pinned at 1.8.3, rather than a second parser here. The toolchain is
+unchanged. Decision and measurements: [ADR 0016](docs/adr/0016-local-time-through-darshini.md).
+
+### Breaking
+
+No config stops working. **If your prompt shows `time`, its hour changes to local time.** It was UTC, though no
+doc ever said so. To keep UTC:
+
+```cyml
+[[segments.time]]
+utc = true
+```
+
+### Added
+
+- **`[[segments.time]] utc`**, a bool, default false.
+- **`[deps.darshini]`**, pinned at 1.8.3, for its `src/tz.cyr` alone. `cyrius deps` also vendors darshini's own dep,
+  `lib/darshana.cyr`, which nothing includes, so it never reaches the binary.
+- **Benchmarks:** `time_render (local)`, `time_render (utc)`.
+
+### Security
+
+- **A zone only moves the digits.** There is no `%Z`, so no name from a zone file or a `TZ` string reaches the
+  prompt, and `TZ` naming `/proc/self/environ`, a device or a directory shows nothing but the UTC clock. A repo
+  cannot set `TZ`.
+- **An offset no zone could have reads as UTC**: past 26 hours, or any result before 1970. A fuzz found that a
+  hostile zone could otherwise print `1970-01-X0`.
+- Pinning darshini found a crash in it, a zone file with `isdst` above 1, which ended the process with no prompt.
+  It is fixed at the source in 1.8.3.
+
+### Performance
+
+| | 1.5.0 | 1.5.1 | Delta |
+|---|---|---|---|
+| Cold start, no config | 286 µs | 289 µs | flat |
+| Cold start, largest theme | 503 µs | 502 µs | flat |
+| Cold start, `time`, `/etc/localtime` | 292 µs | 323 µs | +31 µs |
+| Cold start, `time`, the largest zone | 294 µs | 344 µs | +50 µs |
+| Cold start, `time`, a POSIX `TZ` | 291 µs | 310 µs | +19 µs |
+| Cold start, `time`, `utc = true` against local | — | 248 µs against 273 µs | -26 µs |
+| `time_render`, local | — | 22.4 µs | new, reads the zone each call |
+| `time_render`, `utc = true` | — | 1.59 µs | new |
+| `render_prompt` | 11.72 µs | 11.81 µs | flat |
+| Binary, x86_64 | 198,872 B | 216,616 B | +17,744 B (+8.9 %) |
+| Binary, `--agnos` | 195,088 B | 212,336 B | +17,248 B (+8.8 %) |
+
+Medians of 2,500 interleaved pairs, and lowest mins of 5 alternating bench runs at equal path depth, because
+other work was running on the host. Absolute figures are not comparable with earlier entries.
+
+### Tests
+
+- 976 assertions across 288 tests, from 951 across 284.
+- 282 mutations, all caught.
+- All 1,795 zone files on this machine and 18 POSIX and edge strings match `date` through the binary.
+- `scripts/smoke.sh` now checks the clock against `date` for each way of naming a zone, with one zone from each
+  hemisphere so that one is in DST whatever the date, and holds `utc = true`, a FIFO, a junk file and an impossible
+  offset to what they should do.
+- An independent review found the crash above, `TZ=:EST5` reading as UTC, and a clock near zero going negative.
+- 60,000 hostile zone files and `TZ` strings, with every output checked as a well-formed clock: no crash, no hang,
+  worst run 3.6 ms. 30,000 hostile repos, 15,000 hostile branches and 40,000 mutated configs: no violation.
+- Differential 1.5.0 → 1.5.1 at `TZ=UTC`: of 6,163 cases, only the 352 `--version` lines differ.
+
 ## [1.5.0] - 2026-11-06
 
 A repo can no longer reach a file it does not contain through a symlinked pin. Pin files are read the way the

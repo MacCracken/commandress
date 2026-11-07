@@ -27,6 +27,7 @@ include "lib/process.cyr"
 include "lib/assert.cyr"
 include "lib/args.cyr"
 include "lib/cmdit.cyr"
+include "lib/darshini_tz.cyr"
 
 # The same order as src/main.cyr. render.cyr brings in context, config and the segments.
 include "src/pathlookup.cyr"
@@ -2143,6 +2144,59 @@ fn test_range_words(): i64 {
     return 0;
 }
 
+# ---- time zone (ADR 0016) ----
+
+fn test_config_time_utc(): i64 {
+    assert_eq(cfg_time_utc(config_default()), 0, "local by default");
+    var c = _load_capturing_stderr("tz-on", "[[segments.time]]\nutc = true\n");
+    assert_eq(cfg_time_utc(c), 1, "utc = true");
+    _streq_or_dump(_captured_err, "", "a known field");
+    c = _load_capturing_stderr("tz-off", "[[segments.time]]\nutc = false\n");
+    assert_eq(cfg_time_utc(c), 0, "utc = false");
+    c = _load_capturing_stderr("tz-none", "[[segments.time]]\nformat = \"%H\"\n");
+    assert_eq(cfg_time_utc(c), 0, "a section that does not say");
+    return 0;
+}
+
+# `utc = true` must not depend on the zone: this is what a user sets to keep the old clock.
+fn test_time_render_utc_is_the_clock(): i64 {
+    var fmt = "%Y-%m-%d %H:%M";
+    var before = time_format(clock_epoch_secs(), fmt);
+    var got = time_render(fmt, 1);
+    var after = time_format(clock_epoch_secs(), fmt);
+    var same = 0;
+    if (streq(got, before) == 1) { same = 1; }
+    if (streq(got, after) == 1) { same = 1; }
+    assert_eq(same, 1, "utc = true paints the unshifted clock");
+    return 0;
+}
+
+# A zone file can claim any offset. One that sends the clock before 1970 makes
+# `epoch_to_date` print junk, so anything no zone could be reads as UTC.
+fn test_time_shift(): i64 {
+    assert_eq(time_shift(1000, 3600), 4600, "east");
+    assert_eq(time_shift(1000000, 0 - 3600), 996400, "west");
+    assert_eq(time_shift(1000, 0), 1000, "no offset");
+    assert_eq(time_shift(1000000, TIME_OFFSET_MAX), 1000000 + TIME_OFFSET_MAX, "at the limit, east");
+    assert_eq(time_shift(1000000, 0 - TIME_OFFSET_MAX), 1000000 - TIME_OFFSET_MAX, "at the limit, west");
+    assert_eq(time_shift(1000, TIME_OFFSET_MAX + 1), 1000, "past it, east");
+    assert_eq(time_shift(1000, 0 - TIME_OFFSET_MAX - 1), 1000, "past it, west");
+    assert_eq(time_shift(1800000000, 0 - 1988100096), 1800000000, "what the fuzz found");
+    assert_eq(time_shift(2000000000, 0 - 1988100096), 2000000000, "and on a clock where the sum is not negative");
+    assert_eq(time_shift(2000000000, 2147483647), 2000000000, "the other way");
+    assert_eq(TIME_OFFSET_MAX, 93600, "26 hours");
+    assert_eq(time_shift(0, 0 - 18000), 0, "a clock at zero stays at zero, as on a dead RTC");
+    assert_eq(time_shift(17999, 0 - 18000), 17999, "one second short of it");
+    assert_eq(time_shift(18000, 0 - 18000), 0, "the first instant that fits");
+    return 0;
+}
+
+fn test_time_render_empty_format(): i64 {
+    assert_eq(time_render(0, 0), 0, "no format, local");
+    assert_eq(time_render(0, 1), 0, "no format, utc");
+    return 0;
+}
+
 # ---- max_length (ADR 0015) ----
 
 fn test_cap_output_fits(): i64 {
@@ -4016,6 +4070,10 @@ fn main(): i64 {
     test_config_max_length_zero_turns_it_off();
     test_config_max_length_bad_value_keeps_the_default();
     test_config_cwd_max_length();
+    test_config_time_utc();
+    test_time_render_utc_is_the_clock();
+    test_time_shift();
+    test_time_render_empty_format();
     test_range_words();
     test_pin_alphabet_exactly();
     test_pin_word_of_file_never_shows_a_cut_word();

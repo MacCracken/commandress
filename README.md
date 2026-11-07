@@ -2,13 +2,13 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.5.0** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.5.1** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
 
 ## What it is
 
 A small, self-contained binary that takes shell context as input (`$CWD`, last exit code, current VCS state, etc.) and prints a configurable, segment-based prompt line. The shell invokes it once per prompt redraw.
 
-- **Single static binary, no runtime deps** — the Cyrius stdlib plus two first-party AGNOS source deps ([cmdit](https://github.com/MacCracken/cmdit) for CLI parsing, [ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md); [bayan](https://github.com/MacCracken/bayan) for config parsing, [ADR 0009](docs/adr/0009-config-parsing-via-bayan.md)), compiled in. Fast cold start (default `cwd + vcs + exit` prompt renders in ~11 µs — 0.2 % of the 5 ms budget)
+- **Single static binary, no runtime deps** — the Cyrius stdlib plus three first-party AGNOS source deps ([cmdit](https://github.com/MacCracken/cmdit) for CLI parsing, [ADR 0008](docs/adr/0008-cli-parsing-via-cmdit.md); [darshini](https://github.com/MacCracken/darshini)'s zone code for local time, [ADR 0016](docs/adr/0016-local-time-through-darshini.md); [bayan](https://github.com/MacCracken/bayan) for config parsing, [ADR 0009](docs/adr/0009-config-parsing-via-bayan.md)), compiled in. Fast cold start (default `cwd + vcs + exit` prompt renders in ~11 µs — 0.2 % of the 5 ms budget)
 - **Segment model** — independent producers (cwd / vcs / exit / time / hostname / user / language envs), each a pure function of context
 - **Config-driven** — appearance, segment order, and per-segment toggles live in a CYML file (`~/.commandress` — no extension; see [ADR 0006](docs/adr/0006-config-path-rename.md))
 - **Sovereign stack** — VCS state comes from [`sit`](https://github.com/MacCracken/sit), not external `git` ([ADR 0004](docs/adr/0004-vcs-probe-via-sit.md))
@@ -37,7 +37,7 @@ cyrius bench tests/commandress.bcyr            # per-segment + full-prompt timin
 | `cwd` | `getcwd(2)` | Current directory, optionally `~`-shortened, optionally truncated | `home_shorten`, `max_length`, `fg`/`bg`/`style` |
 | `exit` | `$AGNOSHI_LAST_EXIT` | `[N]` on non-zero; empty on success | `hide_zero`, `max_length`, `fg`/`bg`/`style` |
 | `vcs` | `sit status` (cached, 1 s TTL) | `<branch>` / `<branch>*` inside a `sit` repo | `show_dirty`, `dirty_marker`, `budget_ms`, `max_length`, `fg`/`bg`/`style` |
-| `time` | `CLOCK_REALTIME` | strftime-subset (`%H %M %S %Y %y %m %d %%`) | `format`, `max_length`, `fg`/`bg`/`style` |
+| `time` | `CLOCK_REALTIME`, in the zone from `TZ` or `/etc/localtime` | strftime-subset (`%H %M %S %Y %y %m %d %%`), local time | `format`, `utc`, `max_length`, `fg`/`bg`/`style` |
 | `hostname` | `uname(2)` nodename | Host short name | `max_length`, `fg`/`bg`/`style` |
 | `user` | `getuid()` + `/etc/passwd` | Current user; falls back to `$USER` | `max_length`, `fg`/`bg`/`style` |
 | `cyrius_env` | `cyrius.cyml` ancestor + `VERSION` | Cyrius project version | `max_length`, `fg`/`bg`/`style` |
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.5.0
+cmdrs 1.5.1
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```
@@ -137,7 +137,7 @@ commandress/
     ├── themes/                                # curated drop-in palettes
     ├── examples/                              # runnable examples + annotated config
     └── development/
-        ├── roadmap.md                         # post-v1 sequencing (1.5.x →)
+        ├── roadmap.md                         # post-v1 sequencing
         └── state.md                           # live state snapshot
 ```
 
@@ -148,7 +148,7 @@ commandress/
 - [`docs/examples/commandress.cyml.example`](docs/examples/commandress.cyml.example) — annotated config showing every knob
 - [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — build + first run
 - [`docs/development/state.md`](docs/development/state.md) — current version, sizes, benchmarks, in-flight work
-- [`docs/development/roadmap.md`](docs/development/roadmap.md) — post-v1 sequencing (1.5.x →), every item pinned to the line that defers it
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — post-v1 sequencing, every item pinned to the line that defers it
 - [`docs/adr/`](docs/adr/) — architectural decisions (rendering model, config format, VCS-via-sit, schema freeze, cmdit adoption, config parsing via bayan, build DCE)
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants (prompt render budget, shellout watchdog, etc.)
 - [`docs/audit/2026-08-26-audit.md`](docs/audit/2026-08-26-audit.md) — latest security audit (1.1.6 P-1 sweep); prior pass [2026-05-18](docs/audit/2026-05-18-audit.md)

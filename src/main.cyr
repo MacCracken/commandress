@@ -25,6 +25,7 @@ include "lib/pwd.cyr"
 include "lib/process.cyr"
 include "lib/args.cyr"
 include "lib/cmdit.cyr"
+include "lib/darshini_tz.cyr"
 
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"

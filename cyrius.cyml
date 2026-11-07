@@ -80,4 +80,19 @@ git = "https://github.com/MacCracken/cmdit.git"
 # path = "../cmdit"   # dev override; only CYRIUS_LOCAL=1 uses it
 tag = "1.5.0"
 modules = ["dist/cmdit.cyr"]
+
+# darshini — its `src/tz.cyr` reads the zone database and POSIX `TZ` strings, for the
+# `time` segment's local time (ADR 0016). Only that one file is included. darshini is a
+# binary, not a library, but that file is a contract it states in its own header:
+# it compiles against the stdlib alone, and `tz_init` and `tz_offset` keep their meaning.
+# It was made standalone for this at 1.8.2, rather than this repo growing a second zone
+# parser or a fork of it.
+#
+# `cyrius deps` also vendors darshini's own dep, `lib/darshana.cyr`, and locks it. There is
+# no switch for that. Nothing includes it, so it never reaches the binary.
+[deps.darshini]
+git = "https://github.com/MacCracken/darshini.git"
+# path = "../darshini"   # dev override; only CYRIUS_LOCAL=1 uses it
+tag = "1.8.3"
+modules = ["src/tz.cyr"]
 ---

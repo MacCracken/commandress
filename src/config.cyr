@@ -51,6 +51,10 @@
 #   vcs and the env segments, whose text a repo or the environment chooses, and to no
 #   limit on the rest. A cut ends in `...`, and cwd cuts at a `/`.
 #
+#   [[segments.time]]
+#   format = "%H:%M"
+#   utc = false                           # local time, as `date` shows it. true for UTC
+#
 #   [[segments.<env_segment>]]            # cyrius_env / python_env / node_env / rustup_env
 #   fg = "..."                            # color knobs for the env segments
 #   shellout  = true                      # python_env, node_env, rustup_env: ask the tool
@@ -124,7 +128,8 @@ var CFG_MAX_CYRIUS = 336;
 var CFG_MAX_PYTHON = 344;
 var CFG_MAX_NODE = 352;
 var CFG_MAX_RUSTUP = 360;
-var CFG_SIZE = 368;
+var CFG_TIME_UTC = 368;
+var CFG_SIZE = 376;
 
 # Largest ~/.commandress we will parse, in bytes.
 enum ConfigFile { CONFIG_CAP = 65536; }
@@ -176,6 +181,7 @@ fn cfg_separator_style(c): i64         { return load64(c + CFG_SEPARATOR_STYLE);
 fn cfg_separator_glyph(c): i64         { return load64(c + CFG_SEPARATOR_GLYPH); }
 fn cfg_right_separator_glyph(c): i64   { return load64(c + CFG_RIGHT_SEPARATOR_GLYPH); }
 fn cfg_vcs_budget_ms(c): i64           { return load64(c + CFG_VCS_BUDGET_MS); }
+fn cfg_time_utc(c): i64                { return load64(c + CFG_TIME_UTC); }
 fn cfg_max_exit(c): i64                { return load64(c + CFG_MAX_EXIT); }
 fn cfg_max_vcs(c): i64                 { return load64(c + CFG_MAX_VCS); }
 fn cfg_max_time(c): i64                { return load64(c + CFG_MAX_TIME); }
@@ -236,6 +242,7 @@ fn config_default(): i64 {
     # 0 = no truncation. Users opt in via `[[segments.cwd]] max_length = N`.
     store64(c + CFG_CWD_MAX_LENGTH, 0);
     # On by default where a repo or the environment chooses the text. ADR 0015.
+    store64(c + CFG_TIME_UTC, 0);
     store64(c + CFG_MAX_EXIT, 0);
     store64(c + CFG_MAX_VCS, SEG_MAX_DEFAULT);
     store64(c + CFG_MAX_TIME, 0);
@@ -850,6 +857,7 @@ fn config_load(path): i64 {
     if (time_pairs != 0) {
         var time_allowed = vec_new();
         vec_push(time_allowed, "format");
+        vec_push(time_allowed, "utc");
         vec_push(time_allowed, "max_length");
         vec_push(time_allowed, "fg");
         vec_push(time_allowed, "bg");
@@ -858,6 +866,7 @@ fn config_load(path): i64 {
 
         var fmt_v = bayan_toml_get_by_cstr(time_pairs, "format");
         if (fmt_v != 0) { store64(c + CFG_TIME_FORMAT, str_cstr(fmt_v)); }
+        store64(c + CFG_TIME_UTC, _parse_bool(bayan_toml_get_by_cstr(time_pairs, "utc"), cfg_time_utc(c)));
         _load_max_length(c, CFG_MAX_TIME, time_pairs, "segments.time");
         _apply_seg_style(c, CFG_SGR_TIME, CFG_BG_TIME, time_pairs, palette);
     }

@@ -79,6 +79,8 @@ The exhaustive set of accepted fields per `[[…]]` section. Unknown fields warn
 
 > **Update 2026-11-06** (annotation, not a revision): since 1.5.0 every segment takes `max_length` (int, 0 to 65535, `0` for no limit). It defaults to 128 on `vcs`, `cyrius_env`, `python_env`, `node_env` and `rustup_env`, and to `0` on `exit`, `time`, `hostname` and `user`. A refused value warns and keeps the default. A cut keeps the head and ends in `...`. `[[segments.cwd]] max_length` is unchanged. See [ADR 0015](0015-pins-keep-their-name-and-shape.md).
 
+> **Update 2026-11-06** (annotation, not a revision): since 1.5.1 `[[segments.time]]` takes `utc` (bool, default false), and the segment shows local time. `format` is unchanged. No doc had promised UTC, so this is under ADR 0016 and not the deprecation path below.
+
 ### 3. Colour value space
 
 | Form | Example | Accepted |

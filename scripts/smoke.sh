@@ -207,6 +207,55 @@ rm -f tools.log
 [[ ! -e tools.log ]] || fail "cyrius ran past a refused VERSION"
 rm badversion/VERSION
 [[ "$(render_in badversion "$probes/t1")" == '9.9.9' ]] || fail "no VERSION at all must still ask the toolchain"
+# The clock must agree with `date`, through the binary, for each way of naming a zone. Run
+# both twice so a minute ticking over between them is not a failure. ADR 0016.
+printf '[[prompt]]\nsegments = ["time"]\ntrailer = ""\n[[segments.time]]\nfg = "default"\nformat = "%%Y-%%m-%%d %%H:%%M"\n' > probehome/.commandress
+clock() { (cd capped && HOME="$probes/probehome" PATH="/usr/bin:/bin" TZ="$1" "$bin"); }
+same_as_date() {
+    local n
+    for n in 1 2; do
+        [[ "$(clock "$1")" == "$(TZ="$1" date '+%Y-%m-%d %H:%M')" ]] && return 0
+    done
+    return 1
+}
+# One zone from each hemisphere, for a zone file and for a string, so one of each pair is
+# in DST whatever the date.
+for zone in UTC Asia/Tokyo Asia/Kathmandu America/New_York Australia/Adelaide ':Europe/Paris' \
+            'EST5EDT,M3.2.0,M11.1.0' 'AEST-10AEDT,M10.1.0,M4.1.0/3' \
+            '<+0530>-5:30' 'UTC0' '' 'No/SuchZone'; do
+    same_as_date "$zone" || fail "the clock disagrees with date for TZ='$zone'"
+done
+for n in 1 2; do
+    unzoned="$(cd capped && env -u TZ HOME="$probes/probehome" PATH="/usr/bin:/bin" "$bin")"
+    [[ "$unzoned" == "$(env -u TZ date '+%Y-%m-%d %H:%M')" ]] && break
+    [[ "$n" == 1 ]] || fail "the clock disagrees with date with no TZ set"
+done
+
+# utc = true keeps the old clock, whatever the zone.
+printf 'utc = true\n' >> probehome/.commandress
+for n in 1 2; do
+    [[ "$(clock Asia/Tokyo)" == "$(date -u '+%Y-%m-%d %H:%M')" ]] && break
+    [[ "$n" == 1 ]] || fail "utc = true did not paint UTC"
+done
+sed -i '$d' probehome/.commandress
+
+# TZ can name anything. A FIFO must not hang the prompt, and junk reads as UTC, as for date.
+mkfifo tzfifo
+printf 'TZif garbage' > tzjunk
+hung=0
+timeout 2 env HOME="$probes/probehome" PATH="/usr/bin:/bin" TZ="$probes/tzfifo" "$bin" >/dev/null || hung=1
+[[ "$hung" == 0 ]] || fail "a FIFO in TZ hung the prompt"
+same_as_date "$probes/tzjunk" || fail "a junk zone file did not read as date reads it"
+
+# A well-formed zone file whose one type claims an offset no zone could have, 68 years
+# east. It must read as UTC.
+printf 'TZif\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\1\0\0\0\4' > tzhuge
+printf '\177\377\377\377\0\0AAA\0' >> tzhuge
+for n in 1 2; do
+    [[ "$(clock "$probes/tzhuge")" == "$(date -u '+%Y-%m-%d %H:%M')" ]] && break
+    [[ "$n" == 1 ]] || fail "an impossible offset moved the clock: '$(clock "$probes/tzhuge")'"
+done
+
 cd "$work"
 
 [[ -z "$("$bin" --help 2>/dev/null)" ]] || fail "--help wrote to stdout"

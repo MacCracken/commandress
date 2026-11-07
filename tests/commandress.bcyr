@@ -31,6 +31,7 @@ include "lib/pwd.cyr"
 include "lib/bench.cyr"
 include "lib/args.cyr"
 include "lib/cmdit.cyr"
+include "lib/darshini_tz.cyr"
 
 include "src/pathlookup.cyr"
 include "src/fslookup.cyr"
@@ -336,6 +337,26 @@ fn bench_node_env_parse_package(): i64 {
     return 0;
 }
 
+# What a redraw pays for the clock, with the zone file read on every call, as a real one is.
+fn _bench_time(name, utc): i64 {
+    var b = bench_new(name);
+    var rounds = 50;
+    var batch = 50;
+    var ri = 0;
+    while (ri < rounds) {
+        bench_batch_start(b);
+        var bi = 0;
+        while (bi < batch) {
+            time_render("%H:%M", utc);
+            bi = bi + 1;
+        }
+        bench_batch_stop(b, batch);
+        ri = ri + 1;
+    }
+    bench_report(b);
+    return 0;
+}
+
 # What every pin read pays for its shape, on a file with a comment above the version.
 fn bench_pin_word(): i64 {
     var pin = "# pinned for the build\ncpython-3.12.3-linux-x86_64-gnu\n";
@@ -522,6 +543,8 @@ fn main(): i64 {
     bench_python_env_segment();
     bench_node_env_segment();
     bench_node_env_parse_package();
+    _bench_time("time_render (local)", 0);
+    _bench_time("time_render (utc)", 1);
     bench_pin_word();
     bench_cap_output();
     bench_probe_cached();

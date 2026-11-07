@@ -5,7 +5,9 @@
 
 ## Version
 
-**1.5.0** — 2026-11-06. **Pins and lengths**: a symlinked pin must end at a file of the same name, which closes the audit's T-05 and a route to `/proc/self/environ` it missed. A pin is the first word of its first meaningful line, at most 64 ASCII characters. Every segment takes `max_length`, on by default at 128 bytes on `vcs` and the language segments ([ADR 0015](../adr/0015-pins-keep-their-name-and-shape.md)).
+**1.5.1** — 2026-11-06. **Local time**: `time` shows local time, chosen as `date` chooses it, through darshini's `src/tz.cyr`, pinned at 1.8.3. `utc = true` keeps UTC ([ADR 0016](../adr/0016-local-time-through-darshini.md)).
+
+**1.5.0** — 2026-11-06. Prior: **Pins and lengths**: a symlinked pin must end at a file of the same name, which closes the audit's T-05 and a route to `/proc/self/environ` it missed. A pin is the first word of its first meaningful line, at most 64 ASCII characters. Every segment takes `max_length`, on by default at 128 bytes on `vcs` and the language segments ([ADR 0015](../adr/0015-pins-keep-their-name-and-shape.md)).
 
 **1.4.1** — 2026-11-06. Prior: **Opt-in version probes**: `python_env`, `node_env` and `rustup_env` can ask the tool in a project with no pin file, with `shellout = true`. Each runs from `/` with a fixed environment and a 60 s per-tool cache, because in the cwd `rustup` tried to download a repo's toolchain and `rustc` ran a repo's binary ([ADR 0014](../adr/0014-version-probes-never-see-the-repo.md)). Off by default, and nothing changes with it off.
 
@@ -45,7 +47,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 | `src/segments/cwd.cyr` | **M1 + M5 (0.6.0)** — `getcwd` + optional `$HOME` → `~` shortening (strict-prefix only) + optional `max_length` truncation at `/` boundaries (`_truncate_cwd` helper: walks left→right for earliest `/` whose suffix fits `max_length - 3`; pathological `< 4` emits a row of `.` dots; no-qualifying-`/` falls back to `...` + raw tail) |
 | `src/segments/exit.cyr` | M1 — empty on 0, `[N]` otherwise; `hide_zero = false` paints `[0]` too |
 | `src/segments/vcs.cyr` | **M2 (0.3.0) + watchdog (0.4.0) + pathlookup lift (0.5.0) + cache (0.7.0)** — getcwd → `cache_get("vcs", cwd, 1)` short-circuit. On miss: shells out to `sit status` via `shellout_capture` (5 ms budget), parses `On branch <name>` + dirty/clean substring, caches the result (including `""` for no-output cases so the next redraw also skips the fork). 1 s TTL means rapid redraws within a single keystroke burst share one fork+exec. `[[segments.vcs]] budget_ms` overrides the 5 ms budget, whole ms from 1 to 1000 (1.2.2) |
-| `src/segments/time.cyr` | **M3 (0.4.0)** — strftime-subset formatter (`%H %M %S %Y %y %m %d %%`; unsupported specs pass through literal). UTC via `CLOCK_REALTIME`; local-time / `TZ` is a future slot. Default format `"%H:%M"`; config-overridable via `[[segments.time]] format = ...` |
+| `src/segments/time.cyr` | **M3 (0.4.0) + local time (1.5.1)** — strftime-subset formatter (`%H %M %S %Y %y %m %d %%`; unsupported specs pass through literally). Shows local time through darshini's `tz_init` and `tz_offset`, or UTC with `utc = true`. `time_shift` reads an offset past 26 hours, or a result before 1970, as UTC (ADR 0016) |
 | `src/segments/hostname.cyr` | **M3 (0.4.0)** — `uname(2)` nodename. One syscall, no config knobs |
 | `src/segments/user.cyr` | **M3 (0.4.0)** — `getuid()` + `lib/pwd.cyr` direct /etc/passwd reader (musl-style; no glibc NSS). Falls back to `$USER`, then empty. No config knobs |
 | `src/segments/cyrius_env.cyr` | **M4 (0.5.0)** — Cyrius project segment. Walks ancestors for `cyrius.cyml`, reads `<root>/VERSION`, falls back to `cyrius --version` shellout (5 ms budget) only when there is no `VERSION` file. Emits raw version string. Per [ADR 0005](../adr/0005-language-env-probe-pattern.md) |
@@ -56,7 +58,8 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 ## Binary
 
 - `cmdrs` (output in `build/cmdrs` after `cyrius build`)
-- Size: **198,872 B** on Cyrius 6.7.18, x86_64, up from 186,424 B at 1.4.1 by **+12,448 B (+6.7 %)**: the pin reader, the range rule, `cap_output` and nine config fields, plus page rounding.
+- Size: **216,616 B** on Cyrius 6.7.18, x86_64, up from 198,872 B at 1.5.0 by **+17,744 B (+8.9 %)**: darshini's zone code.
+- Prior: **198,872 B** on Cyrius 6.7.18, x86_64, up from 186,424 B at 1.4.1 by **+12,448 B (+6.7 %)**: the pin reader, the range rule, `cap_output` and nine config fields, plus page rounding.
 - Prior: **186,424 B** on Cyrius 6.7.18, x86_64, up from 182,120 B at 1.4.0 by **+4,304 B (+2.4 %)**: `src/probe.cyr`, its call sites and the config fields.
 - Prior: **182,120 B** on Cyrius 6.7.18, x86_64, up from 162,168 B at 1.3.1 by **+19,952 B (+12.3 %)**: bayan's flat JSON parser and its helpers. Measured against the alternatives in ADR 0013.
 - Prior: **162,168 B** on Cyrius 6.7.18, x86_64 (text 154,153 B; bss 4,200 B), up from 158,016 B at 1.3.0 by **+4,152 B**, of which +1,170 B is text. The rest is page rounding, as the text crossed a segment boundary.
@@ -68,40 +71,42 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 - Prior: **287,672 B** on Cyrius 6.6.20 at 1.1.9, x86_64 (text 279,896 B; bss 3,600 B), up from 211,784 B at 1.1.8 by **+75,888 B (+35.8 %)**. Of that, +43,056 B is the toolchain and stdlib (+39,202 B unreachable) and +32,832 B is bayan (+20,544 B live). Live code under `CYRIUS_DCE=1`: 132,024 B, up from 105,288 B. `--agnos`: **287,848 B** (text 280,125 B; bss 3,880 B), up from 207,608 B.
 - Prior: **211,768 B** on Cyrius 6.5.35 at 1.1.5, x86_64 (text 205,540 B; bss 2,848 B). Up from 168,264 B by **+43,504 B (+25.9 %)** at the 1.1.5 cmdit adoption — the cost of the dependency, accepted with the cost measured ([ADR 0008](../adr/0008-cli-parsing-via-cmdit.md)). `--agnos`: **203,464 B** (text 199,939 B; bss 2,800 B).
 - Prior: **168,264 B** (text 162,839 B; bss 2,544 B) at 1.1.4, up from 147,600 B by **+20,664 B (+14.0 %)** — attributable to the **vendored stdlib snapshot, not codegen**: the local wrapper was already `cycc 6.5.35` before the bump (that was the drift), so the pre-bump baseline built the same `src/` with the same compiler against the old `lib/` and measured 147,600 B (text 143,049 B; bss 2,464 B). Roughly half the growth is unreached code — the build's dead-code note moves from `318 unreachable fns (58,189 B)` to `384 unreachable fns (69,382 B)`, all eliminable with `CYRIUS_DCE=1`. Net win vs the 0.3.0 baseline (395,115 B) is still **−226,851 B**.
-- `--agnos` cross-build stays clean, and **boots**: verified on kernel 1.57.17 with agnsh 2.2.0 (**195,088 B** at 1.5.0; 186,752 B at 1.4.1; 174,248 B at 1.4.0; 154,288 B at 1.3.1; 150,144 B at 1.3.0; 150,128 B at 1.2.3; 145,928 B at 1.2.2 with DCE; 317,808 B at 1.2.1; 309,384 B at 1.2.0; 287,848 B at 1.1.9; 203,464 B at 1.1.5; 164,056 B at 1.1.4). Clean since the 1.1.4 `cache.cyr` fix; Cyrius 6.5.1 made the `sys_stat` arity mismatch a hard error.
+- `--agnos` cross-build stays clean, and **boots**: verified on kernel 1.57.17 with agnsh 2.2.0 (**212,336 B** at 1.5.1; 195,088 B at 1.5.0; 186,752 B at 1.4.1; 174,248 B at 1.4.0; 154,288 B at 1.3.1; 150,144 B at 1.3.0; 150,128 B at 1.2.3; 145,928 B at 1.2.2 with DCE; 317,808 B at 1.2.1; 309,384 B at 1.2.0; 287,848 B at 1.1.9; 203,464 B at 1.1.5; 164,056 B at 1.1.4). Clean since the 1.1.4 `cache.cyr` fix; Cyrius 6.5.1 made the `sys_stat` arity mismatch a hard error.
 - Historical: **147,600 B** on 6.4.66 was the 1.1.3 figure (text 141,329 B; bss 2,464 B), itself down from 210,144 B on 6.2.24. **202,561 B** on Cyrius 5.11.64 (text 143,265 B; bss 59,296 B) was the v1.0.x figure — 200,667 B at the 0.7.0 baseline + **1,894 B** for the M8 audit fixes (F-1 sanitization helper, F-3 cache-dir mode-verify, F-4 O_NOFOLLOW, F-5 atomic temp+rename, F-7 parse_last_exit, F-8 absolute-only PATH walker).
 
 ## Benchmarks
 
-Captured 2026-11-06 at 1.5.0 on the dev host (Linux 7.2.14-arch1-1, x86_64). The bench harness subtracts a measured timer floor (~1.408 µs per clock read) from every sample. Since 6.6.x it prints the mean as `min` and `max` when a row cannot resolve them, which is why `vcs_render` reads `min=max` below:
+Captured 2026-11-06 at 1.5.1 on the dev host (Linux 7.2.14-arch1-1, x86_64). The bench harness subtracts a measured timer floor (~1.408 µs per clock read) from every sample. Since 6.6.x it prints the mean as `min` and `max` when a row cannot resolve them, which is why `vcs_render` reads `min=max` below:
 
 | Operation | Avg | Min | Max |
 |---|---|---|---|
-| **`cli_parse` (cmdit `--side`)** | **999 ns** | **920 ns** | **1.220 µs** |
-| `cwd_render` | 693 ns | 664 ns | 759 ns |
-| `exit_render(nonzero)` | 36 ns | 33 ns | 43 ns |
-| `config_default` | 3.155 µs | 3.026 µs | 3.272 µs |
-| **`config_load` (largest theme)** | **63.652 µs** | **62.152 µs** | **65.461 µs** |
-| `vcs_parse_render` (pure parser) | 200 ns | 194 ns | 209 ns |
-| **`vcs_render` (cached, 1s TTL)** | **8.955 µs** | **8.955 µs** | **8.955 µs** |
-| `cyrius_env_parse_version` (pure parser) | 77 ns | 72 ns | 84 ns |
-| `cyrius_env_render` (file path, no shellout) | 6.598 µs | 6.337 µs | 6.934 µs |
-| `python_env_basename` (pure parser) | 87 ns | 82 ns | 94 ns |
-| `python_env_render` (empty walk) | 9.319 µs | 8.903 µs | 9.618 µs |
-| `node_env_render` (empty walk) | 8.353 µs | 8.053 µs | 8.910 µs |
-| `node_env_parse_package` (pure parser) | 8.307 µs | 7.826 µs | 9.058 µs |
-| `pin_word` | 572 ns | 572 ns | 572 ns |
-| `cap_output` (8 KB to 128) | 2.622 µs | 2.559 µs | 2.684 µs |
-| `probe_run` (cached) | 5.445 µs | 5.268 µs | 6.119 µs |
-| `rustup_env_render` (empty walk) | 8.451 µs | 8.148 µs | 8.745 µs |
-| `rustup_env_parse_toml` (pure parser) | 1.885 µs | 1.789 µs | 2.176 µs |
-| `render_prompt (default cwd+vcs+exit)` | 10.688 µs | 10.473 µs | 10.943 µs |
+| **`cli_parse` (cmdit `--side`)** | **1.033 µs** | **954 ns** | **1.213 µs** |
+| `cwd_render` | 730 ns | 715 ns | 782 ns |
+| `exit_render(nonzero)` | 38 ns | 36 ns | 47 ns |
+| `config_default` | 3.075 µs | 3.008 µs | 3.182 µs |
+| **`config_load` (largest theme)** | **66.800 µs** | **65.718 µs** | **67.541 µs** |
+| `vcs_parse_render` (pure parser) | 204 ns | 202 ns | 210 ns |
+| **`vcs_render` (cached, 1s TTL)** | **9.070 µs** | **9.070 µs** | **9.070 µs** |
+| `cyrius_env_parse_version` (pure parser) | 79 ns | 77 ns | 85 ns |
+| `cyrius_env_render` (file path, no shellout) | 7.094 µs | 6.974 µs | 7.241 µs |
+| `python_env_basename` (pure parser) | 105 ns | 103 ns | 110 ns |
+| `python_env_render` (empty walk) | 9.901 µs | 9.791 µs | 10.095 µs |
+| `node_env_render` (empty walk) | 8.930 µs | 8.870 µs | 9.175 µs |
+| `node_env_parse_package` (pure parser) | 8.610 µs | 8.503 µs | 9.003 µs |
+| `time_render` (local, zone read each call) | 23.213 µs | 22.768 µs | 25.232 µs |
+| `time_render` (`utc = true`) | 1.789 µs | 1.789 µs | 1.789 µs |
+| `pin_word` | 585 ns | 585 ns | 585 ns |
+| `cap_output` (8 KB to 128) | 2.712 µs | 2.645 µs | 2.958 µs |
+| `probe_run` (cached) | 5.752 µs | 5.666 µs | 6.764 µs |
+| `rustup_env_render` (empty walk) | 8.729 µs | 8.620 µs | 9.045 µs |
+| `rustup_env_parse_toml` (pure parser) | 2.025 µs | 1.939 µs | 2.448 µs |
+| `render_prompt (default cwd+vcs+exit)` | 11.274 µs | 10.637 µs | 11.415 µs |
 
-**Real cold start** on this host, THP `always`: **302 µs** with no config, **533 µs** with the largest theme, on a busy host, against the 5 ms budget, which `scripts/smoke.sh` enforces. Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). **M6 headline**: `vcs_render` **4.6 ms → ~9 µs avg** with the 1 s TTL cache (on harnesses that resolve it, the `max` is the one cold call that warms the entry; the remaining reads in the bench are the average). `render_prompt (default cwd+vcs+exit)` is **11.092 µs** at 1.2.2, with repeat runs from 11.07 to 12.04 µs — even with vcs in the default set, the cold-start budget is **0.2 % consumed**, and the 1.1.4 stdlib refresh moved it by ~0.3 µs (10.553 µs → 10.851 µs), i.e. noise. **1.1.5 note**: `cli_parse` is the cmdit adoption's measured cost — the hand-rolled walk it replaced benched **56 ns**, so this is a ~212× regression in isolation, ~98 % of it `cmdit_new` zeroing a 64-entry flag table for one flag. It sits **outside `render_prompt`** (which takes `side` as a parameter), so the gate below is unaffected, and against the ~940 µs the binary really spends per invocation an interleaved A/B of the 1.1.4 and 1.1.5 binaries measured **−15 / +1 / +11 µs** — below the noise floor. Accepted knowingly; see [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md). **Resolved at 1.2.0**: cmdit 1.3.0 zeroes that table a word at a time, taking `cli_parse` from 11.20 µs to 0.99 µs. The bench-gate CI step is wired to fail above 5 ms; comfortable headroom. Per-release numbers append to [`benchmarks/history.csv`](../benchmarks/history.csv) for trend visibility — note that `bench-history.sh` silently recorded nothing between 0.9.0 and 1.1.4 (decimal-average rows failed its skip-filter; fixed in 1.1.4), so the CSV has no rows for the releases in that span.
+**Real cold start** on this host, THP `always`: **289 µs** with no config, **502 µs** with the largest theme, and **323 µs** with `time` reading a zone, against the 5 ms budget, which `scripts/smoke.sh` enforces. Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). **M6 headline**: `vcs_render` **4.6 ms → ~9 µs avg** with the 1 s TTL cache (on harnesses that resolve it, the `max` is the one cold call that warms the entry; the remaining reads in the bench are the average). `render_prompt (default cwd+vcs+exit)` is **11.092 µs** at 1.2.2, with repeat runs from 11.07 to 12.04 µs — even with vcs in the default set, the cold-start budget is **0.2 % consumed**, and the 1.1.4 stdlib refresh moved it by ~0.3 µs (10.553 µs → 10.851 µs), i.e. noise. **1.1.5 note**: `cli_parse` is the cmdit adoption's measured cost — the hand-rolled walk it replaced benched **56 ns**, so this is a ~212× regression in isolation, ~98 % of it `cmdit_new` zeroing a 64-entry flag table for one flag. It sits **outside `render_prompt`** (which takes `side` as a parameter), so the gate below is unaffected, and against the ~940 µs the binary really spends per invocation an interleaved A/B of the 1.1.4 and 1.1.5 binaries measured **−15 / +1 / +11 µs** — below the noise floor. Accepted knowingly; see [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md). **Resolved at 1.2.0**: cmdit 1.3.0 zeroes that table a word at a time, taking `cli_parse` from 11.20 µs to 0.99 µs. The bench-gate CI step is wired to fail above 5 ms; comfortable headroom. Per-release numbers append to [`benchmarks/history.csv`](../benchmarks/history.csv) for trend visibility — note that `bench-history.sh` silently recorded nothing between 0.9.0 and 1.1.4 (decimal-average rows failed its skip-filter; fixed in 1.1.4), so the CSV has no rows for the releases in that span.
 
 ## Tests
 
-- `tests/commandress.tcyr` — **951 assertions across 284 tests**, including `render_prompt` byte for byte since 1.3.0: full M1–M7 coverage + the 1.1.9 config-parsing group (12 tests / 23 assertions: the forks' defects, plus the rules `src/config.cyr` keeps across the bayan swap) + the 1.1.5 CLI group (10 tests / 16 assertions over `src/cli.cyr`, driven through cmdit's pure `cmdit_parse_argv` core with synthetic argv — side mapping, the space-separated form, both degrade paths, help/version short-circuits, and a version-drift guard asserting `cmdrs_version()` equals the `VERSION` file) + M8 audit-fix additions for `sanitize_segment_output` (8 cases — F-1), cache hardening (2 cases — F-3/F-4/F-5: mode-0o600 stat-verify, symlink-swap refuses), `parse_last_exit` (6 cases — F-7), and `find_in_path_with` (3 cases — F-8 relative-rejected / dot-rejected / absolute-resolves-including-mixed). `cyrius test` green.
+- `tests/commandress.tcyr` — **976 assertions across 288 tests**, including `render_prompt` byte for byte since 1.3.0: full M1–M7 coverage + the 1.1.9 config-parsing group (12 tests / 23 assertions: the forks' defects, plus the rules `src/config.cyr` keeps across the bayan swap) + the 1.1.5 CLI group (10 tests / 16 assertions over `src/cli.cyr`, driven through cmdit's pure `cmdit_parse_argv` core with synthetic argv — side mapping, the space-separated form, both degrade paths, help/version short-circuits, and a version-drift guard asserting `cmdrs_version()` equals the `VERSION` file) + M8 audit-fix additions for `sanitize_segment_output` (8 cases — F-1), cache hardening (2 cases — F-3/F-4/F-5: mode-0o600 stat-verify, symlink-swap refuses), `parse_last_exit` (6 cases — F-7), and `find_in_path_with` (3 cases — F-8 relative-rejected / dot-rejected / absolute-resolves-including-mixed). `cyrius test` green.
 - `tests/commandress.bcyr` — per-segment + config + parser + full-prompt timings (above).
 - `tests/commandress.fcyr` — fuzz stub (no harness yet).
 - `scripts/smoke.sh` — runs the shipped binary on hostile input and takes a real cold start (1.2.3).
@@ -114,6 +119,7 @@ Direct (declared in `cyrius.cyml`):
 
 - stdlib — `string`, `fmt`, `alloc`, `io`, `vec`, `str`, `syscalls`, `assert`, `args`, `bench`, `chrono`, `fnptr`, `process`, `pwd`, `tagged`, `result`, `hashseed`, `atomic`, `math`, `slice`. `args` + `bench` were declared at 1.1.5, the next five at 1.1.7, `result` at 1.1.9 and `hashseed` at 1.2.1: all were already compiled in via includes, and an undeclared module is one `cyrius deps` never refreshes.
 - **cmdit** `1.5.0` — first-party AGNOS CLI / argument-parsing distlib, `[deps.cmdit] modules = ["dist/cmdit.cyr"]`, pinned by git tag (`path = "../cmdit"` stays commented out; since cyrius 6.7.6 only `CYRIUS_LOCAL=1` uses it). commandress's **first non-stdlib dependency**, adopted at 1.1.5 per [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md). Compiled in; the binary stays static, and no runtime dependency is added.
+- **darshini** `1.8.3` — first-party AGNOS file lister. Only its `src/tz.cyr` is included, `[deps.darshini] modules = ["src/tz.cyr"]`, pinned by git tag, for local time (ADR 0016). That file's header states it as a contract. `cyrius deps` also vendors darshini's own dep, `lib/darshana.cyr`, which nothing includes.
 - **bayan** `1.11.1` — first-party AGNOS data-format library, `[deps.bayan] modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr", "dist/bayan-json.cyr"]`, pinned by git tag per [ADR 0009](../adr/0009-config-parsing-via-bayan.md). The sublibs, not the bundle in the snapshot. 1.11.1 is the newest tag and the one the 6.7.18 snapshot bundles; its own pin is 6.7.16. The tag moves with the toolchain.
 
 The declared `[deps]` surface is stable across releases; the **vendored `lib/` snapshot** is re-synced to the pinned toolchain per refresh (`cyrius lib sync --full`). Last resync: **1.2.1 → the 6.7.18 pin** (66 stdlib files updated, none added or removed). `lib/` is now exactly the snapshot plus `cmdit.cyr`, `bayan-toml.cyr` and `bayan-cyml.cyr`; the ten leftovers no snapshot shipped were removed at 1.1.9. A stale snapshot surfaces at build time as a `./lib/ shadows version-pinned …/lib — N bundled lib(s) differ` warning — the signal to re-sync. Note `cyrius deps` alone does **not** refresh the snapshot; it resolves declared `[deps]` and writes `cyrius.lock`. The order on a pin move matters: see [architecture 003](../architecture/003-cyrius-lock-shape.md).
@@ -126,7 +132,7 @@ External (non-AGNOS, third-party): none, and none planned. The 1.1.5 cmdit adopt
 
 ## In-flight work
 
-> **Planned work lives in [`roadmap.md`](roadmap.md)**, sequenced into 1.5.x with
+> **Planned work lives in [`roadmap.md`](roadmap.md)**, sequenced there with
 > each item pinned to the source line that defers it. This section is *state* — what is
 > true right now — not a second copy of the plan. It was both until the 2026-08-26 doc
 > sweep, and the two copies had drifted.

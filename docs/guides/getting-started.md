@@ -116,6 +116,17 @@ a `#` comment, at most 64 ASCII characters. If that pin is a symlink it must end
 same name, so `.nvmrc -> ../.nvmrc` and `~/.nvmrc -> ~/dotfiles/nvmrc` work, and a link to anything
 else renders empty ([ADR 0015](../adr/0015-pins-keep-their-name-and-shape.md)).
 
+### The clock
+
+`time` shows local time, chosen as `date` chooses it: `TZ`, else `/etc/localtime`, else UTC. To show
+UTC whatever the zone:
+
+```cyml
+[[segments.time]]
+format = "%H:%M"
+utc    = true
+```
+
 ### Long values
 
 Every segment takes `max_length`, in bytes, and a cut ends in `...`:

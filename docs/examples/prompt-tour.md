@@ -213,7 +213,7 @@ Everything this tour once listed as upcoming has shipped: `time` / `hostname` / 
 per-segment timeouts (v0.4.0), the language-env segments (v0.5.0), colour + powerline +
 right-prompt (v0.6.0), and probe caching (v0.7.0). v1.0 froze the schema, hex and 256-colour
 values arrived at 1.3.0, multi-palette at 1.3.1, `package.json` `engines.node` at 1.4.0,
-opt-in version probes at 1.4.1, and `max_length` on every segment at 1.5.0.
+opt-in version probes at 1.4.1, `max_length` on every segment at 1.5.0, and local time at 1.5.1.
 
 What is genuinely still ahead is sequenced in
-[`../development/roadmap.md`](../development/roadmap.md) — local-time support (1.5.1). Every item there is pinned to the line of code that defers it.
+[`../development/roadmap.md`](../development/roadmap.md). Every item there is pinned to the line of code that defers it.

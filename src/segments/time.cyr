@@ -17,11 +17,16 @@
 # knows the spec wasn't recognised. Locale-aware names + AM/PM land
 # alongside the i18n surface (out of v1.0 scope).
 #
-# Empty / null `fmt` renders the segment empty. Time itself is read
-# from `CLOCK_REALTIME` via `clock_epoch_secs` — no timezone offset
-# applied, so the segment paints UTC. Local-time support is a config
-# follow-up; the `TZ` env var lookup + offset application is its own
-# slot.
+# Empty / null `fmt` renders the segment empty. Time is read from
+# `CLOCK_REALTIME` via `clock_epoch_secs`, then shifted into the local
+# zone, chosen as `date` chooses it: `TZ`, else `/etc/localtime`, else
+# UTC. `utc = true` skips all of that. The zone code is darshini's
+# `src/tz.cyr`, pinned as a source dep rather than written twice. See
+# ADR 0016.
+#
+# A zone only ever moves the digits. There is no `%Z`, so no name from a
+# zone file or a `TZ` string reaches the prompt, and `TZ` can name any
+# file without its contents being shown.
 
 # Pure formatter: format `epoch` (UTC seconds) per `fmt` into a
 # fresh heap cstring. Split from time_render so tests can pin the
@@ -117,6 +122,26 @@ fn time_format(epoch, fmt): i64 {
     return out;
 }
 
-fn time_render(fmt): i64 {
-    return time_format(clock_epoch_secs(), fmt);
+enum TimeZone { TIME_OFFSET_MAX = 93600; }                  # 26 hours, past any real zone
+
+# `t` moved by a zone's `off`, or `t` itself if no zone could have that offset. A zone file
+# can claim anything, and one that sends the clock before 1970 makes `epoch_to_date` print
+# junk. So it reads as UTC, the same as a file that does not parse. A clock near zero, as
+# on a dead RTC, can get there with an ordinary zone, so that is checked on the sum.
+fn time_shift(t, off): i64 {
+    if (off > TIME_OFFSET_MAX) { return t; }
+    if (off < (0 - TIME_OFFSET_MAX)) { return t; }
+    var local = t + off;
+    if (local < 0) { return t; }
+    return local;
+}
+
+# `fmt` at the current time, local unless `utc` is 1.
+fn time_render(fmt, utc): i64 {
+    var t = clock_epoch_secs();
+    if (utc == 0) {
+        tz_init();
+        t = time_shift(t, tz_offset(t));
+    }
+    return time_format(t, fmt);
 }

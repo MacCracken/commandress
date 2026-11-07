@@ -94,10 +94,10 @@ fn _dispatch_vcs(cfg, ctx): i64 {
 }
 
 # Dispatcher for the `time` segment. Forwards the configured strftime-
-# subset format to `time_render`. Renders empty when format is null/
+# subset format and the `utc` flag to `time_render`. Renders empty when format is null/
 # empty (won't happen with defaults, but the user can clear it).
 fn _dispatch_time(cfg, ctx): i64 {
-    return cap_output(time_render(cfg_time_format(cfg)), cfg_max_time(cfg), 0);
+    return cap_output(time_render(cfg_time_format(cfg), cfg_time_utc(cfg)), cfg_max_time(cfg), 0);
 }
 
 # Dispatcher for the `hostname` segment.

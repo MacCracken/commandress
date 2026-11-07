@@ -15,31 +15,18 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.5.0**. The 1.1.x line was toolchain refreshes, the cmdit
+this file. Current release is **1.5.1**. The 1.1.x line was toolchain refreshes, the cmdit
 CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line was toolchain and
 dependency refreshes, the quick roadmap items, and the
 [2026-11-06 audit](../audit/2026-11-06-audit.md). The 1.3.x line completed the colour model reserved
-at the freeze, the 1.4.x line finished the language-env segments, and 1.5.0 closed the audit's symlink and length gaps. The public API is frozen
+at the freeze, the 1.4.x line finished the language-env segments, and the 1.5.x line closed the audit's symlink and length gaps and made the clock local. The public API is frozen
 per [ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
 not-frozen surface, or routed through the documented 3-step deprecation path. No item here
 breaks a v1 config.
 
 | Slot | Theme |
 |---|---|
-| **1.5.x** | Per-segment control |
 | **1.x.x** | Unscheduled: gated on something outside this repo |
-
----
-
-## 1.5.x — Per-segment control
-
-Knobs the config schema was always shaped for but never grew.
-
-| Release | Item | Source of the deferral |
-|---|---|---|
-| **1.5.1** | **Local time and `TZ`** — the `time` segment is UTC-only; `TZ` lookup plus offset application is its own piece of work. | `src/segments/time.cyr:23` |
-
-**Gate**: none. It is an additive change to one segment.
 
 ---
 
