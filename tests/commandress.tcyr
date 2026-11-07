@@ -3948,6 +3948,54 @@ fn test_cli_side_survives_an_unrelated_parse_error(): i64 {
     return 0;
 }
 
+# Audit 2026-11-06, D-05: the other order. The parse used to stop at the first bad
+# token, so a good flag after it was never read and the left prompt rendered.
+# `cli_register` turns continue-on-error on, so these run the table `main` runs.
+fn test_cli_side_survives_an_earlier_parse_error(): i64 {
+    assert_eq(_parse_result_of("--nope", "--side=right"), CMDIT_RESULT_ERR,
+      "--nope --side=right is still a parse error");
+    assert_eq(_side_of("--nope", "--side=right"), 1,
+      "--side=right after an unknown flag is read");
+    assert_eq(_side_of("-x", "--side=right"), 1,
+      "--side=right after an unknown short flag is read");
+    assert_eq(_side_of("--side=bogus", "--side=right"), 1,
+      "--side=right after a rejected value is read");
+    assert_eq(_side_of("--nope", "right"), 0,
+      "a word after an unknown flag is its own token, not that flag's value");
+    return 0;
+}
+
+# A flag keeps its grammar in continue mode: `--side` takes the next token as its
+# value, even one that looks like a flag, and rejects it. Pinned so the note above
+# `cli_side_for` stays true.
+fn test_cli_side_with_no_value_takes_the_next_token(): i64 {
+    assert_eq(_parse_result_of("--side", "--side=right"), CMDIT_RESULT_ERR,
+      "--side --side=right is a parse error");
+    assert_eq(_side_of("--side", "--side=right"), 0,
+      "--side consumed --side=right as its rejected value");
+    return 0;
+}
+
+# Reading past a bad token must not move the diagnostic. Stderr names the first one.
+fn test_cli_first_bad_token_is_the_one_reported(): i64 {
+    var cli = cmdit_new("cmdrs");
+    cli_register(cli);
+    cmdit_parse_argv(cli, 3, _mk_argv("cmdrs", "--nope", "--side=bogus"));
+    assert_eq(cmdit_error(cli), CMDIT_ERR_UNKNOWN, "the first error's code stands");
+    assert_streq(cmdit_err_token(cli), "--nope", "the first error's token stands");
+    return 0;
+}
+
+# A bad flag must not turn into a `--help` or `--version` that `main` returns on,
+# which would print no prompt at all.
+fn test_cli_bad_flag_outranks_help_and_version(): i64 {
+    assert_eq(_parse_result_of("--nope", "--help"), CMDIT_RESULT_ERR,
+      "--nope --help reports --nope");
+    assert_eq(_parse_result_of("--nope", "--version"), CMDIT_RESULT_ERR,
+      "--nope --version reports --nope");
+    return 0;
+}
+
 fn test_cli_help_short_circuits(): i64 {
     assert_eq(_parse_result_of("--help", 0), CMDIT_HELP, "--help → CMDIT_HELP");
     assert_eq(_parse_result_of("-h", 0), CMDIT_HELP, "-h → CMDIT_HELP");
@@ -4300,6 +4348,10 @@ fn main(): i64 {
     test_cli_bad_enum_degrades_to_left();
     test_cli_unknown_flag_degrades_to_left();
     test_cli_side_survives_an_unrelated_parse_error();
+    test_cli_side_survives_an_earlier_parse_error();
+    test_cli_side_with_no_value_takes_the_next_token();
+    test_cli_first_bad_token_is_the_one_reported();
+    test_cli_bad_flag_outranks_help_and_version();
     test_cli_help_short_circuits();
     test_cli_version_short_circuits();
     test_cli_positional_ignored();

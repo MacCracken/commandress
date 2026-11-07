@@ -15,11 +15,11 @@
 ## Status
 
 **v1.0 shipped 2026-05-18.** All v1.0 criteria are met and archived at the bottom of
-this file. Current release is **1.5.2**. The 1.1.x line was toolchain refreshes, the cmdit
+this file. Current release is **1.5.3**. The 1.1.x line was toolchain refreshes, the cmdit
 CLI adoption, a security audit, and the bayan parser swap. The 1.2.x line was toolchain and
 dependency refreshes, the quick roadmap items, and the
 [2026-11-06 audit](../audit/2026-11-06-audit.md). The 1.3.x line completed the colour model reserved
-at the freeze, the 1.4.x line finished the language-env segments, and the 1.5.x line closed the audit's symlink and length gaps and made the clock local. The public API is frozen
+at the freeze, the 1.4.x line finished the language-env segments, and the 1.5.x line closed the audit's symlink and length gaps, made the clock local, and took cmdit's fixes for D-05 and D-06. The public API is frozen
 per [ADR 0007](../adr/0007-schema-freeze.md): everything below is either **additive** on a
 not-frozen surface, or routed through the documented 3-step deprecation path. No item here
 breaks a v1 config.
@@ -39,8 +39,6 @@ what would unblock it, so the gate is checkable rather than folkloric.
 |---|---|---|
 | **agnoshi adoption** — flips on when agnoshi reads `$AGNOSHI_PROMPT_CMD` per redraw. The 5-point contract is specified in `adapters/agnoshi.sh`. **It needs one commandress change**: agnos has no `getcwd` by design, so `cmdrs_getcwd` must read `$PWD`, which agnsh has passed since 2.2.0. Every cwd-based segment is empty there until then, and the default prompt is bare ` $ `. That change makes repo-controlled files reachable on a target where `read_regular_file` has neither guard, so it needs that reviewed at the same time. | agnoshi implements the contract | Re-checked 2026-11-06: `agnoshi/src` does not read it yet. `adapters/agnoshi.sh:16` — *"agnoshi has not yet adopted it"* |
 | **Retire `src/pathlookup.cyr`** — 99 lines re-implementing `execvp`'s PATH walk, because `execve(2)` does not do PATH lookup and no stdlib helper exposes one. | cyrius ships `path_which` ([proposal](https://github.com/MacCracken/cyrius/blob/main/docs/development/proposals/2026-11-06-path-which.md)) | Re-checked 2026-11-06 against the 6.7.18 snapshot: **still open**, no public stdlib fn resolves a bare name against `$PATH`. The workaround ships and is correct, with one known gap: `access(X_OK)` passes a directory, so a directory named `node` in a `PATH` entry ahead of the real tool hides it and the segment renders empty. A repo cannot reach this, because relative `PATH` entries are skipped. |
-| **`--bogus --side=right` honours the side** — cmdit stops at the first bad token, so a flag before `--side=right` renders the left prompt. No adapter produces that order. | cmdit grows a continue-on-error mode ([issue](https://github.com/MacCracken/cmdit/blob/main/docs/development/issues/2026-11-06-cmdit-parse-stops-at-first-bad-token.md)) | [2026-11-06 audit](../audit/2026-11-06-audit.md) D-05 |
-| **cmdit's stderr escaper strips C1** — a C1 pair in a bad flag reaches stderr. Argv is not an attacker position. | cmdit filters C1 pairs ([issue](https://github.com/MacCracken/cmdit/blob/main/docs/development/issues/2026-11-06-cmdit-stderr-escaper-passes-c1.md)) | [2026-11-06 audit](../audit/2026-11-06-audit.md) D-06 |
 | **`cyrius deps --locked` fails on a stale pin** — it prints a `note:` saying fail-closed, and exits 0. `scripts/lock-check.sh` does not need this, but it would make `--locked` usable alone. | Upstream cyrius | [Architecture 003](../architecture/003-cyrius-lock-shape.md) § 3 |
 
 > **Check the gate before repeating it.** Two of the three "blocked on Cyrius" claims in

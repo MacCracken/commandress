@@ -261,6 +261,22 @@ cd "$work"
 [[ -z "$("$bin" --help 2>/dev/null)" ]] || fail "--help wrote to stdout"
 "$bin" --no-such-flag >/dev/null 2>&1 || fail "a bad flag must not exit non-zero"
 
+# A good flag after a bad one still counts, and the error stays on stderr (audit
+# 2026-11-06, D-05). The left prompt has a trailer here and the right prompt does not.
+printf '[[prompt]]\nsegments = ["exit"]\nright_segments = ["exit"]\ntrailer = "> "\nseparator = ""\n[[segments.exit]]\nhide_zero = false\n' > .commandress
+[[ "$("$bin" --no-such-flag --side=right 2>/dev/null)" != *'> '* ]] || fail "--side=right after a bad flag was lost"
+[[ "$("$bin" --no-such-flag --side=left 2>/dev/null)" == *'> ' ]] || fail "--side=left after a bad flag lost the trailer"
+err="$("$bin" --no-such-flag --side=bogus 2>&1 >/dev/null)"
+[[ "$err" == *'--no-such-flag'* ]] || fail "stderr does not name the first bad token: '$err'"
+
+# argv reaches stderr through cmdit's escaper, which must stop a C1 control and keep a
+# real name, whose last byte can be the same 0x9B (audit 2026-11-06, D-06).
+err="$("$bin" $'--\302\23331m' 2>&1 >/dev/null)"
+[[ "$err" != *$'\302\233'* ]] || fail "a C1 CSI in argv reached stderr"
+[[ "$err" == *'--?31m'* ]] || fail "a C1 CSI in argv was not shown as one '?': '$err'"
+err="$("$bin" $'--\304\233' 2>&1 >/dev/null)"
+[[ "$err" == *$'\304\233'* ]] || fail "a real name lost a byte on stderr"
+
 best=999999999
 for _ in {1..21}; do
   start=$EPOCHREALTIME

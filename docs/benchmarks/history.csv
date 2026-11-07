@@ -281,3 +281,24 @@ date,version,name,avg_ns,min_ns,max_ns,iters
 2026-11-06,1.5.2,rustup_env_render (empty walk),8606,8478,8801,10000
 2026-11-06,1.5.2,rustup_env_parse_toml,1960,1878,2205,10000
 2026-11-06,1.5.2,render_prompt (default cwd+vcs+exit),11024,10972,11193,25000
+2026-11-06,1.5.3,cli_parse (cmdit --side),1000,959,1073,100000
+2026-11-06,1.5.3,cwd_render,735,721,797,100000
+2026-11-06,1.5.3,exit_render(nonzero),37,36,43,1000000
+2026-11-06,1.5.3,config_default,3113,3046,3186,100000
+2026-11-06,1.5.3,config_load (theme file),67982,67319,69186,1000
+2026-11-06,1.5.3,vcs_parse_render,187,184,205,1000000
+2026-11-06,1.5.3,vcs_render (cached; 1s TTL),65611,7741,1142000,100
+2026-11-06,1.5.3,cyrius_env_parse_version,75,73,91,1000000
+2026-11-06,1.5.3,cyrius_env_render (file path),7023,6882,7522,5000
+2026-11-06,1.5.3,python_env_basename,99,97,106,1000000
+2026-11-06,1.5.3,python_env_render,10023,9876,10875,10000
+2026-11-06,1.5.3,node_env_render (empty walk),8729,8594,8958,10000
+2026-11-06,1.5.3,node_env_parse_package,8458,8331,8747,10000
+2026-11-06,1.5.3,time_render (local),22715,22076,23913,2500
+2026-11-06,1.5.3,time_render (utc),1797,1797,1797,2500
+2026-11-06,1.5.3,pin_word,577,577,577,10000
+2026-11-06,1.5.3,cap_output (8 KB to 128),2654,2591,2874,10000
+2026-11-06,1.5.3,probe_run (cached),5637,5550,6165,10000
+2026-11-06,1.5.3,rustup_env_render (empty walk),8489,8405,8739,10000
+2026-11-06,1.5.3,rustup_env_parse_toml,1996,1906,2270,10000
+2026-11-06,1.5.3,render_prompt (default cwd+vcs+exit),11162,11119,11275,25000

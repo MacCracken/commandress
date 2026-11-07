@@ -6,6 +6,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-11-06
+
+cmdit moves to 1.5.1, which closes the two items this repo filed against it. A good flag after a bad one now counts
+(audit D-05), and a C1 control in a bad flag no longer reaches stderr (D-06). The toolchain is unchanged, and a command
+line with no bad flag renders what it did.
+
+### Changed
+
+- **cmdit `1.5.0` → `1.5.1`**, the newest tag, pinned to 6.7.18 as 1.5.0 was. Its third fix, completion scripts for
+  tools with no verbs, does not reach this binary.
+- **A good flag after a bad one counts.** `cmdrs --bogus --side=right` rendered the left prompt, because the parse
+  stopped at `--bogus`. `cli_register` now calls `cmdit_continue_on_error`, so it renders the right one. The parse is
+  still an error, stderr still names the first bad token, and the exit code is still 0. cmdit makes this opt-in, so the
+  pin alone does not change it.
+  - The last good `--side` wins, so `--side=right --bogus --side=left` now renders the left prompt.
+  - `--side --side=right` still renders the left prompt. The first `--side` takes the next token as its value and
+    rejects it.
+  - ADR 0007 promises nothing about bad flags, and neither adapter passes one, so this is not a breaking change.
+- The roadmap's two cmdit rows are closed, and the audit's D-05 and D-06 are annotated.
+
+### Security
+
+- **A C1 control in a bad flag no longer reaches stderr.** `cmdrs $'--\xc2\x9b31m'` wrote U+009B, which is CSI in one
+  character. It now shows as one `?`, and a real name keeps its bytes, although `ě` ends in the same `9B`. Both adapters
+  pass a fixed argv, so this was never reachable through them. No change here beyond the pin.
+
+### Performance
+
+| | 1.5.2 | 1.5.3 | Delta |
+|---|---|---|---|
+| Cold start, no config | 203.9 µs | 204.9 µs | flat |
+| Cold start, `--side=right` | 202.9 µs | 203.8 µs | flat |
+| `cli_parse` | 880 ns | 942 ns | +62 ns |
+| `render_prompt` | 11.60 µs | 11.25 µs | flat |
+| Binary, x86_64 | 216,616 B | 221,096 B | +4,480 B (+2.1 %) |
+| Binary, `--agnos` | 212,336 B | 216,808 B | +4,472 B (+2.1 %) |
+
+Medians of 4,000 interleaved pairs, and lowest mins of 5 alternating bench runs at equal path depth. Absolute figures
+are not comparable with earlier entries. All of the size growth is the pin: the x86_64 binary is 221,096 B with or
+without the `cmdit_continue_on_error` call.
+
+`vcs_render` in `history.csv` reads 65.6 µs, from 8.4 µs at 1.5.2. This release did not cause that: a fresh clone of
+1.5.2 reads 67.0 µs on the same day. The bench's first batch now waits out the 5 ms budget, because `sit status` takes
+350 ms on this repo and 0.76 ms on a one-file repo.
+
+### Tests
+
+- 987 assertions across 292 tests, from 976 across 288. Three of them fail without the `cmdit_continue_on_error` call.
+- `scripts/smoke.sh` now checks both fixes on the shipped binary, and the 1.5.2 binary fails it.
+- Differential 1.5.2 → 1.5.3 over 12,720 argv of up to three tokens: 11,194 are identical, 1,001 differ on stderr only,
+  each by the C1 filter alone, and 525 change side, each because a `--side` after a bad token is now read. No exit code
+  changed. A separate model of the parser matches both binaries on every case.
+- `scripts/adapter-check.sh` passes its 111 checks on both real shells. The `--agnos` build was not booted.
+
 ## [1.5.2] - 2026-11-06
 
 `sit` 1.13.1 or later is now what this repo asks for: it refuses a symlink out of a repository, which closes the gap

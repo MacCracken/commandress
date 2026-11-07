@@ -1,5 +1,5 @@
 commit	965298dfaa16587ac1835e1ced8482184bd864a6	bayan	https://github.com/MacCracken/bayan.git	1.11.1
-commit	7671a28c2c7979faf354293b134d3839e664a887	cmdit	https://github.com/MacCracken/cmdit.git	1.5.0
+commit	efffc544d4b3f740194feb2d33563eb0029f6fbd	cmdit	https://github.com/MacCracken/cmdit.git	1.5.1
 commit	7a07d580d47d5b1530c4a69c3eaf56ac19646355	darshana	https://github.com/MacCracken/darshana.git	1.6.0
 commit	11a09cde25ebbef5c40a9a0526000f73fd70a775	darshini	https://github.com/MacCracken/darshini.git	1.8.3
 346716377b00f36e58eb16cf7fe1dd62dd8fe577930d0d0429f822795b35817c  lib/alloc.cyr
@@ -28,7 +28,7 @@ b99081e633d572569ee63c6a915fe4aa39b3ac4ff5665c08cc4c9416ed2f6928  lib/boxed.cyr
 09c4d27912d9cd18e36a0e24b6d5d1771aecd8b57661813d3886844494e2c2be  lib/callback.cyr
 ff0606ebe3bcfee797c411cc58490875e1861bd4530edea926051f63506362b8  lib/cffi.cyr
 2e2e802085112d781225c517fca853b4adbf29850a96b21b6ff32469f0736516  lib/chrono.cyr
-bedb98f2ba4d36d381b66753b1d3dfd533250b677a920c7558d92d979d7b976e  lib/cmdit.cyr
+900a8c421c03b757710d15d05a587f99bb328629b118fefe074423756067a4f4  lib/cmdit.cyr
 096eabc580c807f3e378fbe56058780a28cdf95b9c70b44672bca0a71cf969f6  lib/ct.cyr
 24ce2e947937c69d3d0eb38bd7d3c624ce020894ad313d90c5694f7aa62ce2c1  lib/darshana.cyr
 9f569f8ae14b4ae812467065f45afbe37c5ee41d61321cc99be7110865d3adf8  lib/darshini_tz.cyr

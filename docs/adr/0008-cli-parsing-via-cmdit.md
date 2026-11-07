@@ -68,6 +68,9 @@ Two behavioural decisions inside that adoption:
 
 1. **A parse error degrades to the left prompt; it does not exit non-zero.**
    `cmdit_print_error` writes the diagnosis to stderr, and rendering continues.
+   > **Update 2026-11-06** (annotation, not a revision): a `--side` parsed before a bad flag has counted since the
+   > A-07 fix, and since 1.5.3 one after it counts too, through `cmdit_continue_on_error`. With no good `--side`, the
+   > prompt is still the left one.
 2. **The version literal lives in `src/cli.cyr`, guarded by a test.** The CLI
    policy moved out of `main.cyr` into its own module so it can be tested through
    cmdit's pure `cmdit_parse_argv` core with synthetic argv.

@@ -20,7 +20,7 @@
 # reads VERSION and asserts equality, so a forgotten bump fails the suite
 # instead of shipping a `--version` that lies. A fn (not a `var`) so it costs
 # no initialized-globals slot.
-fn cmdrs_version(): i64 { return "1.5.2"; }
+fn cmdrs_version(): i64 { return "1.5.3"; }
 
 # Register commandress's flag table on a fresh handle from `cmdit_new`, which
 # has already registered --help/-h and --version/-V. Returns the `--side` flag
@@ -31,8 +31,15 @@ fn cmdrs_version(): i64 { return "1.5.2"; }
 # hand-rolled walk silently treated every non-`right` value as left. The
 # 0/1 index cmdit_get_enum returns for "left"|"right" is the same convention
 # `render_prompt`'s `side` parameter already used, so nothing downstream moved.
+#
+# Continue-on-error is on because a prompt has to act on what it understood, so a bad
+# token must not hide a good flag after it. It lives here and not in `main` so the suite
+# runs the same table. The parse still returns CMDIT_RESULT_ERR and `cmdit_print_error`
+# still names the first bad token. `cmdit_continue_on_error` fails only on a 0 handle,
+# which the line above has ruled out.
 fn cli_register(cli): i64 {
     if (cli == 0) { return 0 - 1; }
+    cmdit_continue_on_error(cli, 1);
     return cmdit_enum(cli, 0, "side", "left", "left|right",
       "which prompt side to render");
 }
@@ -56,11 +63,12 @@ fn cli_register(cli): i64 {
 # `/tmp  L ` instead.
 #
 # cmdit stores each flag's value as it parses, so a `--side` that parsed fine
-# before an unrelated flag failed is still there to read. The degrade contract
+# on either side of an unrelated bad flag is still there to read. The degrade contract
 # is "never exit non-zero and never blank the prompt" — it was never "throw away
-# input we successfully understood". The parse stops at the first bad token, though,
-# so `--bogus --side=right` still renders the left prompt. No adapter can produce that
-# order, and the fix belongs in cmdit (audit 2026-11-06, D-05).
+# input we successfully understood". The parse runs past a bad token, so since 1.5.3
+# `--bogus --side=right` renders the right prompt too (audit 2026-11-06, D-05). One
+# shape still does not: in `--side --side=right` the first `--side` takes the second as
+# its value and rejects it, because a registered flag keeps its grammar.
 #
 # CMDIT_HELP / CMDIT_VERSION never reach here
 # (main returns first), so CMDIT_OK and CMDIT_RESULT_ERR are the live cases and

@@ -5,7 +5,9 @@
 
 ## Version
 
-**1.5.2** — 2026-11-06. **`sit` 1.13.1 or later**: the release that refuses a symlink out of a repository, checked through `cmdrs` on `sit` 1.13.2. No code change beyond the version. The `which()` gap and the two cmdit items are now filed in their own repos.
+**1.5.3** — 2026-11-06. **cmdit 1.5.1**: closes audit D-05 and D-06. A good flag after a bad one counts, through `cmdit_continue_on_error`, and a C1 control in a bad flag no longer reaches stderr.
+
+**1.5.2** — 2026-11-06. Prior: **`sit` 1.13.1 or later**: the release that refuses a symlink out of a repository, checked through `cmdrs` on `sit` 1.13.2. No code change beyond the version. The `which()` gap and the two cmdit items are now filed in their own repos.
 
 **1.5.1** — 2026-11-06. Prior: **Local time**: `time` shows local time, chosen as `date` chooses it, through darshini's `src/tz.cyr`, pinned at 1.8.3. `utc = true` keeps UTC ([ADR 0016](../adr/0016-local-time-through-darshini.md)).
 
@@ -36,7 +38,7 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 | Module | Status |
 |---|---|
 | `src/main.cyr` | **M1 + cmdit (1.1.5)** — builds the cmdit handle, handles `--help` / `--version`, loads config, builds Context, dispatches to `render_prompt(cfg, ctx, side)`. No longer calls `args_init()` (cmdit_argv does, and it is not idempotent — 2 MB per call) |
-| `src/cli.cyr` | **1.1.5** — the CLI surface, extracted from `main.cyr` so it is testable (`main.cyr` ends in a bare `_agnos_entry();` and cannot be included). `cmdrs_version()` (the compiled-in version literal, asserted against the `VERSION` file by the suite), `cli_register(cli)` (registers `--side` as a `cmdit_enum` over `left\|right`), `cli_side_for(cli, f, pr)` (the degrade policy: any non-clean parse → left prompt, never a non-zero exit). Per [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md) |
+| `src/cli.cyr` | **1.1.5 + continue-on-error (1.5.3)** — the CLI surface, extracted from `main.cyr` so it is testable (`main.cyr` ends in a bare `_agnos_entry();` and cannot be included). `cmdrs_version()` (the compiled-in version literal, asserted against the `VERSION` file by the suite), `cli_register(cli)` (registers `--side` as a `cmdit_enum` over `left\|right`, and turns on `cmdit_continue_on_error`), `cli_side_for(cli, f, pr)` (the degrade policy: a bad flag never exits non-zero, and a good `--side` on either side of it counts). Per [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md) |
 | `src/config.cyr` | **M1 + M3 (0.4.0) + M5 (0.6.0–0.6.1) + bayan (1.1.9)** — CYML loader for `~/.commandress` (renamed from `~/.commandress.cyml` per ADR 0006). Schema: `[[prompt]]` (segments, right_segments, separator, trailer, separator_style, separator_glyph, right_separator_glyph) + `[[segments.cwd]]` (home_shorten, max_length, fg/bg/style) + `[[segments.exit]]` (hide_zero, fg/bg/style) + `[[segments.vcs]]` (show_dirty, dirty_marker, fg/bg/style) + `[[segments.time]]` (format, fg/bg/style) + `[[segments.{hostname,user,cyrius_env,python_env,node_env,rustup_env}]]` (fg/bg/style only) + optional `[[palette]]` (named-slot table referenced via `fg = "palette:<name>"`). Per-segment storage: pre-baked SGR cstring + raw bg cstring (the latter only used by powerline transitions). Defaults baked in (including opinionated default theme); partial-override-safe; missing file → defaults; unknown fields warn to stderr. `CFG_SIZE` 272 B. **1.1.9**: parsed by bayan's sublibs per [ADR 0009](../adr/0009-config-parsing-via-bayan.md). `_section_pairs` keeps "first populated section wins", `_load_palette` keeps dotted palette names resolvable, and `_warn_nested_keys` keeps unknown dotted fields warning. Multi-palette (1.3.1): `_load_palette` lays the selected `[[palettes.<name>]]` over `[[palette]]` |
 | `src/context.cyr` | **M1 (0.2.0)** — `{ home, last_exit }` per-invocation context handed to every segment dispatcher. `thp_opt_out()` (1.2.3) runs first in `main` |
 | `src/render.cyr` | **M1 + M3 (0.4.0) + M4 (0.5.0) + M5 (0.6.0–0.6.1) + `cap_output` (1.5.0)** — table-driven registry (name → dispatcher fn ptr). Each dispatcher caps its segment's output to its `max_length` (ADR 0015). `render_prompt(cfg, ctx, side)` paints either `cfg.segments` (side=0) or `cfg.right_segments` (side=1); left side appends `cfg.trailer`, right side skips it. Each painted segment wraps in its pre-computed SGR opener + `\x1b[0m` reset; emits raw when SGR is 0. **Plain mode** (default): segments joined by `cfg.separator`. **Powerline mode** (`cfg.separator_style == 1`): adjacent segments separated by `<fg=prev_bg; bg=next_bg>` SGR + glyph + reset; trailing transition (`fg=last_bg; bg=default`) closes the chain when last segment has a bg. `_sgr_for(cfg, name)` and `_bg_for(cfg, name)` mirror `_seg_fn_for` for SGR / raw-bg resolution. Unknown segments warn to stderr (name sanitized since 1.1.6 — audit P-02). **1.1.6**: every stdout write goes through `_emit`, which loops on partial writes and retries EINTR (audit P-03) |
@@ -60,7 +62,8 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 ## Binary
 
 - `cmdrs` (output in `build/cmdrs` after `cyrius build`)
-- Size: **216,616 B** on Cyrius 6.7.18, x86_64, up from 198,872 B at 1.5.0 by **+17,744 B (+8.9 %)**: darshini's zone code.
+- Size: **221,096 B** on Cyrius 6.7.18, x86_64, up from 216,616 B at 1.5.2 by **+4,480 B (+2.1 %)**: cmdit 1.5.1, all of it the pin.
+- Prior: **216,616 B** on Cyrius 6.7.18, x86_64, up from 198,872 B at 1.5.0 by **+17,744 B (+8.9 %)**: darshini's zone code.
 - Prior: **198,872 B** on Cyrius 6.7.18, x86_64, up from 186,424 B at 1.4.1 by **+12,448 B (+6.7 %)**: the pin reader, the range rule, `cap_output` and nine config fields, plus page rounding.
 - Prior: **186,424 B** on Cyrius 6.7.18, x86_64, up from 182,120 B at 1.4.0 by **+4,304 B (+2.4 %)**: `src/probe.cyr`, its call sites and the config fields.
 - Prior: **182,120 B** on Cyrius 6.7.18, x86_64, up from 162,168 B at 1.3.1 by **+19,952 B (+12.3 %)**: bayan's flat JSON parser and its helpers. Measured against the alternatives in ADR 0013.
@@ -73,45 +76,45 @@ Structured shell prompt renderer for [agnoshi](https://github.com/MacCracken/agn
 - Prior: **287,672 B** on Cyrius 6.6.20 at 1.1.9, x86_64 (text 279,896 B; bss 3,600 B), up from 211,784 B at 1.1.8 by **+75,888 B (+35.8 %)**. Of that, +43,056 B is the toolchain and stdlib (+39,202 B unreachable) and +32,832 B is bayan (+20,544 B live). Live code under `CYRIUS_DCE=1`: 132,024 B, up from 105,288 B. `--agnos`: **287,848 B** (text 280,125 B; bss 3,880 B), up from 207,608 B.
 - Prior: **211,768 B** on Cyrius 6.5.35 at 1.1.5, x86_64 (text 205,540 B; bss 2,848 B). Up from 168,264 B by **+43,504 B (+25.9 %)** at the 1.1.5 cmdit adoption — the cost of the dependency, accepted with the cost measured ([ADR 0008](../adr/0008-cli-parsing-via-cmdit.md)). `--agnos`: **203,464 B** (text 199,939 B; bss 2,800 B).
 - Prior: **168,264 B** (text 162,839 B; bss 2,544 B) at 1.1.4, up from 147,600 B by **+20,664 B (+14.0 %)** — attributable to the **vendored stdlib snapshot, not codegen**: the local wrapper was already `cycc 6.5.35` before the bump (that was the drift), so the pre-bump baseline built the same `src/` with the same compiler against the old `lib/` and measured 147,600 B (text 143,049 B; bss 2,464 B). Roughly half the growth is unreached code — the build's dead-code note moves from `318 unreachable fns (58,189 B)` to `384 unreachable fns (69,382 B)`, all eliminable with `CYRIUS_DCE=1`. Net win vs the 0.3.0 baseline (395,115 B) is still **−226,851 B**.
-- `--agnos` cross-build stays clean, and **boots**: verified on kernel 1.57.17 with agnsh 2.2.0 (**212,336 B** at 1.5.1; 195,088 B at 1.5.0; 186,752 B at 1.4.1; 174,248 B at 1.4.0; 154,288 B at 1.3.1; 150,144 B at 1.3.0; 150,128 B at 1.2.3; 145,928 B at 1.2.2 with DCE; 317,808 B at 1.2.1; 309,384 B at 1.2.0; 287,848 B at 1.1.9; 203,464 B at 1.1.5; 164,056 B at 1.1.4). Clean since the 1.1.4 `cache.cyr` fix; Cyrius 6.5.1 made the `sys_stat` arity mismatch a hard error.
+- `--agnos` cross-build stays clean, and **boots**: verified on kernel 1.57.17 with agnsh 2.2.0 (**216,808 B** at 1.5.3, built and not booted; 212,336 B at 1.5.1; 195,088 B at 1.5.0; 186,752 B at 1.4.1; 174,248 B at 1.4.0; 154,288 B at 1.3.1; 150,144 B at 1.3.0; 150,128 B at 1.2.3; 145,928 B at 1.2.2 with DCE; 317,808 B at 1.2.1; 309,384 B at 1.2.0; 287,848 B at 1.1.9; 203,464 B at 1.1.5; 164,056 B at 1.1.4). Clean since the 1.1.4 `cache.cyr` fix; Cyrius 6.5.1 made the `sys_stat` arity mismatch a hard error.
 - Historical: **147,600 B** on 6.4.66 was the 1.1.3 figure (text 141,329 B; bss 2,464 B), itself down from 210,144 B on 6.2.24. **202,561 B** on Cyrius 5.11.64 (text 143,265 B; bss 59,296 B) was the v1.0.x figure — 200,667 B at the 0.7.0 baseline + **1,894 B** for the M8 audit fixes (F-1 sanitization helper, F-3 cache-dir mode-verify, F-4 O_NOFOLLOW, F-5 atomic temp+rename, F-7 parse_last_exit, F-8 absolute-only PATH walker).
 
 ## Benchmarks
 
-Captured 2026-11-06 at 1.5.1 on the dev host (Linux 7.2.14-arch1-1, x86_64). The bench harness subtracts a measured timer floor (~1.408 µs per clock read) from every sample. Since 6.6.x it prints the mean as `min` and `max` when a row cannot resolve them, which is why `vcs_render` reads `min=max` below:
+Captured 2026-11-06 at 1.5.3 on the dev host (Linux 7.2.14-arch1-1, x86_64). The bench harness subtracts a measured timer floor (~1.408 µs per clock read) from every sample. Since 6.6.x it prints the mean as `min` and `max` when a row cannot resolve them, which is why `pin_word` reads `min=max` below. `vcs_render` includes one cold batch here: see *In-flight work*.
 
 | Operation | Avg | Min | Max |
 |---|---|---|---|
-| **`cli_parse` (cmdit `--side`)** | **1.033 µs** | **954 ns** | **1.213 µs** |
-| `cwd_render` | 730 ns | 715 ns | 782 ns |
-| `exit_render(nonzero)` | 38 ns | 36 ns | 47 ns |
-| `config_default` | 3.075 µs | 3.008 µs | 3.182 µs |
-| **`config_load` (largest theme)** | **66.800 µs** | **65.718 µs** | **67.541 µs** |
-| `vcs_parse_render` (pure parser) | 204 ns | 202 ns | 210 ns |
-| **`vcs_render` (cached, 1s TTL)** | **9.070 µs** | **9.070 µs** | **9.070 µs** |
-| `cyrius_env_parse_version` (pure parser) | 79 ns | 77 ns | 85 ns |
-| `cyrius_env_render` (file path, no shellout) | 7.094 µs | 6.974 µs | 7.241 µs |
-| `python_env_basename` (pure parser) | 105 ns | 103 ns | 110 ns |
-| `python_env_render` (empty walk) | 9.901 µs | 9.791 µs | 10.095 µs |
-| `node_env_render` (empty walk) | 8.930 µs | 8.870 µs | 9.175 µs |
-| `node_env_parse_package` (pure parser) | 8.610 µs | 8.503 µs | 9.003 µs |
-| `time_render` (local, zone read each call) | 23.213 µs | 22.768 µs | 25.232 µs |
-| `time_render` (`utc = true`) | 1.789 µs | 1.789 µs | 1.789 µs |
-| `pin_word` | 585 ns | 585 ns | 585 ns |
-| `cap_output` (8 KB to 128) | 2.712 µs | 2.645 µs | 2.958 µs |
-| `probe_run` (cached) | 5.752 µs | 5.666 µs | 6.764 µs |
-| `rustup_env_render` (empty walk) | 8.729 µs | 8.620 µs | 9.045 µs |
-| `rustup_env_parse_toml` (pure parser) | 2.025 µs | 1.939 µs | 2.448 µs |
-| `render_prompt (default cwd+vcs+exit)` | 11.274 µs | 10.637 µs | 11.415 µs |
+| **`cli_parse` (cmdit `--side`)** | **1.000 µs** | **959 ns** | **1.073 µs** |
+| `cwd_render` | 735 ns | 721 ns | 797 ns |
+| `exit_render(nonzero)` | 37 ns | 36 ns | 43 ns |
+| `config_default` | 3.113 µs | 3.046 µs | 3.186 µs |
+| **`config_load` (largest theme)** | **67.982 µs** | **67.319 µs** | **69.186 µs** |
+| `vcs_parse_render` (pure parser) | 187 ns | 184 ns | 205 ns |
+| **`vcs_render` (cached, 1s TTL)** | **65.611 µs** | **7.741 µs** | **1.142 ms** |
+| `cyrius_env_parse_version` (pure parser) | 75 ns | 73 ns | 91 ns |
+| `cyrius_env_render` (file path, no shellout) | 7.023 µs | 6.882 µs | 7.522 µs |
+| `python_env_basename` (pure parser) | 99 ns | 97 ns | 106 ns |
+| `python_env_render` (empty walk) | 10.023 µs | 9.876 µs | 10.875 µs |
+| `node_env_render` (empty walk) | 8.729 µs | 8.594 µs | 8.958 µs |
+| `node_env_parse_package` (pure parser) | 8.458 µs | 8.331 µs | 8.747 µs |
+| `time_render` (local, zone read each call) | 22.715 µs | 22.076 µs | 23.913 µs |
+| `time_render` (`utc = true`) | 1.797 µs | 1.797 µs | 1.797 µs |
+| `pin_word` | 577 ns | 577 ns | 577 ns |
+| `cap_output` (8 KB to 128) | 2.654 µs | 2.591 µs | 2.874 µs |
+| `probe_run` (cached) | 5.637 µs | 5.550 µs | 6.165 µs |
+| `rustup_env_render` (empty walk) | 8.489 µs | 8.405 µs | 8.739 µs |
+| `rustup_env_parse_toml` (pure parser) | 1.996 µs | 1.906 µs | 2.270 µs |
+| `render_prompt (default cwd+vcs+exit)` | 11.162 µs | 11.119 µs | 11.275 µs |
 
 **Real cold start** on this host, THP `always`: **289 µs** with no config, **502 µs** with the largest theme, and **323 µs** with `time` reading a zone, against the 5 ms budget, which `scripts/smoke.sh` enforces. Budget: 5 ms cold start total ([`architecture/001-prompt-render-budget.md`](../architecture/001-prompt-render-budget.md)). **M6 headline**: `vcs_render` **4.6 ms → ~9 µs avg** with the 1 s TTL cache (on harnesses that resolve it, the `max` is the one cold call that warms the entry; the remaining reads in the bench are the average). `render_prompt (default cwd+vcs+exit)` is **11.092 µs** at 1.2.2, with repeat runs from 11.07 to 12.04 µs — even with vcs in the default set, the cold-start budget is **0.2 % consumed**, and the 1.1.4 stdlib refresh moved it by ~0.3 µs (10.553 µs → 10.851 µs), i.e. noise. **1.1.5 note**: `cli_parse` is the cmdit adoption's measured cost — the hand-rolled walk it replaced benched **56 ns**, so this is a ~212× regression in isolation, ~98 % of it `cmdit_new` zeroing a 64-entry flag table for one flag. It sits **outside `render_prompt`** (which takes `side` as a parameter), so the gate below is unaffected, and against the ~940 µs the binary really spends per invocation an interleaved A/B of the 1.1.4 and 1.1.5 binaries measured **−15 / +1 / +11 µs** — below the noise floor. Accepted knowingly; see [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md). **Resolved at 1.2.0**: cmdit 1.3.0 zeroes that table a word at a time, taking `cli_parse` from 11.20 µs to 0.99 µs. The bench-gate CI step is wired to fail above 5 ms; comfortable headroom. Per-release numbers append to [`benchmarks/history.csv`](../benchmarks/history.csv) for trend visibility — note that `bench-history.sh` silently recorded nothing between 0.9.0 and 1.1.4 (decimal-average rows failed its skip-filter; fixed in 1.1.4), so the CSV has no rows for the releases in that span.
 
 ## Tests
 
-- `tests/commandress.tcyr` — **976 assertions across 288 tests**, including `render_prompt` byte for byte since 1.3.0: full M1–M7 coverage + the 1.1.9 config-parsing group (12 tests / 23 assertions: the forks' defects, plus the rules `src/config.cyr` keeps across the bayan swap) + the 1.1.5 CLI group (10 tests / 16 assertions over `src/cli.cyr`, driven through cmdit's pure `cmdit_parse_argv` core with synthetic argv — side mapping, the space-separated form, both degrade paths, help/version short-circuits, and a version-drift guard asserting `cmdrs_version()` equals the `VERSION` file) + M8 audit-fix additions for `sanitize_segment_output` (8 cases — F-1), cache hardening (2 cases — F-3/F-4/F-5: mode-0o600 stat-verify, symlink-swap refuses), `parse_last_exit` (6 cases — F-7), and `find_in_path_with` (3 cases — F-8 relative-rejected / dot-rejected / absolute-resolves-including-mixed). `cyrius test` green.
+- `tests/commandress.tcyr` — **987 assertions across 292 tests**, including `render_prompt` byte for byte since 1.3.0: full M1–M7 coverage + the 1.1.9 config-parsing group (12 tests / 23 assertions: the forks' defects, plus the rules `src/config.cyr` keeps across the bayan swap) + the 1.1.5 CLI group (10 tests / 16 assertions over `src/cli.cyr`, driven through cmdit's pure `cmdit_parse_argv` core with synthetic argv — side mapping, the space-separated form, both degrade paths, help/version short-circuits, and a version-drift guard asserting `cmdrs_version()` equals the `VERSION` file) + M8 audit-fix additions for `sanitize_segment_output` (8 cases — F-1), cache hardening (2 cases — F-3/F-4/F-5: mode-0o600 stat-verify, symlink-swap refuses), `parse_last_exit` (6 cases — F-7), and `find_in_path_with` (3 cases — F-8 relative-rejected / dot-rejected / absolute-resolves-including-mixed). `cyrius test` green.
 - `tests/commandress.bcyr` — per-segment + config + parser + full-prompt timings (above).
 - `tests/commandress.fcyr` — fuzz stub (no harness yet).
-- `scripts/smoke.sh` — runs the shipped binary on hostile input and takes a real cold start (1.2.3).
+- `scripts/smoke.sh` — runs the shipped binary on hostile input and takes a real cold start (1.2.3). Checks D-05 and D-06 since 1.5.3.
 - `scripts/adapter-check.sh` — proves both adapters on real zsh and bash, 111 checks (1.2.3).
 - `scripts/lock-check.sh` — regenerates `lib/` and the lock from the pins in a throwaway worktree of HEAD (1.2.3).
 
@@ -120,7 +123,7 @@ Captured 2026-11-06 at 1.5.1 on the dev host (Linux 7.2.14-arch1-1, x86_64). The
 Direct (declared in `cyrius.cyml`):
 
 - stdlib — `string`, `fmt`, `alloc`, `io`, `vec`, `str`, `syscalls`, `assert`, `args`, `bench`, `chrono`, `fnptr`, `process`, `pwd`, `tagged`, `result`, `hashseed`, `atomic`, `math`, `slice`. `args` + `bench` were declared at 1.1.5, the next five at 1.1.7, `result` at 1.1.9 and `hashseed` at 1.2.1: all were already compiled in via includes, and an undeclared module is one `cyrius deps` never refreshes.
-- **cmdit** `1.5.0` — first-party AGNOS CLI / argument-parsing distlib, `[deps.cmdit] modules = ["dist/cmdit.cyr"]`, pinned by git tag (`path = "../cmdit"` stays commented out; since cyrius 6.7.6 only `CYRIUS_LOCAL=1` uses it). commandress's **first non-stdlib dependency**, adopted at 1.1.5 per [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md). Compiled in; the binary stays static, and no runtime dependency is added.
+- **cmdit** `1.5.1` — first-party AGNOS CLI / argument-parsing distlib, `[deps.cmdit] modules = ["dist/cmdit.cyr"]`, pinned by git tag (`path = "../cmdit"` stays commented out; since cyrius 6.7.6 only `CYRIUS_LOCAL=1` uses it). commandress's **first non-stdlib dependency**, adopted at 1.1.5 per [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md). Compiled in; the binary stays static, and no runtime dependency is added.
 - **darshini** `1.8.3` — first-party AGNOS file lister. Only its `src/tz.cyr` is included, `[deps.darshini] modules = ["src/tz.cyr"]`, pinned by git tag, for local time (ADR 0016). That file's header states it as a contract. `cyrius deps` also vendors darshini's own dep, `lib/darshana.cyr`, which nothing includes.
 - **bayan** `1.11.1` — first-party AGNOS data-format library, `[deps.bayan] modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr", "dist/bayan-json.cyr"]`, pinned by git tag per [ADR 0009](../adr/0009-config-parsing-via-bayan.md). The sublibs, not the bundle in the snapshot. 1.11.1 is the newest tag and the one the 6.7.18 snapshot bundles; its own pin is 6.7.16. The tag moves with the toolchain.
 
@@ -146,6 +149,7 @@ External (non-AGNOS, third-party): none, and none planned. The 1.1.5 cmdit adopt
   - **Cyrius Item 3 (single-bracket TOML) — CLOSED.** Re-tested 2026-08-26 against the 6.5.35 stdlib: `toml_get_sections` finds a single-bracket `[toolchain]`, and the config loader reads `[prompt]` end to end (pinned by `test_config_accepts_single_bracket_sections`). This had been carried as a blocker in two source files and the roadmap; `rust-toolchain.toml` is now scheduled work, not blocked work.
   - **Cyrius Item 8 (no stdlib `which()`) — still open.** Re-checked 2026-11-06 against 6.7.18: no public stdlib fn resolves a bare name against `$PATH`. `src/pathlookup.cyr` remains correct and shipping.
   - **Cyrius Item 4 (LSP transitive-include false positives on `src/render.cyr`) — still open.** The editor reports undefined `SGR_RESET` / `sgr_open_for` / `bayan_toml_*` when analysing the file standalone; the build is clean. Noise, not a defect.
+- **`vcs` renders empty on this repo at the default budget.** Measured 2026-11-06 on `sit` 1.13.3: `sit status` takes 350 ms here, clean or dirty, and 0.76 ms on a one-file repo, against the 5 ms budget. `budget_ms = 1000` shows `main*`. 1.5.2 behaves the same, and this is why `vcs_render` reads 65.6 µs at 1.5.3 against 8.4 µs at 1.5.2.
 - **`cyrius deps --locked` still exits 0 on a stale pin**, printing a `note:`. `scripts/lock-check.sh` catches it by regenerating, so this repo does not depend on it. Pinned upstream on the roadmap.
 - **Single-bracket `[section]` config** is supported and documented in the getting-started guide. `[[section]]` stays canonical, because every theme and example uses it. The suite pins both.
 - **Real GitHub CI has not run the 1.2.3 workflows.** They were rehearsed in a fresh clone. `smoke.sh`'s 5 ms threshold is unvalidated on a runner.
