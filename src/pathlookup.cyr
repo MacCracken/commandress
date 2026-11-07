@@ -6,7 +6,8 @@
 #
 # Why this lives outside the stdlib: Linux `execve(2)` does NOT do PATH
 # lookup — that's a libc-`execvp` thing — and no stdlib helper exposes
-# the equivalent today (Cyrius papercut Item 8, deferred to v6.x). Lifted
+# the equivalent today. Filed as cyrius
+# `docs/development/proposals/2026-11-06-path-which.md`. Lifted
 # out of `src/segments/vcs.cyr` in M4 (v0.5.0) so the new shellout-backed
 # language-env probes (python_env, rustup_env) share one implementation
 # instead of each copy-pasting the loop.

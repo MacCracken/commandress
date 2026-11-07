@@ -63,7 +63,7 @@ scripts whose header comments carry rationale.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-11-06 | ✅ Fresh | Status line, layout tree, roadmap pointers. |
-| `CHANGELOG.md` | 2026-11-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.5.1. |
+| `CHANGELOG.md` | 2026-11-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.5.2. |
 | `CLAUDE.md` | 2026-08-26 | 🔵 Evergreen | Process + rules. |
 | `adapters/README.md` | 2026-11-06 | ✅ Fresh | Security section rewritten around the reference rule (ADR 0011). |
 
@@ -71,7 +71,7 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `state.md` | 2026-11-06 | ✅ Fresh | **Rotates every release.** Through 1.5.1. |
+| `state.md` | 2026-11-06 | ✅ Fresh | **Rotates every release.** Through 1.5.2. |
 | `roadmap.md` | 2026-11-06 | ✅ Fresh | The 1.2.3, 1.3.x, 1.4.x and 1.5.x slots moved to the CHANGELOG. New item at 1.x.x, pinned to ADR 0015. |
 
 ### `docs/adr/` — 16 records
@@ -82,7 +82,7 @@ scripts whose header comments carry rationale.
 | `0001-separate-repo-from-agnoshi.md` | 2026-05-15 | 🔵 Evergreen | Accepted; stands. |
 | `0002-segment-rendering-model.md` | 2026-05-17 | 🟢 Current | Accepted. Still describes the shipped model. |
 | `0003-config-format.md` | 2026-05-17 | 🟢 Current | Accepted. |
-| `0004-vcs-probe-via-sit.md` | 2026-05-17 | 🟢 Current | Accepted. |
+| `0004-vcs-probe-via-sit.md` | 2026-11-06 | ✅ Fresh | Accepted. Annotated at 1.5.2 with the `sit` version this repo asks for. |
 | `0005-language-env-probe-pattern.md` | 2026-11-06 | ✅ Fresh | Accepted. Annotated at 1.2.2, 1.4.0, 1.4.1 and 1.5.0. |
 | `0006-config-path-rename.md` | 2026-05-18 | 🟢 Current | Accepted. |
 | `0007-schema-freeze.md` | 2026-11-06 | ✅ Fresh | Accepted, and load-bearing. Annotated at 1.2.2, 1.3.0, 1.3.1, 1.4.1, 1.5.0 and 1.5.1, as what it reserved shipped. |
@@ -93,7 +93,7 @@ scripts whose header comments carry rationale.
 | `0012-cache-bounded-by-construction.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.2.3. Replaces the planned eviction. Re-checked at 1.4.1. |
 | `0013-package-json-via-flat-bayan-json.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.4.0, with the measurements for all three candidates. |
 | `0014-version-probes-never-see-the-repo.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.4.1. Why the roadmap's plan could not be built as written. |
-| `0015-pins-keep-their-name-and-shape.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.5.0. Why the audit's shape rule could not close T-05 alone. |
+| `0015-pins-keep-their-name-and-shape.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.5.0. Why the audit's shape rule could not close T-05 alone. Annotated at 1.5.2. |
 | `0016-local-time-through-darshini.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.5.1. Why the clock is local by default, and why the zone code is pinned, not written here. |
 | `template.md` | 2026-05-15 | 🔵 Evergreen | Refresh only if the ADR shape changes. |
 

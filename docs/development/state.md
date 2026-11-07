@@ -5,7 +5,9 @@
 
 ## Version
 
-**1.5.1** — 2026-11-06. **Local time**: `time` shows local time, chosen as `date` chooses it, through darshini's `src/tz.cyr`, pinned at 1.8.3. `utc = true` keeps UTC ([ADR 0016](../adr/0016-local-time-through-darshini.md)).
+**1.5.2** — 2026-11-06. **`sit` 1.13.1 or later**: the release that refuses a symlink out of a repository, checked through `cmdrs` on `sit` 1.13.2. No code change beyond the version. The `which()` gap and the two cmdit items are now filed in their own repos.
+
+**1.5.1** — 2026-11-06. Prior: **Local time**: `time` shows local time, chosen as `date` chooses it, through darshini's `src/tz.cyr`, pinned at 1.8.3. `utc = true` keeps UTC ([ADR 0016](../adr/0016-local-time-through-darshini.md)).
 
 **1.5.0** — 2026-11-06. Prior: **Pins and lengths**: a symlinked pin must end at a file of the same name, which closes the audit's T-05 and a route to `/proc/self/environ` it missed. A pin is the first word of its first meaningful line, at most 64 ASCII characters. Every segment takes `max_length`, on by default at 128 bytes on `vcs` and the language segments ([ADR 0015](../adr/0015-pins-keep-their-name-and-shape.md)).
 
@@ -121,6 +123,8 @@ Direct (declared in `cyrius.cyml`):
 - **cmdit** `1.5.0` — first-party AGNOS CLI / argument-parsing distlib, `[deps.cmdit] modules = ["dist/cmdit.cyr"]`, pinned by git tag (`path = "../cmdit"` stays commented out; since cyrius 6.7.6 only `CYRIUS_LOCAL=1` uses it). commandress's **first non-stdlib dependency**, adopted at 1.1.5 per [ADR 0008](../adr/0008-cli-parsing-via-cmdit.md). Compiled in; the binary stays static, and no runtime dependency is added.
 - **darshini** `1.8.3` — first-party AGNOS file lister. Only its `src/tz.cyr` is included, `[deps.darshini] modules = ["src/tz.cyr"]`, pinned by git tag, for local time (ADR 0016). That file's header states it as a contract. `cyrius deps` also vendors darshini's own dep, `lib/darshana.cyr`, which nothing includes.
 - **bayan** `1.11.1` — first-party AGNOS data-format library, `[deps.bayan] modules = ["dist/bayan-toml.cyr", "dist/bayan-cyml.cyr", "dist/bayan-json.cyr"]`, pinned by git tag per [ADR 0009](../adr/0009-config-parsing-via-bayan.md). The sublibs, not the bundle in the snapshot. 1.11.1 is the newest tag and the one the 6.7.18 snapshot bundles; its own pin is 6.7.16. The tag moves with the toolchain.
+
+Not a dep: **`sit`** is a tool on `PATH`, so nothing pins it. 1.13.1 or later is asked for, because it refuses a `.sit`, `.git` or HEAD link out of the repository. Checked on 1.13.2, where `sit status` takes 1.12 ms against the 5 ms `vcs` budget.
 
 The declared `[deps]` surface is stable across releases; the **vendored `lib/` snapshot** is re-synced to the pinned toolchain per refresh (`cyrius lib sync --full`). Last resync: **1.2.1 → the 6.7.18 pin** (66 stdlib files updated, none added or removed). `lib/` is now exactly the snapshot plus `cmdit.cyr`, `bayan-toml.cyr` and `bayan-cyml.cyr`; the ten leftovers no snapshot shipped were removed at 1.1.9. A stale snapshot surfaces at build time as a `./lib/ shadows version-pinned …/lib — N bundled lib(s) differ` warning — the signal to re-sync. Note `cyrius deps` alone does **not** refresh the snapshot; it resolves declared `[deps]` and writes `cyrius.lock`. The order on a pin move matters: see [architecture 003](../architecture/003-cyrius-lock-shape.md).
 

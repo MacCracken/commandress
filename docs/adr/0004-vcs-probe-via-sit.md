@@ -32,6 +32,7 @@ In scope for M2:
 - Per-segment config under `[[segments.vcs]]` — `show_dirty: bool`, `dirty_marker: string`.
 - Registry entry — `vcs → _dispatch_vcs` in `src/render.cyr`.
 - Graceful empty render on non-zero exit (covers: not-a-repo, sit-not-installed, sit-errored).
+  > **Update 2026-11-06** (annotation, not a revision): `sit` is a tool on `PATH`, not a dep, so nothing here pins it. Since 1.5.2 this repo asks for `sit` 1.13.1 or later, the first that refuses a `.sit`, `.git` or HEAD link out of the repository ([ADR 0015](0015-pins-keep-their-name-and-shape.md)). An older `sit` still works, and a repo can then show another repo's branch name.
 
 Out of scope (deferred):
 

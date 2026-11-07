@@ -2,7 +2,7 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.5.1** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.5.2** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
 
 ## What it is
 
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.5.1
+cmdrs 1.5.2
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```
@@ -159,7 +159,7 @@ commandress/
 
 `commandress` sits beside [`agnoshi`](https://github.com/MacCracken/agnoshi) (the shell) — it's a prompt renderer, not a shell. The split mirrors starship-vs-bash: one tool owns the input loop and execution, the other owns the visual prompt. Decoupling means upgrading the prompt's design surface doesn't require a shell release, and the prompt can serve other shells without taking on shell complexity.
 
-VCS state comes from [`sit`](https://github.com/MacCracken/sit) — the AGNOS-native VCS, on the same Cyrius toolchain cadence. See [ADR 0004](docs/adr/0004-vcs-probe-via-sit.md) for the trade.
+VCS state comes from [`sit`](https://github.com/MacCracken/sit) — the AGNOS-native VCS, on the same Cyrius toolchain cadence. See [ADR 0004](docs/adr/0004-vcs-probe-via-sit.md) for the trade. Use `sit` 1.13.1 or later: from that release it refuses a `.sit`, `.git` or HEAD symlink out of the repository, so a hostile repo cannot show another repo's branch in your prompt.
 
 Standards: [first-party-standards.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/first-party-standards.md) · [first-party-documentation.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/first-party-documentation.md)
 

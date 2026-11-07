@@ -6,6 +6,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-06
+
+`sit` 1.13.1 or later is now what this repo asks for: it refuses a symlink out of a repository, which closes the gap
+[ADR 0015](docs/adr/0015-pins-keep-their-name-and-shape.md) left open. `sit` is a tool on `PATH` and not a dep, so nothing
+is pinned, and an older `sit` still works. No code changes beyond the version. The toolchain and dependencies are
+unchanged.
+
+### Security
+
+- **A repo can no longer show another repo's branch name.** `.git -> ../victim/.git`, or a `.sit/HEAD` linked into another
+  repository, is refused by `sit` 1.13.1 and later, so `vcs` renders empty. Replayed through `cmdrs` on `sit` 1.13.2.
+
+### Changed
+
+- The roadmap's gates now point at what was filed: `which()` as a proposal in cyrius, and the two cmdit items as issues in
+  cmdit. The `sit` row is closed.
+
+### Tests
+
+- Through `cmdrs` on the real `sit` 1.13.2, not a stand-in: a clean repo shows `main`, a modified, staged or untracked file
+  shows `main*`, a directory outside a repo shows nothing, and both symlink attacks show nothing, with `sit` refusing them.
+  `sit status` takes 1.12 ms against the 5 ms budget.
+- 976 assertions across 288 tests, unchanged. Differential 1.5.1 → 1.5.2: only `--version` differs.
+
 ## [1.5.1] - 2026-11-06
 
 `time` shows local time, chosen as `date` chooses it: `TZ`, else `/etc/localtime`, else UTC. `utc = true` keeps
