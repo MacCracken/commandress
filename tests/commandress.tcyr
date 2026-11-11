@@ -2057,6 +2057,27 @@ fn test_read_pin_file_a_good_name_is_not_enough(): i64 {
 }
 
 # `~/.commandress` is the user's own, and a dotfile manager may link it from anywhere.
+# How agnos walks a pin's link chain (`_pin_link_end`): each target, beside the link that
+# holds it. The walk itself needs agnos's readlink and is driven by the agnos boot test.
+fn test_pin_link_join(): i64 {
+    _streq_or_dump(pin_link_join("/p/sub/.nvmrc", "/s/.nvmrc", 9), "/s/.nvmrc", "an absolute target");
+    _streq_or_dump(pin_link_join("/p/sub/.nvmrc", "../.nvmrc", 9), "/p/sub/../.nvmrc", "a relative one");
+    _streq_or_dump(pin_link_join("/p/sub/.nvmrc", "link", 4), "/p/sub/link", "a sibling");
+    _streq_or_dump(pin_link_join("/.nvmrc", "x", 1), "/x", "beside a link at the root");
+    _streq_or_dump(pin_link_join("/p/.nvmrc", "../.nvmrcXX", 9), "/p/../.nvmrc", "only `tlen` bytes");
+    assert_eq(pin_link_join("/p/.nvmrc", "", 0), 0, "an empty target");
+    var nul[4];
+    store8(&nul, 97);
+    store8(&nul + 1, 0);
+    store8(&nul + 2, 98);
+    assert_eq(pin_link_join("/p/.nvmrc", &nul, 3), 0, "a target holding a NUL");
+    var big = alloc(PIN_PATH_MAX);
+    memset(big, 97, PIN_PATH_MAX);
+    assert_eq(pin_link_join("/p/.nvmrc", big, PIN_PATH_MAX - 3), 0, "a path past PIN_PATH_MAX");
+    assert_neq(pin_link_join("/p/.nvmrc", big, PIN_PATH_MAX - 4), 0, "and one that fits");
+    return 0;
+}
+
 fn test_read_regular_file_still_follows_any_link(): i64 {
     _pin_tree_new();
     syscall(SYS_SYMLINK, "../secret", "/tmp/cmdrs_pin_tst/sub/link");
@@ -3695,6 +3716,74 @@ fn test_pathlookup_finds_sh(): i64 {
     return 0;
 }
 
+# ---- agnos cwd: getcwd#113, else $PWD, in normalized form (ADR 0017) ----
+#
+# `cwd_shape_ok` and `cwd_from_pwd` are what `cmdrs_getcwd` checks on agnos. They compile on
+# both targets, so the host suite drives them with fabricated values; scripts/agnos-boot-check.py
+# drives them through agnsh on a kernel.
+
+# What `cwd_from_pwd` writes for `pwd`, as a cstring, or 0 when it refuses.
+fn _cwd_from(pwd): i64 {
+    var buf = alloc(4096);
+    var n = cwd_from_pwd(pwd, buf, 4096);
+    if (n <= 0) { return 0; }
+    assert_eq(load8(buf + n - 1), 0, "the count includes the NUL, as getcwd(2)'s does");
+    return buf;
+}
+
+fn test_cwd_from_pwd_takes_what_agnsh_gives(): i64 {
+    _streq_or_dump(_cwd_from("/"), "/", "the root");
+    _streq_or_dump(_cwd_from("/proj"), "/proj", "a directory");
+    _streq_or_dump(_cwd_from("/proj/sub dir/x"), "/proj/sub dir/x", "a space is a name");
+    _streq_or_dump(_cwd_from("/.hidden/..x/.../x."), "/.hidden/..x/.../x.", "dots that are names");
+    var buf[8];
+    assert_eq(cwd_from_pwd("/proj", &buf, 8), 6, "the length with its NUL");
+    return 0;
+}
+
+fn test_cwd_from_pwd_refuses_the_rest(): i64 {
+    assert_eq(cwd_from_pwd(0, alloc(16), 16), 0, "unset");
+    assert_eq(_cwd_from(""), 0, "empty");
+    assert_eq(_cwd_from("proj"), 0, "relative");
+    assert_eq(_cwd_from("./proj"), 0, "relative, with a dot");
+    assert_eq(_cwd_from("/proj/"), 0, "a trailing slash");
+    assert_eq(_cwd_from("//"), 0, "two slashes");
+    assert_eq(_cwd_from("//proj"), 0, "a leading empty component");
+    assert_eq(_cwd_from("/a//b"), 0, "an empty component");
+    assert_eq(_cwd_from("/."), 0, "a `.` at the root");
+    assert_eq(_cwd_from("/a/./b"), 0, "a `.`");
+    assert_eq(_cwd_from("/a/."), 0, "a trailing `.`");
+    assert_eq(_cwd_from("/.."), 0, "a `..` at the root");
+    assert_eq(_cwd_from("/a/../b"), 0, "a `..`");
+    assert_eq(_cwd_from("/a/.."), 0, "a trailing `..`");
+    return 0;
+}
+
+# The same rule on a counted answer, as agnos's getcwd#113 gives one: its `n` bytes, not
+# up to a NUL, so a NUL inside the count is refused rather than ending the path early.
+fn test_cwd_shape_ok_on_a_counted_answer(): i64 {
+    assert_eq(cwd_shape_ok("/proj", 5), 1, "the whole answer");
+    assert_eq(cwd_shape_ok("/", 1), 1, "the root");
+    assert_eq(cwd_shape_ok("/proj/", 5), 1, "only `n` bytes are read");
+    assert_eq(cwd_shape_ok("/proj/", 6), 0, "so the slash counts when it is inside `n`");
+    assert_eq(cwd_shape_ok("/proj", 0), 0, "nothing");
+    var nul[8];
+    memcpy(&nul, "/ab", 3);
+    store8(&nul + 3, 0);
+    memcpy(&nul + 4, "cd", 2);
+    assert_eq(cwd_shape_ok(&nul, 6), 0, "a NUL inside the count");
+    assert_eq(cwd_shape_ok(&nul, 3), 1, "and the bytes before it alone");
+    return 0;
+}
+
+# A path that would not fit is refused, not cut: a cut path names another directory.
+fn test_cwd_from_pwd_cap(): i64 {
+    var buf[8];
+    assert_eq(cwd_from_pwd("/abcdef", &buf, 8), 8, "exactly the cap, with the NUL");
+    assert_eq(cwd_from_pwd("/abcdefg", &buf, 8), 0, "one byte past it");
+    return 0;
+}
+
 # Garbage name that nobody would ship: returns 0, no crash.
 fn test_pathlookup_misses_unknown(): i64 {
     if (getenv("PATH") == 0) {
@@ -4097,6 +4186,7 @@ fn main(): i64 {
     test_pin_word_cap();
     test_pin_shape_ok();
     test_pin_name_matches();
+    test_pin_link_join();
     test_read_pin_file_plain();
     test_read_pin_file_follows_a_link_that_keeps_the_name();
     test_read_pin_file_refuses_a_link_to_another_name();
@@ -4332,6 +4422,12 @@ fn main(): i64 {
     test_group("pathlookup");
     test_pathlookup_finds_sh();
     test_pathlookup_misses_unknown();
+
+    test_group("agnos cwd: getcwd#113 and $PWD (ADR 0017)");
+    test_cwd_from_pwd_takes_what_agnsh_gives();
+    test_cwd_from_pwd_refuses_the_rest();
+    test_cwd_shape_ok_on_a_counted_answer();
+    test_cwd_from_pwd_cap();
 
     test_group("shellout watchdog");
     test_shellout_happy_path();

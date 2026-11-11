@@ -35,15 +35,76 @@
 # Splitting the env-read from the walker lets tests drive the walker
 # with fabricated PATH strings (Cyrius stdlib has no setenv today).
 
-# Shared current-working-directory fetch. Linux uses getcwd(2). agnos has no such
-# call, by design: CWD is userland-owned (agnos ABI), and agnsh passes its tracked
-# directory to children as $PWD since agnoshi 2.2.0. This does not read it yet, so
-# the cwd-dependent segments render empty there. Reading it is not a one-liner: it
-# would make repo-controlled files reachable on a target where `read_regular_file`
-# has neither of its guards. See the agnoshi adoption item in roadmap.md.
+# 1 if the `n` bytes at `p` name a directory in normalized form: absolute, with no NUL,
+# no empty, `.` or `..` component, and no trailing `/` except on `/` itself. That is the
+# form agnos's getcwd#113 answers and agnsh exports `$PWD` in. Anything else came from
+# somewhere else, and the walk up from `/a/../b` would probe `/a`, which is not above `/b`.
+fn cwd_shape_ok(p, n): i64 {
+    if (n <= 0) { return 0; }
+    if (load8(p) != 47) { return 0; }
+    var start = 1;
+    var i = 1;
+    while (i <= n) {
+        var ends = 0;
+        if (i == n) { ends = 1; }
+        else {
+            var c = load8(p + i);
+            if (c == 0) { return 0; }
+            if (c == 47) { ends = 1; }
+        }
+        if (ends == 1) {
+            var clen = i - start;
+            if (clen == 0) {
+                if (n != 1) { return 0; }                   # `//`, or a trailing `/`
+            }
+            if (clen == 1) {
+                if (load8(p + start) == 46) { return 0; }   # `.`
+            }
+            if (clen == 2) {
+                if (load8(p + start) == 46) {
+                    if (load8(p + start + 1) == 46) { return 0; }      # `..`
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# `pwd` into `buf` as getcwd(2) writes it, if it has the normalized shape. Returns the
+# length with its NUL, as getcwd(2) does, or 0. A path that would not fit is refused, not
+# cut: a cut path names another directory. ADR 0017.
+fn cwd_from_pwd(pwd, buf, cap): i64 {
+    if (pwd == 0) { return 0; }
+    var n = strlen(pwd);
+    if (n + 1 > cap) { return 0; }
+    if (cwd_shape_ok(pwd, n) == 0) { return 0; }
+    memcpy(buf, pwd, n);
+    store8(buf + n, 0);
+    return n + 1;
+}
+
+# Shared current-working-directory fetch, returning the length with its NUL, as getcwd(2)
+# does, or 0. Linux uses getcwd(2). agnos has had a per-process working directory since
+# 1.57.18, read by getcwd#113, which answers the length WITHOUT the NUL; the cyrius 6.7.18
+# agnos peer has no wrapper for it yet, so it is called raw. A spawned child's directory
+# is seeded from a valid `PWD=` in its environment, which agnsh 2.2.0 exports. A kernel
+# before 1.57.18 cannot answer, and there `$PWD` is the only source, taken in the shape
+# agnsh gives it. A kernel answer of the wrong shape is refused, not replaced by the env.
+#
+# Either way this makes repo-controlled files reachable on agnos, which is why
+# `read_pin_file` and `read_regular_file` have an agnos arm of their own
+# (src/fslookup.cyr). ADR 0017.
 fn cmdrs_getcwd(buf, cap): i64 {
     #ifdef CYRIUS_TARGET_AGNOS
-    return 0;
+    var n = syscall(113, buf, cap, 0, 0);
+    if (n > 0) {
+        if (n >= cap) { return 0; }
+        if (cwd_shape_ok(buf, n) == 0) { return 0; }
+        return n + 1;
+    }
+    return cwd_from_pwd(getenv("PWD"), buf, cap);
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
     return syscall(SYS_GETCWD, buf, cap);

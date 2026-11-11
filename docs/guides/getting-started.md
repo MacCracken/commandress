@@ -27,7 +27,7 @@ shell ──capture stdout─→ paint as prompt
 
 Each **segment** is a pure function of the input context. Examples:
 
-- `cwd` — reads `$PWD`, renders `~/foo/bar` (home-shortened, truncated)
+- `cwd` — reads `getcwd(2)`, or on agnos the kernel's `getcwd`#113, else `$PWD` on a kernel before 1.57.18; renders `~/foo/bar` (home-shortened, truncated)
 - `exit` — reads last-exit env var, renders empty if 0 or a colored marker otherwise
 - `git` — probes git state, renders `branch ✗` (dirty) / `branch ✓` (clean)
 - `time` — reads wall clock, renders `HH:MM:SS`

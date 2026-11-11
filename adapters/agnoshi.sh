@@ -31,6 +31,10 @@
 #        AGNOSHI_LAST_EXIT  — exit code of the user's last command
 #        (other env passes through unchanged — HOME / PWD / VIRTUAL_ENV
 #        / TZ / etc. — so segments that read them work transparently)
+#      On agnos, since commandress 1.6.0, cmdrs asks the kernel for the
+#      directory (getcwd#113, agnos 1.57.18), which seeds it from the
+#      `PWD` agnsh 2.2.0 exports. On an older kernel `$PWD` is the only
+#      source, taken only in that normalized form (ADR 0017).
 #   3. agnoshi runs `$AGNOSHI_PROMPT_CMD` (left-prompt) and captures
 #      stdout as the prompt string. The captured output may contain
 #      raw ANSI SGR escapes; agnoshi is responsible for any width-

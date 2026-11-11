@@ -133,16 +133,32 @@ fn find_ancestor_with(start_dir, marker): i64 {
     return find_ancestor_with_either(start_dir, marker, 0, &which);
 }
 
-#ifndef CYRIUS_TARGET_AGNOS
-# Read `fd` into `buf`, up to `cap` bytes, if it is a regular file, and close it. Returns
-# the bytes read, or -1.
-fn _read_regular_fd(fd, buf, cap): i64 {
+# 1 if `fd` is a regular file. Linux asks fstat. agnos has no fstat (`sys_fstat` is a hard
+# stub there) and asks fd_kind#111, which agnos 1.57.13 added for this question. A kernel
+# before 1.57.13 cannot answer, and its -1 reads as a file: ext2 and ZFS open nothing else
+# by path, so that loses nothing there, where refusing would lose every pin and the config.
+fn _fd_is_regular(fd): i64 {
+    #ifdef CYRIUS_TARGET_AGNOS
+    var kind = sys_fd_kind(fd);
+    if (kind == FDK_FILE) { return 1; }
+    if (kind == (0 - 1)) { return 1; }
+    return 0;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
     # 144 = sizeof(struct stat) on Linux x86_64 (same as src/cache.cyr). A
     # smaller frame array would let the kernel write past it.
     var stbuf[144];
-    if (sys_fstat(fd, &stbuf) != 0) { file_close(fd); return 0 - 1; }
+    if (sys_fstat(fd, &stbuf) != 0) { return 0; }
     var st_mode = load32(&stbuf + 24);                  # struct stat: st_mode @ 24
-    if ((st_mode & 0xF000) != 0x8000) {                 # S_IFMT / S_IFREG
+    if ((st_mode & 0xF000) != 0x8000) { return 0; }     # S_IFMT / S_IFREG
+    return 1;
+    #endif
+}
+
+# Read `fd` into `buf`, up to `cap` bytes, if it is a regular file, and close it. Returns
+# the bytes read, or -1.
+fn _read_regular_fd(fd, buf, cap): i64 {
+    if (_fd_is_regular(fd) == 0) {
         file_close(fd);
         return 0 - 1;
     }
@@ -159,7 +175,6 @@ fn _read_regular_fd(fd, buf, cap): i64 {
     file_close(fd);
     return total;
 }
-#endif
 
 # Read a file that an ATTACKER may have chosen the type of.
 #
@@ -187,22 +202,24 @@ fn _read_regular_fd(fd, buf, cap): i64 {
 # Checking on the already-open fd, not by path, also closes the TOCTOU between
 # the access(F_OK) that selected the path and the open that follows it.
 #
-# AGNOS: both guards are unavailable and the exposure does not exist there.
-# `O_NONBLOCK` is defined only in the Linux/macOS syscall peers (2048), not in
-# the agnos one, so naming it would fail the `--agnos` build; and agnos's
-# `sys_fstat` is a hard stub (`return 0 - 1;` in syscalls_x86_64_agnos.cyr), so
-# an unconditional S_IFREG gate would reject EVERY file and silently revert
-# agnos users to baked-in defaults. Agnos keeps the plain read.
+# AGNOS: the hang does not exist there. ext2 and ZFS open only a regular file by
+# path (`ext2_open` and `zfs_open` answer -1 for anything else, a FIFO in an image
+# made on Linux included), the ABI has no `mknod`, and no device has a path. So the
+# open stays plain, which it must: `O_NONBLOCK` is not defined in the agnos syscall
+# peer, and naming it would fail the `--agnos` build. The S_IFREG check is fd_kind
+# there (`_fd_is_regular`), which keeps the rule should a backend ever open another
+# kind. Reviewed when `cmdrs_getcwd` first answered there (ADR 0017).
 fn read_regular_file(path, buf, cap): i64 {
     if (path == 0) { return 0 - 1; }
+    var fd = 0 - 1;
     #ifdef CYRIUS_TARGET_AGNOS
-    return file_read_all(path, buf, cap);
+    fd = file_open(path, 0, 0);
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
-    var fd = file_open(path, O_NONBLOCK, 0);            # O_RDONLY is 0
+    fd = file_open(path, O_NONBLOCK, 0);                # O_RDONLY is 0
+    #endif
     if (fd < 0) { return 0 - 1; }
     return _read_regular_fd(fd, buf, cap);
-    #endif
 }
 
 # `<root><suffix>` as a heap-alloc'd cstring, or 0 if alloc refuses.
@@ -234,8 +251,9 @@ enum Pin {
     PIN_WORD_MAX = 64;
     PIN_READ_SIZE = 257;                                # PROBE_FILE_CAP, and one to see past it
     PIN_PATH_MAX = 4096;
-    PIN_O_NOFOLLOW = 131072;
+    PIN_O_NOFOLLOW = 131072;                            # io.cyr maps it to AO_NOFOLLOW on agnos
     PIN_ELOOP = 40;
+    PIN_LINK_HOPS = 8;                                  # agnos: the longest chain a pin may be
 }
 
 # 1 if `c` can be in a pin: the characters of pyenv, uv, nvm and rustup names and of PEP 440
@@ -438,13 +456,96 @@ fn _pin_link_keeps_name(fd, path): i64 {
 }
 #endif
 
+# The path the symlink `cur` points at, from the `tlen` bytes of its target at `target`:
+# the target itself if it is absolute, else the target in `cur`'s directory. `..` is left
+# for the kernel, which knows what a `..` after a link means. A heap-alloc'd cstring, or 0
+# for an empty target, one holding a NUL, or a path that would not fit PIN_PATH_MAX.
+fn pin_link_join(cur, target, tlen): i64 {
+    if (tlen <= 0) { return 0; }
+    var i = 0;
+    while (i < tlen) {
+        if (load8(target + i) == 0) { return 0; }
+        i = i + 1;
+    }
+    var dlen = 0;
+    if (load8(target) != 47) {
+        dlen = strlen(cur);
+        var seek = 1;
+        while (seek == 1) {
+            if (dlen == 0) { seek = 0; }
+            else {
+                if (load8(cur + dlen - 1) == 47) { seek = 0; }
+                else { dlen = dlen - 1; }
+            }
+        }
+    }
+    if (dlen + tlen + 1 > PIN_PATH_MAX) { return 0; }
+    var out = alloc(dlen + tlen + 1);
+    if (out == 0) { return 0; }
+    if (dlen > 0) { memcpy(out, cur, dlen); }
+    memcpy(out + dlen, target, tlen);
+    store8(out + dlen + tlen, 0);
+    return out;
+}
+
+#ifdef CYRIUS_TARGET_AGNOS
+# agnos: where the symlink chain at `path` ends, as a heap-alloc'd cstring: the first path
+# in it that readlink#70 does not read as a link. 0 if `path` is not a link itself, or the
+# chain is longer than PIN_LINK_HOPS, or a target does not fit. There is no /proc to ask
+# what an open fd is, so the chain is walked here, and the caller opens its end with
+# AO_NOFOLLOW: a link swapped in after the walk is refused, not followed. A swap can only
+# move the read to another file of the pin's name, which is also true on Linux.
+fn _pin_link_end(path): i64 {
+    var tbuf = alloc(PIN_PATH_MAX);
+    if (tbuf == 0) { return 0; }
+    var cur = path;
+    var hops = 0;
+    var end = 0;
+    var going = 1;
+    while (going == 1) {
+        var n = sys_readlink(cur, strlen(cur), tbuf, PIN_PATH_MAX);
+        if (n < 0) {
+            if (hops > 0) { end = cur; }
+            going = 0;
+        } else {
+            hops = hops + 1;
+            if (hops > PIN_LINK_HOPS) { going = 0; }
+            else {
+                # A target that fills the buffer may have been cut: agnos 1.57.18 copies at
+                # most the cap, as Linux does.
+                if (n >= PIN_PATH_MAX) { going = 0; }
+                else {
+                    var next = pin_link_join(cur, tbuf, n);
+                    if (next == 0) { going = 0; }
+                    else { cur = next; }
+                }
+            }
+        }
+    }
+    return end;
+}
+#endif
+
 # `read_regular_file` for a file the repo chose. O_NOFOLLOW first, so a plain file pays
 # for nothing, and a link is only followed once it can be checked on the open fd, which
 # no swap of the link can get around.
+#
+# agnos has symlinks too, on ext2 and on ZFS, so the rule is the same there, and the route
+# is different: agnos answers -1 for a link under AO_NOFOLLOW and for a missing file alike,
+# and has no /proc. So the chain is walked by readlink, and its end is opened with
+# AO_NOFOLLOW once its name has passed. ADR 0017.
 fn read_pin_file(path, buf, cap): i64 {
     if (path == 0) { return 0 - 1; }
     #ifdef CYRIUS_TARGET_AGNOS
-    return file_read_all(path, buf, cap);
+    var afd = file_open(path, PIN_O_NOFOLLOW, 0);
+    if (afd < 0) {
+        var end = _pin_link_end(path);
+        if (end == 0) { return 0 - 1; }
+        if (pin_name_matches(_pin_basename(path), _pin_basename(end)) == 0) { return 0 - 1; }
+        afd = file_open(end, PIN_O_NOFOLLOW, 0);
+        if (afd < 0) { return 0 - 1; }
+    }
+    return _read_regular_fd(afd, buf, cap);
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
     var fd = file_open(path, O_NONBLOCK | PIN_O_NOFOLLOW, 0);

@@ -37,3 +37,4 @@ Decisions about commandress — what we chose, the context, and the consequences
 | [0014](0014-version-probes-never-see-the-repo.md) | Version probes run outside the repo, and are cached per tool | Accepted |
 | [0015](0015-pins-keep-their-name-and-shape.md) | A symlinked pin must keep its name, a pin has a shape, and repo text has a length | Accepted |
 | [0016](0016-local-time-through-darshini.md) | The clock shows local time, through darshini's zone code | Accepted |
+| [0017](0017-agnos-working-directory.md) | On agnos the directory is agnsh's `$PWD`, and a pin keeps its rules there | Accepted |

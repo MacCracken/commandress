@@ -6,6 +6,81 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-10
+
+The cwd-based segments work on agnos. `cmdrs_getcwd` asks the kernel there, through `getcwd`#113, which agnos 1.57.18
+added, and on an older kernel reads the `$PWD` agnsh has exported since 2.2.0. This was the one commandress change the
+agnoshi adoption row was waiting on. A directory makes repo files reachable on agnos for the first time, so the pin
+readers keep ADR 0015's name rule there too, with no `/proc` to ask. Linux is unchanged, and so are the toolchain, the dependencies, the schema and the output format.
+Decision and kernel review: [ADR 0017](docs/adr/0017-agnos-working-directory.md).
+
+### Added
+
+- **agnos: `cwd`, `cyrius_env`, `python_env`, `node_env` and `rustup_env` render.** They were always empty there,
+  and the default prompt was a bare ` $ `. `getcwd`#113 is called raw, because the cyrius 6.7.18 agnos peer has no
+  wrapper for it yet. Its answer, or `$PWD` on a kernel before 1.57.18, must be absolute, with no NUL, no empty, `.`
+  or `..` component, and no trailing `/` except on `/` itself, which is the form both produce. Any other form, or a
+  path past the 4 KB buffer, renders them empty. `vcs` stays empty on agnos, where `cmdrs` cannot run `sit`.
+- `cwd_shape_ok`, `cwd_from_pwd` and `pin_link_join`, the pure halves of the agnos path, compiled on both targets so
+  the host suite tests them.
+- **`scripts/agnos-boot-check.py`**, which boots `cmdrs --agnos` on the agnos kernel in QEMU, types at agnsh, and
+  reads the prompt off the serial console. It also builds patched copies of this tree: two broken ones, with the old
+  cwd stub and with no agnos pin guard, which must fail, and one for each source of the directory. Not in CI: it
+  needs a built agnos, gnoboot and an agnos-target agnsh.
+
+### Security
+
+- **agnos: a symlinked pin must end at a file of the same name**, as on Linux since 1.5.0. agnos has symlinks on ext2
+  and ZFS, and no `/proc/self/fd`. So `read_pin_file` walks the chain with `readlink`, checks the name where it ends,
+  and opens that end with `AO_NOFOLLOW`, so a link swapped in after the walk is refused. At most 8 links. Without
+  this, a directory alone shows `.nvmrc -> ../secret` in the prompt, and the boot test's control binary does.
+- **agnos: `read_regular_file` and `read_pin_file` read only a regular file**, through `fd_kind`#111 (agnos 1.57.13).
+  The stall that check guards against on Linux does not exist on agnos: `ext2_open` and `zfs_open` refuse every
+  other kind of inode, a FIFO in an image made on Linux included, there is no `mknod`, and no device has a path. A
+  kernel before 1.57.13 cannot answer, and reads as before.
+- A directory in any other form is not trusted, and a kernel answer of the wrong form is not replaced by `$PWD`. The
+  walk up from `/a/../b` would probe `/a`, which is not above `/b`.
+
+### Changed
+
+- The roadmap's agnoshi row: the commandress side is done, and the gate is agnoshi reading `$AGNOSHI_PROMPT_CMD`,
+  which 2.2.0 does not. The `path_which` gate was re-checked: 6.7.18 is still the newest cyrius.
+- ADR 0015 is annotated: ADR 0017 supersedes its bullet that said agnos was unchanged.
+- `adapters/agnoshi.sh` says where `cmdrs` learns the directory on agnos.
+
+### Performance
+
+| | 1.5.3 | 1.6.0 | Delta |
+|---|---|---|---|
+| Cold start, no config | 274.8 µs | 274.6 µs | flat |
+| Cold start, `--side=right` | 242.5 µs | 242.8 µs | flat |
+| Cold start, largest theme | 492.4 µs | 492.3 µs | flat |
+| `cyrius_env_render`, which reads `VERSION` through the split check | 6.96 µs | 7.00 µs | flat |
+| `render_prompt` | 11.17 µs | 11.19 µs | flat |
+| Binary, x86_64 | 221,096 B | 221,104 B | +8 B |
+| Binary, `--agnos` | 216,808 B | 220,920 B | +4,112 B (+1.9 %) |
+
+Medians of 4,000 interleaved pairs, with both binaries in one directory, and lowest mins of 3 alternating bench runs
+at equal path depth. Absolute figures are not comparable with earlier entries. On Linux the only change on the render
+path is `_read_regular_fd`'s check moving into `_fd_is_regular`. The `--agnos` growth is the directory reader, the
+`readlink` walk and the `fd_kind` check, and agnos has no bench.
+
+### Tests
+
+- 1,028 assertions across 297 tests, from 987 across 292.
+- Booted on agnos kernel 1.57.19 under agnsh 2.2.0 by `scripts/agnos-boot-check.py`, typing `cd` and `cmdrs` at the
+  shell, against ext2 fixtures. 30 checks pass, 21 of them fixtures through every pin reader: a plain pin, the walk up from a subdirectory, a
+  relative link, an absolute link and a chain through another name all render the version, and a link to another
+  name, a chain ending at one, a dangling link, a loop, a directory with the right name and a link to it all render
+  nothing. Eight links are followed and nine are not. A build that takes the directory from `getcwd`#113 alone, and one
+  that takes it from `$PWD` alone, both render it. Three controls show the checks can fail: with the old cwd stub
+  nothing cwd-based renders, and without the agnos arm of `read_pin_file` the secret shows, directly and through a
+  chain. The 1.5.3 binary, booted the same way, renders no cwd. ZFS was reviewed in the kernel source and not
+  booted.
+- Differential 1.5.3 → 1.6.0 on x86_64, over 42 runs of both sides on 21 fixture directories: hostile links, FIFOs,
+  a link to `/dev/zero` and to `/proc/self/environ`, and the ordinary pins. Every output is byte-identical.
+- `scripts/smoke.sh` and `scripts/adapter-check.sh`, 111 checks, pass on the shipped binary.
+
 ## [1.5.3] - 2026-11-06
 
 cmdit moves to 1.5.1, which closes the two items this repo filed against it. A good flag after a bad one now counts

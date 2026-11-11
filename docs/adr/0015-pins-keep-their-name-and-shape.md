@@ -82,6 +82,7 @@ This does not protect a secret, and is not meant to. `=` is legal because uv nee
 - **Negative** — `sit` follows a symlinked `.git` or `.sit/HEAD`, so a repo can show the branch name of another repo it can name a path to. `sit` only prints something shaped `ref: refs/...`, so a token file shows `(detached)`. `cmdrs` only sees the output, so the fix belongs in `sit`. It is on the roadmap.
   > **Update 2026-11-06** (annotation, not a revision): fixed in `sit` 1.13.1, which refuses a `.sit`, `.git` or HEAD link out of the repository. Replayed through `cmdrs` on `sit` 1.13.2 at commandress 1.5.2: both links render empty.
 - **Neutral** — `agnos` is unchanged. `read_pin_file` is `file_read_all` there, as `read_regular_file` already was, and the roadmap's agnoshi row already says those guards must be reviewed when `cmdrs_getcwd` reads `$PWD`.
+  > **Update 2026-11-10** (annotation, not a revision): superseded by [ADR 0017](0017-agnos-working-directory.md) at 1.6.0. `cmdrs_getcwd` answers on agnos, from the kernel or `$PWD`, and the name rule holds there, through a `readlink` walk in place of `/proc/self/fd`.
 
 ## Alternatives considered
 

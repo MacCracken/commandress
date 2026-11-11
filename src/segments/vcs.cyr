@@ -105,10 +105,10 @@ fn vcs_render(dirty_marker, budget_ms): i64 {
     # after the declaration would not have helped — the declaration itself has
     # to be preprocessed away.
     #
-    # Nothing is lost. Every input this function needs is already stubbed on
-    # agnos: `cmdrs_getcwd` returns 0 (src/pathlookup.cyr), `shellout_capture`
+    # Nothing is lost. `cmdrs_getcwd` answers on agnos since 1.6.0, but the
+    # rest of what this function needs is stubbed there: `shellout_capture`
     # returns -1 (src/shellout.cyr), and the cache is disabled (src/cache.cyr).
-    # The host path below therefore could only ever have returned 0 there.
+    # With no `sit` to ask, the host path below could only ever return 0 there.
     #ifdef CYRIUS_TARGET_AGNOS
     return 0;
     #endif

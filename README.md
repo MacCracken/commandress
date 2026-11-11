@@ -2,7 +2,7 @@
 
 > A fast, structured shell prompt for [agnoshi](https://github.com/MacCracken/agnoshi), zsh, and bash. Sovereign-stack equivalent of [starship](https://starship.rs/), in [Cyrius](https://github.com/MacCracken/cyrius).
 
-**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.5.3** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
+**Binary**: `cmdrs` (short for *commandress*). **Status**: **v1.6.0** — public API frozen at v1.0 ([ADR 0007](docs/adr/0007-schema-freeze.md)); the 1.1.x line is toolchain refreshes, the [cmdit](https://github.com/MacCracken/cmdit) CLI adoption, and a security audit, and the 1.2.x line ends in [another](docs/audit/2026-11-06-audit.md). **License**: GPL-3.0-only.
 
 ## What it is
 
@@ -34,7 +34,7 @@ cyrius bench tests/commandress.bcyr            # per-segment + full-prompt timin
 
 | Name | Source | Renders | Per-segment options |
 |---|---|---|---|
-| `cwd` | `getcwd(2)` | Current directory, optionally `~`-shortened, optionally truncated | `home_shorten`, `max_length`, `fg`/`bg`/`style` |
+| `cwd` | `getcwd(2)`; on agnos `getcwd`#113, else `$PWD` | Current directory, optionally `~`-shortened, optionally truncated | `home_shorten`, `max_length`, `fg`/`bg`/`style` |
 | `exit` | `$AGNOSHI_LAST_EXIT` | `[N]` on non-zero; empty on success | `hide_zero`, `max_length`, `fg`/`bg`/`style` |
 | `vcs` | `sit status` (cached, 1 s TTL) | `<branch>` / `<branch>*` inside a `sit` repo | `show_dirty`, `dirty_marker`, `budget_ms`, `max_length`, `fg`/`bg`/`style` |
 | `time` | `CLOCK_REALTIME`, in the zone from `TZ` or `/etc/localtime` | strftime-subset (`%H %M %S %Y %y %m %d %%`), local time | `format`, `utc`, `max_length`, `fg`/`bg`/`style` |
@@ -63,7 +63,7 @@ $ AGNOSHI_LAST_EXIT=42 cmdrs
 $ cmdrs --side=right
 
 $ cmdrs --version
-cmdrs 1.5.3
+cmdrs 1.6.0
 
 $ cmdrs --help          # generated from the flag table; prints to stderr
 ```
@@ -127,7 +127,7 @@ commandress/
 │   ├── commandress.tcyr                       # test suite
 │   ├── commandress.bcyr                       # benchmark suite
 │   └── commandress.fcyr                       # fuzz stub
-├── scripts/                                   # CI gates: lock-check, smoke, adapter-check, bench-gate
+├── scripts/                                   # CI gates: lock-check, smoke, adapter-check, bench-gate; agnos-boot-check (local)
 └── docs/
     ├── adr/                                   # decision records (0001–0008)
     ├── architecture/                          # non-obvious invariants

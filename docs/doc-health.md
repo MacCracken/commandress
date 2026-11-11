@@ -42,8 +42,8 @@ Three more were stale claims rather than stale advice:
 
 ## At a glance
 
-**56 docs**: 35 markdown under `docs/`, 6 theme `.cyml` + 1 annotated `.example`, the benchmark CSV,
-plus `README.md`, `CHANGELOG.md`, `CLAUDE.md`, `adapters/README.md`, and the three adapters and six
+**58 docs**: 36 markdown under `docs/`, 6 theme `.cyml` + 1 annotated `.example`, the benchmark CSV,
+plus `README.md`, `CHANGELOG.md`, `CLAUDE.md`, `adapters/README.md`, and the three adapters and seven
 scripts whose header comments carry rationale.
 
 | Bucket | Meaning |
@@ -62,8 +62,8 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-11-06 | ✅ Fresh | Status line, layout tree, roadmap pointers. |
-| `CHANGELOG.md` | 2026-11-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.5.3. |
+| `README.md` | 2026-11-10 | ✅ Fresh | Status line, layout tree, roadmap pointers. `cwd`'s source names `$PWD` on agnos at 1.6.0. |
+| `CHANGELOG.md` | 2026-11-10 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through 1.6.0. |
 | `CLAUDE.md` | 2026-08-26 | 🔵 Evergreen | Process + rules. |
 | `adapters/README.md` | 2026-11-06 | ✅ Fresh | Security section rewritten around the reference rule (ADR 0011). |
 
@@ -71,14 +71,14 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `state.md` | 2026-11-06 | ✅ Fresh | **Rotates every release.** Through 1.5.3. |
-| `roadmap.md` | 2026-11-06 | ✅ Fresh | The 1.2.3, 1.3.x, 1.4.x and 1.5.x slots moved to the CHANGELOG. New item at 1.x.x, pinned to ADR 0015. The two cmdit rows closed at 1.5.3. |
+| `state.md` | 2026-11-10 | ✅ Fresh | **Rotates every release.** Through 1.6.0. |
+| `roadmap.md` | 2026-11-06 | ✅ Fresh | The 1.2.3, 1.3.x, 1.4.x and 1.5.x slots moved to the CHANGELOG. New item at 1.x.x, pinned to ADR 0015. The two cmdit rows closed at 1.5.3. The agnoshi row's commandress change shipped at 1.6.0, and the gates were re-checked. |
 
-### `docs/adr/` — 16 records
+### `docs/adr/` — 17 records
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-11-06 | ✅ Fresh | Index; 16 entries. |
+| `README.md` | 2026-11-10 | ✅ Fresh | Index; 17 entries. |
 | `0001-separate-repo-from-agnoshi.md` | 2026-05-15 | 🔵 Evergreen | Accepted; stands. |
 | `0002-segment-rendering-model.md` | 2026-05-17 | 🟢 Current | Accepted. Still describes the shipped model. |
 | `0003-config-format.md` | 2026-05-17 | 🟢 Current | Accepted. |
@@ -93,8 +93,9 @@ scripts whose header comments carry rationale.
 | `0012-cache-bounded-by-construction.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.2.3. Replaces the planned eviction. Re-checked at 1.4.1. |
 | `0013-package-json-via-flat-bayan-json.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.4.0, with the measurements for all three candidates. |
 | `0014-version-probes-never-see-the-repo.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.4.1. Why the roadmap's plan could not be built as written. |
-| `0015-pins-keep-their-name-and-shape.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.5.0. Why the audit's shape rule could not close T-05 alone. Annotated at 1.5.2. |
+| `0015-pins-keep-their-name-and-shape.md` | 2026-11-10 | ✅ Fresh | Accepted at 1.5.0. Why the audit's shape rule could not close T-05 alone. Annotated at 1.5.2, and at 1.6.0, where ADR 0017 supersedes its agnos bullet. |
 | `0016-local-time-through-darshini.md` | 2026-11-06 | ✅ Fresh | Accepted at 1.5.1. Why the clock is local by default, and why the zone code is pinned, not written here. |
+| `0017-agnos-working-directory.md` | 2026-11-10 | ✅ Fresh | Accepted at 1.6.0. Why agnos asks the kernel's `getcwd`#113 and falls back to agnsh's `$PWD`, and how the name rule holds there with no `/proc`. |
 | `template.md` | 2026-05-15 | 🔵 Evergreen | Refresh only if the ADR shape changes. |
 
 ### `docs/architecture/` — 3 notes
@@ -118,7 +119,7 @@ scripts whose header comments carry rationale.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `getting-started.md` | 2026-11-06 | ✅ Fresh | Updated at 1.2.2 and 1.2.3. Colour forms at 1.3.0, version probes at 1.4.1, long values at 1.5.0, the clock at 1.5.1. |
+| `getting-started.md` | 2026-11-10 | ✅ Fresh | Updated at 1.2.2 and 1.2.3. Colour forms at 1.3.0, version probes at 1.4.1, long values at 1.5.0, the clock at 1.5.1, `cwd`'s source on agnos at 1.6.0. |
 | `zsh-setup.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** New paste, executed under attack. |
 | `bash-setup.md` | 2026-11-06 | ✅ Fresh | **Security-relevant repair.** New paste, executed under attack. |
 
@@ -135,7 +136,7 @@ scripts whose header comments carry rationale.
 |---|---|---|---|
 | `benchmarks.md` | 2026-11-06 | ✅ Fresh | Budget section now separates the two gates and gives real cold-start figures. Its per-segment table is still the v1.1.6 run; `state.md` carries current numbers. |
 | `benchmarks/README.md` | 2026-05-18 | 🟢 Current | Column semantics; unchanged. |
-| `benchmarks/history.csv` | 2026-11-06 | ✅ Fresh | Rows through 1.5.3. |
+| `benchmarks/history.csv` | 2026-11-10 | ✅ Fresh | Rows through 1.6.0. |
 | `themes/README.md` | 2026-11-06 | ✅ Fresh | Six themes. Gained *Switching between palettes* at 1.3.1, and that example was run as a config. |
 | `themes/*.cyml` (6) | 2026-11-06 | ✅ Fresh | commandress / nord / dracula / gruvbox / monokai, plus powerline at 1.2.2, which gained `right_segments` at 1.3.0. |
 | `doc-health.md` | 2026-11-06 | ✅ Fresh | This ledger. |
